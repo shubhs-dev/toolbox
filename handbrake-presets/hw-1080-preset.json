@@ -84,7 +84,7 @@
       "SubtitleBurnBDSub": false,
       "SubtitleBurnDVDSub": false,
       "SubtitleLanguageList": [],
-      "SubtitleTrackSelectionBehavior": "none",
+      "SubtitleTrackSelectionBehavior": "all",
       "SubtitleTrackNamePassthru": true,
       "VideoAvgBitrate": 0,
       "VideoColorRange": "auto",
