@@ -492,6 +492,55 @@ def show_history(log):
     console.print()
 
 
+# ── Recovery ──────────────────────────────────────────────────────────
+
+def recover_interrupted(watch_dir, output_dir, log):
+    """Restore files left in a half-processed state by a previous run.
+
+    • *.processing  in watch_dir  →  renamed back to original name
+    • *.tmp          in output_dir →  deleted
+    • log entries with status "processing" → removed so they are retried
+    """
+    recovered = []
+
+    # Restore source files that were mid-transcode
+    for f in sorted(watch_dir.iterdir()):
+        if f.suffix.lower() == ".processing" and f.is_file():
+            original = f.parent / f.stem          # strip .processing
+            try:
+                f.rename(original)
+                recovered.append(original.name)
+            except OSError as exc:
+                console.print(
+                    f"[red]Could not restore {f.name}:[/] {exc}"
+                )
+
+    # Remove incomplete temp outputs
+    for tmp in sorted(output_dir.glob("*.tmp")):
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+    # Clear any "processing" status entries from the log so they are retried
+    stale_keys = [k for k, v in log.items()
+                  if isinstance(v, dict) and v.get("status") == "processing"]
+    if stale_keys:
+        with _log_lock:
+            for k in stale_keys:
+                del log[k]
+            save_log(output_dir, log)
+
+    if recovered:
+        console.print(
+            f"[bold yellow]Recovered {len(recovered)} interrupted file(s):[/] "
+            + ", ".join(recovered)
+        )
+        console.print()
+
+    return recovered
+
+
 # ── Scanner ───────────────────────────────────────────────────────────
 
 def scan(watch_dir, output_dir):
@@ -590,6 +639,9 @@ def main():
     console.print()
 
     log = load_log(output_dir)
+
+    # ── Recover interrupted files from a previous run ────────────
+    recover_interrupted(watch_dir, output_dir, log)
 
     # ── Show history from previous runs ──────────────────────────
     show_history(log)
