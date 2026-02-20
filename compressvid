@@ -302,6 +302,9 @@ def process_video(video, output_dir, preset_file, preset_label, log,
     vname = video.name
     src_processing = video.parent / f"{vname}.processing"
 
+    # Start the per-video elapsed timer now
+    progress.start_task(task_id)
+
     # ── Wait for stable file ─────────────────────────────────────
     progress.update(task_id, visible=True,
                     description=f"[cyan]{vname}[/]  [dim]checking file…[/]")
@@ -742,12 +745,15 @@ def main():
                 )
 
                 # Per-file tasks start hidden; shown only while active
+                # start=False so the elapsed timer begins only when
+                # the video actually starts processing.
                 tasks = {}
                 for v in videos:
                     tid = progress.add_task(
                         f"[dim]{v.name}  queued[/]",
                         total=100, completed=0,
                         visible=False,
+                        start=False,
                     )
                     tasks[v] = tid
 
