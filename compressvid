@@ -102,6 +102,38 @@ def move_to_trash(path):
             return
         raise RuntimeError(f"Recycle Bin failed: {r.stderr.strip()}")
 
+    # 3) Fallback on Linux: gio trash or trash-put
+    if sys.platform.startswith("linux"):
+        import shutil
+        if shutil.which("gio"):
+            r = subprocess.run(["gio", "trash", path],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                return
+        if shutil.which("trash-put"):
+            r = subprocess.run(["trash-put", path],
+                               capture_output=True, text=True)
+            if r.returncode == 0:
+                return
+        raise RuntimeError(
+            "No trash backend. Install send2trash (pip install send2trash) "
+            "or trash-cli (sudo apt install trash-cli)."
+        )
+
+    # 4) Fallback on macOS: osascript
+    if sys.platform == "darwin":
+        script = (
+            'tell application "Finder" to delete'
+            f' POSIX file "{path}"'
+        )
+        r = subprocess.run(["osascript", "-e", script],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            return
+        raise RuntimeError(
+            "No trash backend. Install send2trash:  pip install send2trash"
+        )
+
     raise RuntimeError(
         "No trash backend. Install send2trash:  pip install send2trash"
     )

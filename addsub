@@ -45,6 +45,20 @@ trash_file() {
     trash-put "$f"
   elif command -v osascript &>/dev/null; then
     osascript -e "tell app \"Finder\" to delete POSIX file \"$(realpath "$f")\"" &>/dev/null
+  elif command -v powershell.exe &>/dev/null; then
+    # Windows (Git Bash / MSYS2) — send to Recycle Bin via PowerShell
+    local win_path
+    win_path=$(cygpath -w "$f" 2>/dev/null || echo "$f")
+    powershell.exe -NoProfile -Command "
+      Add-Type -AssemblyName Microsoft.VisualBasic
+      [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+        '${win_path//\'/\'\'}',
+        'OnlyErrorDialogs',
+        'SendToRecycleBin'
+      )
+    " 2>/dev/null && return
+    # If PowerShell fails, fall through to rm
+    rm -f "$f"
   else
     rm -f "$f"
   fi
@@ -76,7 +90,9 @@ if [[ ${#POSITIONAL[@]} -ge 3 ]]; then
 else
   # No output specified — write to a temp file, then replace the original
   VIDEO_EXT="${VIDEO##*.}"
-  TMPFILE="$(mktemp --suffix=".${VIDEO_EXT}")"
+  TMPFILE="$(mktemp "${TMPDIR:-/tmp}/addsub-XXXXXX")"
+  mv "$TMPFILE" "${TMPFILE}.${VIDEO_EXT}"
+  TMPFILE="${TMPFILE}.${VIDEO_EXT}"
   OUTPUT="$TMPFILE"
   INPLACE=true
 fi
@@ -87,13 +103,13 @@ require ffmpeg
 [[ -f "$SUBTITLE" ]] || die "subtitle file not found: $SUBTITLE"
 
 SUB_EXT="${SUBTITLE##*.}"
-SUB_EXT_LOWER="${SUB_EXT,,}"
+SUB_EXT_LOWER="$(echo "$SUB_EXT" | tr '[:upper:]' '[:lower:]')"
 
 [[ -z "$TRACK_TITLE" ]] && TRACK_TITLE="${SUBTITLE##*/}"   # basename as default title
 [[ -z "$TRACK_TITLE" ]] && TRACK_TITLE="Subtitle"
 
 OUT_EXT="${OUTPUT##*.}"
-OUT_EXT_LOWER="${OUT_EXT,,}"
+OUT_EXT_LOWER="$(echo "$OUT_EXT" | tr '[:upper:]' '[:lower:]')"
 
 # ── Build ffmpeg command ──────────────────────────────────────────────────────
 echo "addsub: merging '${SUBTITLE}' → '${VIDEO}'"
