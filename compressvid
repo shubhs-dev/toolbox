@@ -303,13 +303,11 @@ def process_video(video, output_dir, preset_file, preset_label, log,
     src_processing = video.parent / f"{vname}.processing"
 
     # ── Wait for stable file ─────────────────────────────────────
-    progress.update(task_id,
+    progress.update(task_id, visible=True,
                     description=f"[cyan]{vname}[/]  [dim]checking file…[/]")
     if not wait_stable(video):
-        progress.update(
-            task_id, completed=100,
-            description=f"[yellow]⊘ {vname}[/]  [dim]skipped (still changing)[/]",
-        )
+        progress.update(task_id, completed=100, visible=False)
+        console.print(f"  [yellow]⊘[/] {vname}  [dim]skipped (still changing)[/]")
         return dict(file=vname, status="skipped", reason="file still changing")
 
     orig_size = video.stat().st_size
@@ -319,10 +317,8 @@ def process_video(video, output_dir, preset_file, preset_label, log,
     final = output_dir / out_name
 
     if final.exists():
-        progress.update(
-            task_id, completed=100,
-            description=f"[yellow]⊘ {vname}[/]  [dim]skipped (output exists)[/]",
-        )
+        progress.update(task_id, completed=100, visible=False)
+        console.print(f"  [yellow]⊘[/] {vname}  [dim]skipped (output exists)[/]")
         with _log_lock:
             log.setdefault(vname, {"status": "exists"})
             save_log(output_dir, log)
@@ -332,10 +328,8 @@ def process_video(video, output_dir, preset_file, preset_label, log,
     try:
         video.rename(src_processing)
     except OSError:
-        progress.update(
-            task_id, completed=100,
-            description=f"[red]✗ {vname}[/]  [dim]could not rename source[/]",
-        )
+        progress.update(task_id, completed=100, visible=False)
+        console.print(f"  [red]✗[/] {vname}  [dim]could not rename source[/]")
         return dict(file=vname, status="failed", original_size=orig_size)
 
     # ── Transcode ────────────────────────────────────────────────
@@ -354,10 +348,8 @@ def process_video(video, output_dir, preset_file, preset_label, log,
             tmp.unlink()
         # Restore original filename
         src_processing.rename(video)
-        progress.update(
-            task_id, completed=100,
-            description=f"[red]✗ {vname}[/]  [dim]transcode failed[/]",
-        )
+        progress.update(task_id, completed=100, visible=False)
+        console.print(f"  [red]✗[/] {vname}  [dim]transcode failed[/]")
         update_log(output_dir, log, vname,
                    {"status": "failed", "ts": datetime.now().isoformat()})
         return dict(file=vname, status="failed", original_size=orig_size)
@@ -370,25 +362,21 @@ def process_video(video, output_dir, preset_file, preset_label, log,
         tmp.rename(final)
         move_to_trash(str(src_processing))
         status = "compressed"
-        progress.update(
-            task_id, completed=100,
-            description=(
-                f"[green]✓ {vname}[/]  "
-                f"[dim]{fmt_size(orig_size)} → {fmt_size(comp_size)} "
-                f"({pct:+.1f}%)[/]"
-            ),
+        progress.update(task_id, completed=100, visible=False)
+        console.print(
+            f"  [green]✓[/] {vname}  "
+            f"[dim]{fmt_size(orig_size)} → {fmt_size(comp_size)} "
+            f"({pct:+.1f}%)[/]"
         )
     else:
         tmp.unlink()
         # Restore original filename
         src_processing.rename(video)
         status = "original_kept"
-        progress.update(
-            task_id, completed=100,
-            description=(
-                f"[yellow]≈ {vname}[/]  "
-                f"[dim]original kept ({pct:+.1f}%)[/]"
-            ),
+        progress.update(task_id, completed=100, visible=False)
+        console.print(
+            f"  [yellow]≈[/] {vname}  "
+            f"[dim]original kept ({pct:+.1f}%)[/]"
         )
 
     update_log(output_dir, log, vname, {
@@ -468,6 +456,9 @@ def show_summary(results):
     console.print(tbl)
 
 
+MAX_HISTORY_ROWS = 15
+
+
 def show_history(log):
     """Show a table of previously processed files from the log."""
     history = {k: v for k, v in log.items()
@@ -475,6 +466,44 @@ def show_history(log):
     if not history:
         return
 
+    # Compute totals and per-status counts regardless of display mode
+    total_orig = 0
+    total_comp = 0
+    counts = {"compressed": 0, "original_kept": 0, "failed": 0}
+
+    for entry in history.values():
+        st = entry.get("status")
+        counts[st] = counts.get(st, 0) + 1
+        o = entry.get("original_size", 0)
+        c = entry.get("compressed_size", 0)
+        if st in ("compressed", "original_kept"):
+            total_orig += o
+            total_comp += c
+
+    # Compact summary when history is large
+    if len(history) > MAX_HISTORY_ROWS:
+        parts = []
+        if counts["compressed"]:
+            parts.append(f"[green]{counts['compressed']} compressed[/]")
+        if counts["original_kept"]:
+            parts.append(f"[yellow]{counts['original_kept']} kept original[/]")
+        if counts["failed"]:
+            parts.append(f"[red]{counts['failed']} failed[/]")
+        status_str = ", ".join(parts)
+        size_str = ""
+        if total_orig > 0:
+            net = (1 - total_comp / total_orig) * 100
+            size_str = (
+                f"  [dim]({fmt_size(total_orig)} → {fmt_size(total_comp)}, "
+                f"{net:+.1f}%)[/]"
+            )
+        console.print(
+            f"[bold dim]Previously processed:[/] {len(history)} files "
+            f"({status_str}){size_str}\n"
+        )
+        return
+
+    # Full table for a manageable number of entries
     tbl = Table(
         title="Previously Processed", box=box.ROUNDED,
         title_style="bold dim", show_lines=False, padding=(0, 1),
@@ -485,23 +514,16 @@ def show_history(log):
     tbl.add_column("Saved", justify="right")
     tbl.add_column("Status", justify="center")
 
-    total_orig = 0
-    total_comp = 0
-
     for fname, entry in sorted(history.items()):
         st = entry.get("status")
         o = entry.get("original_size", 0)
         c = entry.get("compressed_size", 0)
 
         if st == "compressed":
-            total_orig += o
-            total_comp += c
             pct = entry.get("reduction_pct", 0)
             tbl.add_row(fname, fmt_size(o), fmt_size(c),
                         f"{pct:+.1f}%", "[green]✓ compressed[/]")
         elif st == "original_kept":
-            total_orig += o
-            total_comp += c
             pct = entry.get("reduction_pct", 0)
             tbl.add_row(fname, fmt_size(o), fmt_size(c),
                         f"{pct:+.1f}%", "[yellow]≈ kept original[/]")
@@ -713,14 +735,23 @@ def main():
                 expand=False,
             ) as progress:
 
+                # Overall counter — always visible at the top
+                overall_tid = progress.add_task(
+                    f"[bold]Overall[/]  [dim]0/{len(videos)}[/]",
+                    total=len(videos), completed=0,
+                )
+
+                # Per-file tasks start hidden; shown only while active
                 tasks = {}
                 for v in videos:
                     tid = progress.add_task(
                         f"[dim]{v.name}  queued[/]",
                         total=100, completed=0,
+                        visible=False,
                     )
                     tasks[v] = tid
 
+                completed_count = 0
                 with ThreadPoolExecutor(max_workers=args.workers) as pool:
                     futs = {
                         pool.submit(
@@ -738,13 +769,23 @@ def main():
                                 results.append(r)
                         except Exception as exc:
                             progress.update(
-                                tasks[v], completed=100,
-                                description=f"[red]✗ {v.name}[/]  [dim]{exc}[/]",
+                                tasks[v], completed=100, visible=False,
+                            )
+                            console.print(
+                                f"  [red]✗[/] {v.name}  [dim]{exc}[/]"
                             )
                             results.append(dict(
                                 file=v.name, status="failed",
                                 original_size=0,
                             ))
+                        completed_count += 1
+                        progress.update(
+                            overall_tid, completed=completed_count,
+                            description=(
+                                f"[bold]Overall[/]  "
+                                f"[dim]{completed_count}/{len(videos)}[/]"
+                            ),
+                        )
 
             show_summary(results)
 
