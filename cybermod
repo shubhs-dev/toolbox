@@ -1,0 +1,359 @@
+#!/bin/bash
+# cybermod - Automatically install Cyberpunk 2077 mods from zip files
+# Usage: cd into folder with mod zips, then run: cybermod [file.zip ...]
+#        With no arguments, processes all zip/rar/7z files in current directory.
+
+set -euo pipefail
+
+GAME_DIR="/d/SteamLibrary/steamapps/common/Cyberpunk 2077"
+
+# Known top-level mod directories in a Cyberpunk 2077 installation
+KNOWN_DIRS="archive|bin|engine|r6|red4ext|mods|tools"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+log_info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_err()   { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# Prompt user for yes/no confirmation (single keypress). Returns 0 for yes, 1 for no.
+confirm() {
+    local prompt="$1"
+    local reply
+    while true; do
+        echo -en "${YELLOW}[?]${NC} ${prompt} [y/n] "
+        read -rn1 reply
+        echo ""
+        case "${reply,,}" in
+            y) return 0 ;;
+            n) return 1 ;;
+            *) echo "  Please press y or n." ;;
+        esac
+    done
+}
+
+# Find files that would be overwritten when copying src_dir into dest_dir
+find_overwrites() {
+    local src_dir="${1%/}"
+    local dest_dir="${2%/}"
+    local overwrites=()
+    while IFS= read -r -d '' f; do
+        local rel="${f#$src_dir/}"
+        if [[ -f "${dest_dir}/${rel}" ]]; then
+            overwrites+=("$rel")
+        fi
+    done < <(find "$src_dir" -type f -print0)
+    if [[ ${#overwrites[@]} -gt 0 ]]; then
+        printf '%s\n' "${overwrites[@]}"
+    fi
+}
+
+# Send a file to the Windows Recycle Bin
+recycle() {
+    local win_path
+    win_path=$(cygpath -w "$1")
+    powershell.exe -NoProfile -Command "
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+            '$win_path',
+            'OnlyErrorDialogs',
+            'SendToRecycleBin'
+        )
+    " 2>/dev/null
+}
+
+# Extract archive to a target directory using 7z (handles zip/rar/7z and more)
+extract() {
+    local archive="$1"
+    local dest="$2"
+
+    if ! command -v 7z &>/dev/null; then
+        log_err "7z not found. Install 7-Zip and add it to PATH."
+        return 1
+    fi
+
+    7z x -o"$dest" -y "$archive" >/dev/null
+}
+
+# Find the mod root inside extracted contents.
+# Returns the path that contains known Cyberpunk mod directories.
+find_mod_root() {
+    local extract_dir="$1"
+
+    # Check if extracted root directly contains known mod dirs
+    if ls -1 "$extract_dir" | grep -qiE "^(${KNOWN_DIRS})$"; then
+        echo "$extract_dir"
+        return 0
+    fi
+
+    # Check one level deeper — a single wrapper folder containing mod dirs
+    local subdirs
+    subdirs=( "$extract_dir"/*/ )
+
+    # If there's exactly one subfolder, check inside it
+    if [[ ${#subdirs[@]} -eq 1 && -d "${subdirs[0]}" ]]; then
+        if ls -1 "${subdirs[0]}" | grep -qiE "^(${KNOWN_DIRS})$"; then
+            echo "${subdirs[0]}"
+            return 0
+        fi
+        # Check two levels deep (wrapper > wrapper > mod dirs)
+        local inner_subdirs
+        inner_subdirs=( "${subdirs[0]}"/*/ )
+        if [[ ${#inner_subdirs[@]} -eq 1 && -d "${inner_subdirs[0]}" ]]; then
+            if ls -1 "${inner_subdirs[0]}" | grep -qiE "^(${KNOWN_DIRS})$"; then
+                echo "${inner_subdirs[0]}"
+                return 0
+            fi
+        fi
+    fi
+
+    # Check if it's a flat archive with just .archive files (common for simple mods)
+    local archive_files
+    archive_files=$(find "$extract_dir" -maxdepth 2 -name '*.archive' 2>/dev/null | head -1)
+    if [[ -n "$archive_files" ]]; then
+        # It's a loose .archive mod — needs to go into archive/pc/mod/
+        echo "LOOSE_ARCHIVE:$extract_dir"
+        return 0
+    fi
+
+    # Nothing recognized
+    echo ""
+    return 1
+}
+
+# Install a single mod zip
+install_mod() {
+    local archive="$1"
+    local idx="$2"
+    local total="$3"
+    local filename
+    filename=$(basename "$archive")
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    echo -e "\n${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${CYAN} [$idx/$total]${NC} ${filename}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # Extract
+    if ! extract "$archive" "$tmp_dir"; then
+        log_err "Failed to extract $filename"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # Find mod root
+    local mod_root
+    mod_root=$(find_mod_root "$tmp_dir") || true
+
+    if [[ -z "$mod_root" ]]; then
+        log_warn "Could not detect mod structure in $filename"
+        log_warn "Contents:"
+        ls -1 "$tmp_dir" | sed 's/^/    /'
+        echo ""
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    # --- Preview what will be installed ---
+    if [[ "$mod_root" == LOOSE_ARCHIVE:* ]]; then
+        local loose_dir="${mod_root#LOOSE_ARCHIVE:}"
+        local archive_list
+        archive_list=$(find "$loose_dir" -name '*.archive' -printf '  %f\n')
+        local count
+        count=$(echo "$archive_list" | wc -l)
+        log_info "Mod contains $count .archive file(s) -> archive/pc/mod/"
+        echo "$archive_list"
+    else
+        log_info "Mod contents:"
+        for item in "$mod_root"/*/; do
+            local dir_name
+            dir_name=$(basename "$item")
+            if echo "$dir_name" | grep -qiE "^(${KNOWN_DIRS})$"; then
+                echo -e "    ${GREEN}$dir_name/${NC}"
+            fi
+        done
+        for item in "$mod_root"/*; do
+            [[ -f "$item" ]] && echo -e "    $(basename "$item")"
+        done
+    fi
+
+    # --- Ask for install confirmation ---
+    if ! confirm "Install $filename?"; then
+        log_info "Skipped $filename"
+        rm -rf "$tmp_dir"
+        return 2
+    fi
+
+    # --- Check for overwrites ---
+    local overwrite_list=""
+    if [[ "$mod_root" == LOOSE_ARCHIVE:* ]]; then
+        local loose_dir="${mod_root#LOOSE_ARCHIVE:}"
+        local target="${GAME_DIR}/archive/pc/mod"
+        if [[ -d "$target" ]]; then
+            while IFS= read -r -d '' f; do
+                local base
+                base=$(basename "$f")
+                if [[ -f "${target}/${base}" ]]; then
+                    overwrite_list+="  archive/pc/mod/${base}"$'\n'
+                fi
+            done < <(find "$loose_dir" -name '*.archive' -print0)
+        fi
+    else
+        for item in "$mod_root"/*/; do
+            local dir_name
+            dir_name=$(basename "$item")
+            if echo "$dir_name" | grep -qiE "^(${KNOWN_DIRS})$"; then
+                local hits
+                hits=$(find_overwrites "$item" "${GAME_DIR}/${dir_name}")
+                if [[ -n "$hits" ]]; then
+                    while IFS= read -r line; do
+                        overwrite_list+="  ${dir_name}/${line}"$'\n'
+                    done <<< "$hits"
+                fi
+            fi
+        done
+        for item in "$mod_root"/*; do
+            if [[ -f "$item" ]] && [[ -f "${GAME_DIR}/$(basename "$item")" ]]; then
+                overwrite_list+="  $(basename "$item")"$'\n'
+            fi
+        done
+    fi
+
+    if [[ -n "$overwrite_list" ]]; then
+        log_warn "The following existing files will be OVERWRITTEN:"
+        echo -e "${YELLOW}${overwrite_list}${NC}"
+        if ! confirm "Continue and overwrite these files?"; then
+            log_info "Skipped $filename"
+            rm -rf "$tmp_dir"
+            return 2
+        fi
+    fi
+
+    # --- Perform installation ---
+    if [[ "$mod_root" == LOOSE_ARCHIVE:* ]]; then
+        local loose_dir="${mod_root#LOOSE_ARCHIVE:}"
+        local target="${GAME_DIR}/archive/pc/mod"
+        mkdir -p "$target"
+        local count=0
+        while IFS= read -r -d '' f; do
+            cp -v "$f" "$target/" 2>&1 | sed 's/^/    /'
+            ((count++)) || true
+        done < <(find "$loose_dir" -name '*.archive' -print0)
+        log_ok "Installed $count .archive file(s) from $filename"
+    else
+        # Copy recognized mod directories to game folder
+        local installed=0
+        for item in "$mod_root"/*/; do
+            local dir_name
+            dir_name=$(basename "$item")
+            if echo "$dir_name" | grep -qiE "^(${KNOWN_DIRS})$"; then
+                cp -rf "$item" "${GAME_DIR}/"
+                log_ok "  Copied ${GREEN}$dir_name/${NC} -> game directory"
+                ((installed++)) || true
+            fi
+        done
+
+        # Also copy any loose files at mod root level (e.g., .ini, .lua files)
+        local loose_files=0
+        for item in "$mod_root"/*; do
+            if [[ -f "$item" ]]; then
+                cp -f "$item" "${GAME_DIR}/"
+                log_ok "  Copied ${GREEN}$(basename "$item")${NC} -> game directory"
+                ((loose_files++)) || true
+            fi
+        done
+
+        if [[ $installed -eq 0 && $loose_files -eq 0 ]]; then
+            log_warn "No recognized mod directories found in $filename"
+            log_warn "Contents of detected root:"
+            ls -1 "$mod_root" | sed 's/^/    /'
+            rm -rf "$tmp_dir"
+            return 1
+        fi
+
+        log_ok "Installed $filename ($installed dir(s), $loose_files file(s))"
+    fi
+
+    # Clean up temp dir
+    rm -rf "$tmp_dir"
+
+    # Send original zip to Recycle Bin
+    local abs_path
+    abs_path=$(realpath "$archive")
+    if recycle "$abs_path"; then
+        log_ok "Moved $filename to Recycle Bin"
+    else
+        log_warn "Could not move $filename to Recycle Bin (deleting instead)"
+        rm -f "$archive"
+    fi
+
+    echo ""
+    return 0
+}
+
+# --- Main ---
+
+# Validate game directory
+if [[ ! -d "$GAME_DIR" ]]; then
+    log_err "Game directory not found: $GAME_DIR"
+    log_err "Edit GAME_DIR in this script to match your installation path."
+    exit 1
+fi
+
+# Collect files to process, sorted oldest-first by modification date
+files=()
+if [[ $# -gt 0 ]]; then
+    while IFS= read -r -d '' f; do
+        files+=("$f")
+    done < <(ls -1t --reverse -- "$@" 2>/dev/null | tr '\n' '\0')
+    # fallback: if ls fails (e.g. files with special chars), keep original order
+    [[ ${#files[@]} -eq 0 ]] && files=("$@")
+else
+    shopt -s nullglob nocaseglob
+    local_files=(*.zip *.rar *.7z)
+    shopt -u nullglob nocaseglob
+    if [[ ${#local_files[@]} -gt 0 ]]; then
+        while IFS= read -r -d '' f; do
+            files+=("$f")
+        done < <(ls -1tr -- "${local_files[@]}" | tr '\n' '\0')
+    fi
+fi
+
+if [[ ${#files[@]} -eq 0 ]]; then
+    log_warn "No archive files found in $(pwd)"
+    echo "Usage: cybermod [file.zip ...]"
+    echo "       Or run in a directory containing mod archives."
+    exit 0
+fi
+
+echo ""
+log_info "Found ${#files[@]} archive(s) to install"
+log_info "Game directory: $GAME_DIR"
+
+success=0
+fail=0
+skipped=0
+total=${#files[@]}
+idx=0
+for f in "${files[@]}"; do
+    ((idx++)) || true
+    result=0
+    install_mod "$f" "$idx" "$total" || result=$?
+    if [[ $result -eq 0 ]]; then
+        ((success++)) || true
+    elif [[ $result -eq 2 ]]; then
+        ((skipped++)) || true
+    else
+        ((fail++)) || true
+    fi
+done
+
+echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+log_info "Done! ${GREEN}$success installed${NC}, ${YELLOW}$skipped skipped${NC}, ${RED}$fail failed${NC} (out of $total)"

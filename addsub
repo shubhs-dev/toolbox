@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+#
+# addsub — Merge a subtitle file into a video file using ffmpeg.
+#
+# Usage:  addsub [options] <video_file> <subtitle_file> [output_file]
+#
+# Options:
+#   -s, --soft        Mux subtitles as a selectable stream (default)
+#   -h, --hard        Burn subtitles directly into the video (not reversible)
+#   -l, --lang LANG   Language code for the subtitle track (default: eng)
+#   -t, --title TITLE Title for the subtitle track (default: subtitle filename)
+#       --help        Show this help message
+#
+# Examples:
+#   addsub movie.mkv movie.srt
+#   addsub movie.mp4 movie.ass output.mp4
+#   addsub --hard movie.mp4 movie.srt burned.mp4
+#   addsub --lang jpn --title "Japanese" movie.mkv movie.ass
+#
+
+set -euo pipefail
+
+# ── Defaults ────────────────────────────────────────────────────────────────
+MODE="soft"
+LANG_CODE="eng"
+TRACK_TITLE=""
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+usage() {
+  sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+die() { echo "addsub: error: $*" >&2; exit 1; }
+
+require() {
+  command -v "$1" &>/dev/null || die "'$1' is not installed or not in PATH"
+}
+
+trash_file() {
+  local f="$1"
+  if command -v gio &>/dev/null; then
+    gio trash "$f"
+  elif command -v trash-put &>/dev/null; then
+    trash-put "$f"
+  elif command -v osascript &>/dev/null; then
+    osascript -e "tell app \"Finder\" to delete POSIX file \"$(realpath "$f")\"" &>/dev/null
+  else
+    rm -f "$f"
+  fi
+}
+
+# ── Argument parsing ─────────────────────────────────────────────────────────
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -s|--soft)   MODE="soft"; shift ;;
+    -h|--hard)   MODE="hard"; shift ;;
+    -l|--lang)   [[ $# -ge 2 ]] || die "--lang requires an argument"; LANG_CODE="$2"; shift 2 ;;
+    -t|--title)  [[ $# -ge 2 ]] || die "--title requires an argument"; TRACK_TITLE="$2"; shift 2 ;;
+    --help)      usage 0 ;;
+    -*)          die "unknown option: $1" ;;
+    *)           POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+[[ ${#POSITIONAL[@]} -ge 2 ]] || { echo "addsub: error: video and subtitle files are required"; echo; usage 1; }
+
+VIDEO="${POSITIONAL[0]}"
+SUBTITLE="${POSITIONAL[1]}"
+
+# Derive output filename if not provided
+if [[ ${#POSITIONAL[@]} -ge 3 ]]; then
+  OUTPUT="${POSITIONAL[2]}"
+  INPLACE=false
+else
+  # No output specified — write to a temp file, then replace the original
+  VIDEO_EXT="${VIDEO##*.}"
+  TMPFILE="$(mktemp --suffix=".${VIDEO_EXT}")"
+  OUTPUT="$TMPFILE"
+  INPLACE=true
+fi
+
+# ── Validation ───────────────────────────────────────────────────────────────
+require ffmpeg
+[[ -f "$VIDEO" ]]    || die "video file not found: $VIDEO"
+[[ -f "$SUBTITLE" ]] || die "subtitle file not found: $SUBTITLE"
+
+SUB_EXT="${SUBTITLE##*.}"
+SUB_EXT_LOWER="${SUB_EXT,,}"
+
+[[ -z "$TRACK_TITLE" ]] && TRACK_TITLE="${SUBTITLE##*/}"   # basename as default title
+[[ -z "$TRACK_TITLE" ]] && TRACK_TITLE="Subtitle"
+
+OUT_EXT="${OUTPUT##*.}"
+OUT_EXT_LOWER="${OUT_EXT,,}"
+
+# ── Build ffmpeg command ──────────────────────────────────────────────────────
+echo "addsub: merging '${SUBTITLE}' → '${VIDEO}'"
+echo "  mode   : ${MODE}"
+echo "  lang   : ${LANG_CODE}"
+echo "  output : ${OUTPUT}"
+echo
+
+if [[ "$MODE" == "hard" ]]; then
+  # Burn subtitles into video frames (requires re-encoding the video stream)
+  # Escape special characters in the subtitle path for the filtergraph
+  SAFE_SUB="${SUBTITLE//\\/\\\\}"
+  SAFE_SUB="${SAFE_SUB//:/\\:}"
+
+  if [[ "$SUB_EXT_LOWER" == "ass" || "$SUB_EXT_LOWER" == "ssa" ]]; then
+    VF_FILTER="ass=${SAFE_SUB}"
+  else
+    VF_FILTER="subtitles=${SAFE_SUB}"
+  fi
+
+  ffmpeg -y -i "$VIDEO" \
+    -vf "$VF_FILTER" \
+    -c:v libx264 -crf 18 -preset slow \
+    -c:a copy \
+    "$OUTPUT"
+
+else
+  # Soft mux: add subtitle as a selectable stream, copy all other streams
+  # Pick the right subtitle codec based on container and sub format
+  case "$OUT_EXT_LOWER" in
+    mp4|m4v)
+      # MP4 only supports mov_text (converted from SRT/ASS/etc.)
+      SUB_CODEC="mov_text"
+      ;;
+    mkv|webm)
+      # MKV supports ASS natively; use copy for ass/ssa, otherwise srt codec
+      if [[ "$SUB_EXT_LOWER" == "ass" || "$SUB_EXT_LOWER" == "ssa" ]]; then
+        SUB_CODEC="copy"
+      else
+        SUB_CODEC="srt"
+      fi
+      ;;
+    *)
+      SUB_CODEC="copy"
+      ;;
+  esac
+
+  ffmpeg -y -i "$VIDEO" -i "$SUBTITLE" \
+    -map 0 -map 1 \
+    -c copy \
+    -c:s "$SUB_CODEC" \
+    -metadata:s:s:0 language="$LANG_CODE" \
+    -metadata:s:s:0 title="$TRACK_TITLE" \
+    -disposition:s:0 default \
+    "$OUTPUT"
+fi
+
+echo
+if [[ "$INPLACE" == true ]]; then
+  mv -f "$TMPFILE" "$VIDEO"
+  echo "addsub: done → ${VIDEO} (updated in place)"
+else
+  echo "addsub: done → ${OUTPUT}"
+fi
+
+# Move the original subtitle file to trash
+trash_file "$SUBTITLE"
+echo "addsub: trashed subtitle → ${SUBTITLE}"

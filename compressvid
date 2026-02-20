@@ -1,0 +1,682 @@
+#!/usr/bin/env python3
+"""
+compressvid — Watch a folder for videos and transcode them with HandBrake.
+
+After transcoding, compares the original and compressed file sizes:
+  • If compressed is smaller → keeps it in the output folder, sends original
+    to the Recycle Bin (never permanently deleted).
+  • If original is smaller  → discards the transcode, leaves original in place.
+
+A JSON log in the output folder tracks every result so files are never
+re-processed.
+
+Usage:
+    compressvid                                  # watch cwd, default preset
+    compressvid -p hw-1080-preset ~/Videos       # explicit preset & folder
+    compressvid --once                           # process existing then exit
+    compressvid --list-presets                    # show available presets
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+
+# ── Rich (beautiful terminal output) ─────────────────────────────────
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.progress import (
+        Progress, SpinnerColumn, BarColumn, TextColumn,
+        TaskProgressColumn, TimeElapsedColumn,
+    )
+    from rich.table import Table
+    from rich import box
+except ImportError:
+    print("ERROR: 'rich' package is required for the UI.")
+    print("  Install with:  python -m pip install rich")
+    sys.exit(1)
+
+console = Console()
+
+# ── Configuration ─────────────────────────────────────────────────────
+VIDEO_EXTS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
+    ".m4v", ".mpg", ".mpeg", ".ts", ".vob", ".3gp", ".mts",
+}
+SCRIPT_DIR = Path(__file__).resolve().parent
+PRESETS_DIR = SCRIPT_DIR / "handbrake-presets"
+HANDBRAKE = os.environ.get("HANDBRAKE_CLI", "HandBrakeCLI")
+LOG_NAME = ".compressvid.json"
+STABLE_SECS = 2        # pause between file-size polls
+STABLE_TIMEOUT = 300   # max seconds to wait for a file to stop growing
+
+# Regex to pull percentage from HandBrakeCLI stderr progress lines
+# e.g.  "Encoding: task 1 of 1, 45.23 % (128.34 fps, avg ...)"
+HB_PCT_RE = re.compile(r"(\d+\.\d+)\s*%")
+
+
+# ── Utilities ─────────────────────────────────────────────────────────
+
+def fmt_size(n):
+    """Return a human-readable byte size."""
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {u}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def move_to_trash(path):
+    """Send *path* to the OS Recycle Bin / Trash — never permanently delete."""
+    path = str(Path(path).resolve())
+
+    # 1) Try the cross-platform send2trash package
+    try:
+        from send2trash import send2trash as _s2t
+        _s2t(path)
+        return
+    except ImportError:
+        pass
+
+    # 2) Fallback on Windows: PowerShell + Microsoft.VisualBasic
+    if os.name == "nt":
+        escaped = path.replace("'", "''")
+        ps = (
+            "Add-Type -AssemblyName Microsoft.VisualBasic;"
+            "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
+            f"'{escaped}','OnlyErrorDialogs','SendToRecycleBin')"
+        )
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            return
+        raise RuntimeError(f"Recycle Bin failed: {r.stderr.strip()}")
+
+    raise RuntimeError(
+        "No trash backend. Install send2trash:  pip install send2trash"
+    )
+
+
+def wait_stable(path, timeout=STABLE_TIMEOUT):
+    """Block until *path*'s size stops changing (file fully written)."""
+    prev = -1
+    elapsed = 0
+    while elapsed < timeout:
+        try:
+            cur = path.stat().st_size
+        except OSError:
+            return False
+        if cur == prev and cur > 0:
+            return True
+        prev = cur
+        time.sleep(STABLE_SECS)
+        elapsed += STABLE_SECS
+    return False
+
+
+# ── Preset helpers ────────────────────────────────────────────────────
+
+def list_presets():
+    """Display every JSON preset in a rich table."""
+    if not PRESETS_DIR.is_dir():
+        console.print(f"[red]Presets directory not found:[/] {PRESETS_DIR}")
+        return
+
+    tbl = Table(
+        title="Available Presets", box=box.ROUNDED,
+        title_style="bold cyan",
+    )
+    tbl.add_column("Preset name (use with -p)", style="green")
+    tbl.add_column("HandBrake label")
+
+    for f in sorted(PRESETS_DIR.glob("*.json")):
+        try:
+            with open(f) as fp:
+                d = json.load(fp)
+            label = d["PresetList"][0]["PresetName"]
+        except (json.JSONDecodeError, KeyError, IndexError):
+            label = "[dim](unreadable)[/]"
+        tbl.add_row(f.stem, label)
+
+    console.print(tbl)
+
+
+def load_preset(name):
+    """Return (preset_file_path, preset_display_name) for a given stem."""
+    f = PRESETS_DIR / f"{name}.json"
+    if not f.exists():
+        console.print(f"[red bold]ERROR:[/] Preset file not found: {f}\n")
+        list_presets()
+        sys.exit(1)
+    with open(f) as fp:
+        d = json.load(fp)
+    return str(f), d["PresetList"][0]["PresetName"]
+
+
+# ── Processing log (thread-safe) ─────────────────────────────────────
+
+_log_lock = threading.Lock()
+
+
+def load_log(output_dir):
+    p = output_dir / LOG_NAME
+    if p.exists():
+        with open(p) as f:
+            return json.load(f)
+    return {}
+
+
+def save_log(output_dir, log):
+    p = output_dir / LOG_NAME
+    with open(p, "w") as f:
+        json.dump(log, f, indent=2)
+
+
+def update_log(output_dir, log, key, value):
+    """Thread-safe log update: write *key* → *value* and flush to disk."""
+    with _log_lock:
+        log[key] = value
+        save_log(output_dir, log)
+
+
+# ── Core logic ────────────────────────────────────────────────────────
+
+def _stream_reader(stream, progress, task_id):
+    """Read *stream* in a background thread, parse HandBrake % lines."""
+    buf = b""
+    while True:
+        chunk = stream.read(4096)
+        if not chunk:
+            break
+        buf += chunk
+        # Split on \r or \n — HandBrake uses \r to overwrite progress
+        parts = re.split(rb"[\r\n]+", buf)
+        # Last element is incomplete — keep it for the next read
+        buf = parts[-1]
+        for part in parts[:-1]:
+            line = part.decode("utf-8", errors="replace")
+            m = HB_PCT_RE.search(line)
+            if m and progress is not None and task_id is not None:
+                progress.update(task_id, completed=float(m.group(1)))
+
+
+def transcode(src, dst, preset_file, preset_label, progress=None, task_id=None):
+    """Run HandBrakeCLI, stream-parse its progress, return True on success."""
+    cmd = [
+        HANDBRAKE,
+        "--preset-import-file", preset_file,
+        "--preset", preset_label,
+        "-i", str(src),
+        "-o", str(dst),
+    ]
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        console.print(
+            f"[red bold]ERROR:[/] [yellow]'{HANDBRAKE}'[/] not found on PATH.\n"
+            "Install HandBrake CLI: https://handbrake.fr/downloads2.php"
+        )
+        sys.exit(1)
+
+    # Read both stdout and stderr in parallel threads — HandBrake may write
+    # progress to either depending on version / platform.
+    out_t = threading.Thread(
+        target=_stream_reader, args=(proc.stdout, progress, task_id),
+        daemon=True,
+    )
+    err_t = threading.Thread(
+        target=_stream_reader, args=(proc.stderr, progress, task_id),
+        daemon=True,
+    )
+    out_t.start()
+    err_t.start()
+
+    proc.wait()
+    out_t.join(timeout=5)
+    err_t.join(timeout=5)
+
+    if progress is not None and task_id is not None:
+        progress.update(task_id, completed=100)
+
+    return proc.returncode == 0
+
+
+def process_video(video, output_dir, preset_file, preset_label, log,
+                  progress, task_id):
+    """Transcode one video, compare sizes, keep the winner.
+
+    Returns a result dict for the summary table.
+    Thread-safe: all log mutations go through update_log().
+
+    While processing:
+      • source is renamed  video.mkv  →  video.mkv.processing
+      • output temp file is           →  video.mp4.tmp
+    Both are restored / cleaned up on success or failure.
+    """
+    vname = video.name
+    src_processing = video.parent / f"{vname}.processing"
+
+    # ── Wait for stable file ─────────────────────────────────────
+    progress.update(task_id,
+                    description=f"[cyan]{vname}[/]  [dim]checking file…[/]")
+    if not wait_stable(video):
+        progress.update(
+            task_id, completed=100,
+            description=f"[yellow]⊘ {vname}[/]  [dim]skipped (still changing)[/]",
+        )
+        return dict(file=vname, status="skipped", reason="file still changing")
+
+    orig_size = video.stat().st_size
+
+    # ── Already done? ────────────────────────────────────────────
+    out_name = video.stem + ".mp4"
+    final = output_dir / out_name
+
+    if final.exists():
+        progress.update(
+            task_id, completed=100,
+            description=f"[yellow]⊘ {vname}[/]  [dim]skipped (output exists)[/]",
+        )
+        with _log_lock:
+            log.setdefault(vname, {"status": "exists"})
+            save_log(output_dir, log)
+        return dict(file=vname, status="skipped", reason="output exists")
+
+    # ── Mark source as processing ────────────────────────────────
+    try:
+        video.rename(src_processing)
+    except OSError:
+        progress.update(
+            task_id, completed=100,
+            description=f"[red]✗ {vname}[/]  [dim]could not rename source[/]",
+        )
+        return dict(file=vname, status="failed", original_size=orig_size)
+
+    # ── Transcode ────────────────────────────────────────────────
+    progress.update(task_id,
+                    description=f"[cyan]{vname}[/]  [dim]{fmt_size(orig_size)}[/]")
+
+    tmp = output_dir / f"{out_name}.tmp"
+    try:
+        ok = transcode(src_processing, tmp, preset_file, preset_label,
+                       progress, task_id)
+    except Exception:
+        ok = False
+
+    if not ok or not tmp.exists():
+        if tmp.exists():
+            tmp.unlink()
+        # Restore original filename
+        src_processing.rename(video)
+        progress.update(
+            task_id, completed=100,
+            description=f"[red]✗ {vname}[/]  [dim]transcode failed[/]",
+        )
+        update_log(output_dir, log, vname,
+                   {"status": "failed", "ts": datetime.now().isoformat()})
+        return dict(file=vname, status="failed", original_size=orig_size)
+
+    # ── Compare sizes ────────────────────────────────────────────
+    comp_size = tmp.stat().st_size
+    pct = (1 - comp_size / orig_size) * 100 if orig_size else 0
+
+    if comp_size < orig_size:
+        tmp.rename(final)
+        move_to_trash(str(src_processing))
+        status = "compressed"
+        progress.update(
+            task_id, completed=100,
+            description=(
+                f"[green]✓ {vname}[/]  "
+                f"[dim]{fmt_size(orig_size)} → {fmt_size(comp_size)} "
+                f"({pct:+.1f}%)[/]"
+            ),
+        )
+    else:
+        tmp.unlink()
+        # Restore original filename
+        src_processing.rename(video)
+        status = "original_kept"
+        progress.update(
+            task_id, completed=100,
+            description=(
+                f"[yellow]≈ {vname}[/]  "
+                f"[dim]original kept ({pct:+.1f}%)[/]"
+            ),
+        )
+
+    update_log(output_dir, log, vname, {
+        "status": status,
+        "original_size": orig_size,
+        "compressed_size": comp_size,
+        "reduction_pct": round(pct, 1),
+        "output": out_name if status == "compressed" else None,
+        "ts": datetime.now().isoformat(),
+    })
+
+    return dict(
+        file=vname, status=status,
+        original_size=orig_size, compressed_size=comp_size,
+        reduction_pct=round(pct, 1),
+    )
+
+
+# ── Summary table ─────────────────────────────────────────────────────
+
+def show_summary(results):
+    """Print a rich table summarising the batch."""
+    if not results:
+        return
+
+    tbl = Table(
+        title="Batch Summary", box=box.ROUNDED,
+        title_style="bold", show_lines=False, padding=(0, 1),
+    )
+    tbl.add_column("File", style="cyan", no_wrap=True)
+    tbl.add_column("Original", justify="right")
+    tbl.add_column("Compressed", justify="right")
+    tbl.add_column("Saved", justify="right")
+    tbl.add_column("Status", justify="center")
+
+    total_orig = 0
+    total_comp = 0
+
+    for r in results:
+        st = r["status"]
+
+        if st in ("compressed", "original_kept"):
+            o = r["original_size"]
+            c = r["compressed_size"]
+            total_orig += o
+            total_comp += c
+            saved = f"{r['reduction_pct']:+.1f}%"
+            if st == "compressed":
+                status_cell = "[green]✓ compressed[/]"
+            else:
+                status_cell = "[yellow]≈ kept original[/]"
+            tbl.add_row(r["file"], fmt_size(o), fmt_size(c),
+                        saved, status_cell)
+
+        elif st == "failed":
+            o = r.get("original_size", 0)
+            tbl.add_row(r["file"], fmt_size(o) if o else "—",
+                        "—", "—", "[red]✗ failed[/]")
+
+        elif st == "skipped":
+            tbl.add_row(r["file"], "—", "—", "—",
+                        f"[dim]⊘ {r.get('reason', 'skipped')}[/]")
+
+    # Totals row
+    if total_orig > 0:
+        net = (1 - total_comp / total_orig) * 100
+        tbl.add_section()
+        tbl.add_row(
+            "[bold]TOTAL[/]",
+            f"[bold]{fmt_size(total_orig)}[/]",
+            f"[bold]{fmt_size(total_comp)}[/]",
+            f"[bold]{net:+.1f}%[/]",
+            "",
+        )
+
+    console.print()
+    console.print(tbl)
+
+
+def show_history(log):
+    """Show a table of previously processed files from the log."""
+    history = {k: v for k, v in log.items()
+               if v.get("status") in ("compressed", "original_kept", "failed")}
+    if not history:
+        return
+
+    tbl = Table(
+        title="Previously Processed", box=box.ROUNDED,
+        title_style="bold dim", show_lines=False, padding=(0, 1),
+    )
+    tbl.add_column("File", style="cyan", no_wrap=True)
+    tbl.add_column("Original", justify="right")
+    tbl.add_column("Compressed", justify="right")
+    tbl.add_column("Saved", justify="right")
+    tbl.add_column("Status", justify="center")
+
+    total_orig = 0
+    total_comp = 0
+
+    for fname, entry in sorted(history.items()):
+        st = entry.get("status")
+        o = entry.get("original_size", 0)
+        c = entry.get("compressed_size", 0)
+
+        if st == "compressed":
+            total_orig += o
+            total_comp += c
+            pct = entry.get("reduction_pct", 0)
+            tbl.add_row(fname, fmt_size(o), fmt_size(c),
+                        f"{pct:+.1f}%", "[green]✓ compressed[/]")
+        elif st == "original_kept":
+            total_orig += o
+            total_comp += c
+            pct = entry.get("reduction_pct", 0)
+            tbl.add_row(fname, fmt_size(o), fmt_size(c),
+                        f"{pct:+.1f}%", "[yellow]≈ kept original[/]")
+        elif st == "failed":
+            tbl.add_row(fname, fmt_size(o) if o else "—",
+                        "—", "—", "[red]✗ failed[/]")
+
+    if total_orig > 0:
+        net = (1 - total_comp / total_orig) * 100
+        tbl.add_section()
+        tbl.add_row(
+            "[bold]TOTAL[/]",
+            f"[bold]{fmt_size(total_orig)}[/]",
+            f"[bold]{fmt_size(total_comp)}[/]",
+            f"[bold]{net:+.1f}%[/]",
+            "",
+        )
+
+    console.print(tbl)
+    console.print()
+
+
+# ── Scanner ───────────────────────────────────────────────────────────
+
+def scan(watch_dir, output_dir):
+    """Yield video files in *watch_dir* that are not inside *output_dir*.
+
+    Also skips .tmp and .processing sentinel files.
+    """
+    out_resolved = output_dir.resolve()
+    for f in sorted(watch_dir.iterdir()):
+        if f.name.startswith("."):
+            continue
+        if not f.is_file():
+            continue
+        # Skip our own sentinel extensions
+        if f.suffix.lower() in (".tmp", ".processing"):
+            continue
+        if f.suffix.lower() not in VIDEO_EXTS:
+            continue
+        try:
+            f.resolve().relative_to(out_resolved)
+            continue
+        except ValueError:
+            pass
+        yield f
+
+
+# ── Entry point ───────────────────────────────────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "watch_dir", nargs="?", default=".",
+        help="Directory to watch for videos (default: current directory)",
+    )
+    ap.add_argument(
+        "-p", "--preset", default="hw-1080-preset",
+        help="Preset filename stem in handbrake-presets/ (default: hw-1080-preset)",
+    )
+    ap.add_argument(
+        "-o", "--output", default="compressed",
+        help="Sub-folder for results (default: compressed)",
+    )
+    ap.add_argument(
+        "-j", "--workers", type=int, default=3,
+        help="Number of parallel transcodes (default: 3)",
+    )
+    ap.add_argument(
+        "--interval", type=int, default=10,
+        help="Seconds between folder scans (default: 10)",
+    )
+    ap.add_argument(
+        "--once", action="store_true",
+        help="Process existing files and exit (no continuous watch)",
+    )
+    ap.add_argument(
+        "--list-presets", action="store_true",
+        help="Show available HandBrake presets and exit",
+    )
+    args = ap.parse_args()
+
+    # ── List presets ──────────────────────────────────────────────
+    if args.list_presets:
+        list_presets()
+        return
+
+    # ── Resolve directories ──────────────────────────────────────
+    watch_dir = Path(args.watch_dir).resolve()
+    output_dir = (watch_dir / args.output).resolve()
+
+    if not watch_dir.is_dir():
+        console.print(f"[red bold]ERROR:[/] Not a directory: {watch_dir}")
+        sys.exit(1)
+
+    preset_file, preset_label = load_preset(args.preset)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── Banner ───────────────────────────────────────────────────
+    mode = "one-shot" if args.once else f"poll every {args.interval}s"
+
+    info = Table.grid(padding=(0, 2))
+    info.add_column(style="bold")
+    info.add_column()
+    info.add_row("Watching",  str(watch_dir))
+    info.add_row("Output",    str(output_dir))
+    info.add_row("Preset",    f"{args.preset}  [dim]({preset_label})[/]")
+    info.add_row("Workers",   str(args.workers))
+    info.add_row("Mode",      mode)
+
+    console.print(Panel(
+        info, title="[bold cyan]compressvid[/]",
+        border_style="cyan", expand=False,
+    ))
+    console.print()
+
+    log = load_log(output_dir)
+
+    # ── Show history from previous runs ──────────────────────────
+    show_history(log)
+
+    # ── Main loop ────────────────────────────────────────────────
+    try:
+        first_scan = True
+        while True:
+            videos = [v for v in scan(watch_dir, output_dir)
+                      if v.name not in log
+                      or log.get(v.name, {}).get("status") == "failed"]
+
+            if not videos:
+                if args.once:
+                    if first_scan:
+                        console.print("[dim]No new videos to process.[/]")
+                    break
+                time.sleep(args.interval)
+                first_scan = False
+                continue
+
+            console.print(
+                f"[bold]Found {len(videos)} video(s)[/] to process "
+                f"[dim](workers: {args.workers})[/]\n"
+            )
+
+            results = []
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("{task.description}", justify="left"),
+                BarColumn(bar_width=30),
+                TaskProgressColumn(),
+                TextColumn("•"),
+                TimeElapsedColumn(),
+                console=console,
+                expand=False,
+            ) as progress:
+
+                tasks = {}
+                for v in videos:
+                    tid = progress.add_task(
+                        f"[dim]{v.name}  queued[/]",
+                        total=100, completed=0,
+                    )
+                    tasks[v] = tid
+
+                with ThreadPoolExecutor(max_workers=args.workers) as pool:
+                    futs = {
+                        pool.submit(
+                            process_video, v, output_dir,
+                            preset_file, preset_label, log,
+                            progress, tasks[v],
+                        ): v
+                        for v in videos
+                    }
+                    for fut in as_completed(futs):
+                        v = futs[fut]
+                        try:
+                            r = fut.result()
+                            if r:
+                                results.append(r)
+                        except Exception as exc:
+                            progress.update(
+                                tasks[v], completed=100,
+                                description=f"[red]✗ {v.name}[/]  [dim]{exc}[/]",
+                            )
+                            results.append(dict(
+                                file=v.name, status="failed",
+                                original_size=0,
+                            ))
+
+            show_summary(results)
+
+            if args.once:
+                break
+
+            console.print(
+                f"\n[dim]Watching for new files (every {args.interval}s)… "
+                f"Ctrl+C to stop[/]"
+            )
+            time.sleep(args.interval)
+            first_scan = False
+
+    except KeyboardInterrupt:
+        console.print("\n[bold yellow]Stopped.[/]")
+
+
+if __name__ == "__main__":
+    main()

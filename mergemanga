@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+#
+# mergemanga — Merge individual One Piece chapter CBZ files into volume CBZ files.
+#
+# Usage:  mergemanga [source_dir] [output_dir]
+#   source_dir  Directory containing "Chapter N.cbz" files (default: current dir)
+#   output_dir  Directory to write volume CBZ files (default: ./Volumes)
+#
+# Output naming: "One Piece, Vol. XX - Title.cbz"
+#
+
+set -euo pipefail
+
+SOURCE_DIR="${1:-.}"
+OUTPUT_DIR="${2:-./Volumes}"
+
+# ── Volume map: "vol_number|start_chapter|end_chapter|US Title" ──
+VOLUME_MAP=(
+  "1|1|8|Romance Dawn"
+  "2|9|17|Buggy the Clown"
+  "3|18|26|Don't Get Fooled Again"
+  "4|27|35|The Black Cat Pirates"
+  "5|36|44|For Whom the Bell Tolls"
+  "6|45|53|The Oath"
+  "7|54|62|The Crap-Geezer"
+  "8|63|71|I Won't Die"
+  "9|72|81|Tears"
+  "10|82|90|OK, Let's Stand Up!"
+  "11|91|99|The Meanest Man In the East"
+  "12|100|108|The Legend Begins"
+  "13|109|117|It's All Right!"
+  "14|118|126|Instinct"
+  "15|127|136|Straight Ahead!!!"
+  "16|137|145|Carrying On His Will"
+  "17|146|155|Hiriluk's Cherry Blossoms"
+  "18|156|166|Ace Arrives"
+  "19|167|176|Rebellion"
+  "20|177|186|Showdown At Alubarna"
+  "21|187|195|Utopia"
+  "22|196|205|HOPE!!"
+  "23|206|216|Vivi's Adventure"
+  "24|217|226|People's Dreams"
+  "25|227|236|The 100 Million Berry Man"
+  "26|237|246|Adventure on Kami's Island"
+  "27|247|255|Overture"
+  "28|256|264|Wyper the Berserker"
+  "29|265|275|Oratorio"
+  "30|276|285|Capriccio"
+  "31|286|295|We'll Be Here"
+  "32|296|305|Love Song"
+  "33|306|316|Davy Back Fight"
+  "34|317|327|The City of Water, Water Seven"
+  "35|328|336|Captain"
+  "36|337|346|The Ninth Justice"
+  "37|347|357|Tom"
+  "38|358|367|Rocketman!!"
+  "39|368|377|Scramble"
+  "40|378|388|Gear"
+  "41|389|399|Declaration of War"
+  "42|400|409|Pirates vs. CP9"
+  "43|410|419|Legend of a Hero"
+  "44|420|430|Let's Go Back"
+  "45|431|440|You Have My Sympathies"
+  "46|441|449|Adventure on Ghost Island"
+  "47|450|459|Cloudy, Partly Bony"
+  "48|460|470|Adventures of Oars"
+  "49|471|481|Nightmare Luffy"
+  "50|482|491|Arriving Again"
+  "51|492|502|The Eleven Supernovas"
+  "52|503|512|Roger and Rayleigh"
+  "53|513|522|Natural Born King"
+  "54|523|532|Unstoppable"
+  "55|533|541|A Ray of Hope"
+  "56|542|551|Thank You"
+  "57|552|562|Paramount War"
+  "58|563|573|The Name Of This Era Is Whitebeard"
+  "59|574|584|The Death of Portgaz D. Ace"
+  "60|585|594|My Little Brother"
+  "61|595|603|Romance Dawn For The New World"
+  "62|604|614|Adventure on Fish-Man Island"
+  "63|615|626|Otohime and Tiger"
+  "64|627|636|100,000 vs. 10"
+  "65|637|646|To Nothing"
+  "66|647|656|The Road Toward the Sun"
+  "67|657|667|Cool Fight"
+  "68|668|678|Pirate Alliance"
+  "69|679|690|S.A.D."
+  "70|691|700|Enter Doflamingo"
+  "71|701|711|Coliseum of Scoundrels"
+  "72|712|721|Dressrosa's Forgotten"
+  "73|722|731|Operation Dressrosa S.O.P."
+  "74|732|742|Ever At Your Side"
+  "75|743|752|My Repayment"
+  "76|753|763|Just Keep Going"
+  "77|764|775|Smile"
+  "78|776|785|Champion of Evil"
+  "79|786|795|Lucy!!"
+  "80|796|806|Opening Speech"
+  "81|807|816|Let's Go See Master Nekomamushi"
+  "82|817|827|A World Abuzz"
+  "83|828|838|Emperor of the Sea, Charlotte Linlin"
+  "84|839|848|Luffy vs. Sanji"
+  "85|849|858|Liar"
+  "86|859|869|Emperor Assassination Plan"
+  "87|870|879|Not Sweet"
+  "88|880|889|Lion"
+  "89|890|900|Bad End Musical"
+  "90|901|910|The Holy Land Mary Geoise"
+  "91|911|921|Adventure in the Land of Samurai"
+  "92|922|931|Introducing Komurasaki the Oiran"
+  "93|932|942|The Star of Ebisu Town"
+  "94|943|953|A Soldier's Dream"
+  "95|954|964|Oden's Adventure"
+  "96|965|974|I am Oden, And I Was Born to Boil"
+  "97|975|984|My Bible"
+  "98|985|994|Vassals of Glory"
+  "99|995|1004|Straw Hat Luffy"
+  "100|1005|1015|Color of the Supreme King"
+  "101|1016|1025|The Stars Take the Stage"
+  "102|1026|1035|The Pivotal Clash"
+  "103|1036|1046|Warrior of Liberation"
+  "104|1047|1055|Shogun of Wano, Kozuki Momonosuke"
+  "105|1056|1065|Luffy's Dream"
+  "106|1066|1076|A Genius's Dream"
+  "107|1077|1088|The Hero of Legend"
+  "108|1089|1100|Better Off Dead in This World"
+  "109|1101|1110|On Your Side"
+  "110|1111|1121|The Upheaval of the Era"
+  "111|1122|1133|Adventure in Elbaph"
+  "112|1134|1144|The Harley"
+  "113|1145|1155|The Birth of Loki"
+)
+
+# ── Helpers ──
+
+log()  { printf "\033[1;34m>>>\033[0m %s\n" "$*"; }
+warn() { printf "\033[1;33mWARN:\033[0m %s\n" "$*" >&2; }
+err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
+
+cleanup() {
+  if [[ -n "${TMPDIR_WORK:-}" && -d "${TMPDIR_WORK}" ]]; then
+    rm -rf "${TMPDIR_WORK}"
+  fi
+}
+trap cleanup EXIT
+
+# ── Pre-flight checks ──
+
+if ! command -v 7z &>/dev/null; then
+  err "'7z' is required but not found. Please install it."
+  exit 1
+fi
+
+if [[ ! -d "$SOURCE_DIR" ]]; then
+  err "Source directory '$SOURCE_DIR' does not exist."
+  exit 1
+fi
+
+mkdir -p "$OUTPUT_DIR"
+
+# ── Main loop ──
+
+total_volumes=0
+skipped_volumes=0
+
+for entry in "${VOLUME_MAP[@]}"; do
+  IFS='|' read -r vol_num ch_start ch_end vol_title <<< "$entry"
+
+  # Pad volume number for sorting: Vol. 01, Vol. 02, … Vol. 110
+  if (( vol_num < 100 )); then
+    vol_padded=$(printf "%02d" "$vol_num")
+  else
+    vol_padded="$vol_num"
+  fi
+
+  # Sanitize title for filename (replace characters illegal on Windows/macOS)
+  safe_title=$(echo "$vol_title" | sed 's/[<>:"\/\\|?*]/-/g')
+  # Calibre regex: (?P<author>...) - (?P<series>...)(?P<series_index>...) - (?P<title>...)
+  out_name="Eiichiro Oda - One Piece ${vol_padded} - ${safe_title}.cbz"
+
+  # Skip if output already exists
+  if [[ -f "${OUTPUT_DIR}/${out_name}" ]]; then
+    log "Already exists, skipping: ${out_name}"
+    ((skipped_volumes++)) || true
+    continue
+  fi
+
+  # Collect chapter files for this volume
+  chapter_files=()
+  missing=()
+  for ch in $(seq "$ch_start" "$ch_end"); do
+    chfile="${SOURCE_DIR}/Chapter ${ch}.cbz"
+    if [[ -f "$chfile" ]]; then
+      chapter_files+=("$chfile")
+    else
+      missing+=("$ch")
+    fi
+  done
+
+  # Skip volume if no chapters found at all
+  if [[ ${#chapter_files[@]} -eq 0 ]]; then
+    continue
+  fi
+
+  # Warn about missing chapters but still build the volume
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    warn "Volume ${vol_num} (${vol_title}): missing chapters: ${missing[*]}"
+  fi
+
+  log "Building: ${out_name}  (chapters ${ch_start}–${ch_end})"
+
+  # Create a temp workspace
+  TMPDIR_WORK=$(mktemp -d)
+  vol_staging="${TMPDIR_WORK}/volume"
+  mkdir -p "$vol_staging"
+
+  # Extract each chapter into a subfolder to preserve page ordering
+  for chfile in "${chapter_files[@]}"; do
+    # Extract chapter number from filename
+    ch_num=$(basename "$chfile" .cbz | sed 's/Chapter //')
+    ch_padded=$(printf "%04d" "$ch_num")
+    ch_dir="${vol_staging}/ch_${ch_padded}"
+    mkdir -p "$ch_dir"
+    7z x "$chfile" -o"$ch_dir" -aoa > /dev/null 2>&1 || {
+      warn "Failed to extract: $chfile"
+      continue
+    }
+  done
+
+  # Generate ComicInfo.xml metadata
+  cat > "${vol_staging}/ComicInfo.xml" <<COMICINFO
+<?xml version="1.0" encoding="utf-8"?>
+<ComicInfo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Title>${vol_title}</Title>
+  <Series>One Piece</Series>
+  <Number>${vol_num}</Number>
+  <Count>113</Count>
+  <Volume>${vol_num}</Volume>
+  <Writer>Eiichiro Oda</Writer>
+  <Penciller>Eiichiro Oda</Penciller>
+  <Inker>Eiichiro Oda</Inker>
+  <Letterer>Eiichiro Oda</Letterer>
+  <CoverArtist>Eiichiro Oda</CoverArtist>
+  <Publisher>VIZ Media</Publisher>
+  <Genre>Action, Adventure, Comedy, Fantasy, Shounen</Genre>
+  <LanguageISO>en</LanguageISO>
+  <Manga>Yes</Manga>
+  <Summary>One Piece Vol. ${vol_num} - ${vol_title} (Chapters ${ch_start}-${ch_end})</Summary>
+</ComicInfo>
+COMICINFO
+
+  # Build the volume CBZ — 7z all images with paths that sort correctly
+  # (ch_0001/page01.jpg, ch_0001/page02.jpg, ch_0002/page01.jpg, …)
+  (
+    cd "$vol_staging"
+    7z a -tzip -mx=0 "${TMPDIR_WORK}/volume.cbz" ./* > /dev/null 2>&1
+  )
+
+  mv "${TMPDIR_WORK}/volume.cbz" "${OUTPUT_DIR}/${out_name}"
+  rm -rf "$TMPDIR_WORK"
+  TMPDIR_WORK=""
+
+  ((total_volumes++)) || true
+  log "Done: ${out_name}"
+done
+
+echo ""
+log "Finished! Built ${total_volumes} volume(s), skipped ${skipped_volumes} existing."
+log "Output: ${OUTPUT_DIR}/"
