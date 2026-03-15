@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+#
+# finddupes — Find duplicate filenames across a directory tree.
+#
+# Usage:  finddupes [options] [directory]
+#
+# Scans <directory> (default: current directory) and all its subdirectories,
+# builds a list of every filename, and reports any names that appear more
+# than once along with their full paths.
+#
+# Options:
+#   -c, --count       Sort results by duplicate count (highest first)
+#   -i, --ignore-case Case-insensitive filename comparison
+#       --help        Show this help message
+#
+# Examples:
+#   finddupes
+#   finddupes ~/Documents
+#   finddupes -c -i /d/projects
+#
+
+set -euo pipefail
+
+# ── Colors ───────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+log_info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_err()   { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+usage() {
+  sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+die() { echo "finddupes: error: $*" >&2; exit 1; }
+
+# ── Defaults ─────────────────────────────────────────────────────────────────
+SORT_BY_COUNT=false
+IGNORE_CASE=false
+
+# ── Argument parsing ─────────────────────────────────────────────────────────
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -c|--count)        SORT_BY_COUNT=true;  shift ;;
+    -i|--ignore-case)  IGNORE_CASE=true;    shift ;;
+    --help)            usage 0 ;;
+    -*)                die "unknown option: $1" ;;
+    *)                 POSITIONAL+=("$1");  shift ;;
+  esac
+done
+
+TARGET_DIR="${POSITIONAL[0]:-.}"
+
+[[ -d "$TARGET_DIR" ]] || die "not a directory: $TARGET_DIR"
+
+# ── Progress helpers ─────────────────────────────────────────────────────────
+SPINNER_CHARS='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+SPIN_IDX=0
+
+# Print a spinner + message on the same line (overwrites previous output)
+spin() {
+  local msg="$1"
+  local ch="${SPINNER_CHARS:SPIN_IDX:1}"
+  SPIN_IDX=$(( (SPIN_IDX + 1) % ${#SPINNER_CHARS} ))
+  printf '\r  %s %s' "$ch" "$msg"
+}
+
+clear_line() { printf '\r\033[K'; }
+
+# ── Build file list ──────────────────────────────────────────────────────────
+log_info "Scanning ${CYAN}${TARGET_DIR}${NC} …"
+
+# Temporary file to hold "filename<TAB>full_path" pairs
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+
+# Collect all regular files with a live counter
+FILE_COUNT=0
+while IFS= read -r -d '' filepath; do
+  FILE_COUNT=$((FILE_COUNT + 1))
+  filename=$(basename "$filepath")
+  if $IGNORE_CASE; then
+    key=$(echo "$filename" | tr '[:upper:]' '[:lower:]')
+  else
+    key="$filename"
+  fi
+  printf '%s\t%s\n' "$key" "$filepath" >> "$TMPFILE"
+  # Update spinner every 50 files to avoid slowing down on fast I/O
+  if (( FILE_COUNT % 50 == 0 )); then
+    spin "Indexed ${FILE_COUNT} files …"
+  fi
+done < <(find "$TARGET_DIR" -type f -print0)
+
+clear_line
+TOTAL=$(wc -l < "$TMPFILE")
+log_ok "Indexed ${GREEN}${TOTAL}${NC} files"
+
+# ── Find duplicates ──────────────────────────────────────────────────────────
+spin "Analyzing filenames for duplicates …"
+DUP_KEYS=$(cut -f1 "$TMPFILE" | sort | uniq -c | sort -rn | awk '$1 > 1 { $1=""; print }' | sed 's/^ //')
+clear_line
+
+if [[ -z "$DUP_KEYS" ]]; then
+  log_ok "No duplicate filenames found."
+  exit 0
+fi
+
+DUP_COUNT=$(echo "$DUP_KEYS" | wc -l)
+log_warn "Found ${RED}${DUP_COUNT}${NC} duplicate filename(s):"
+echo ""
+
+# Print each group
+while IFS= read -r key; do
+  # Gather all paths matching this key
+  mapfile -t paths < <(awk -F'\t' -v k="$key" '$1 == k { print $2 }' "$TMPFILE")
+  count=${#paths[@]}
+
+  if $SORT_BY_COUNT; then
+    printf '%d\t%s\n' "$count" "$key"
+  else
+    echo -e "${YELLOW}${key}${NC}  (${count} copies)"
+    for p in "${paths[@]}"; do
+      echo "  $p"
+    done
+    echo ""
+  fi
+done <<< "$DUP_KEYS" | if $SORT_BY_COUNT; then
+  # When sorting by count, we first collected "count<TAB>key" lines above;
+  # now sort and print the full groups
+  sort -rn | while IFS=$'\t' read -r count key; do
+    echo -e "${YELLOW}${key}${NC}  (${count} copies)"
+    awk -F'\t' -v k="$key" '$1 == k { print "  " $2 }' "$TMPFILE"
+    echo ""
+  done
+else
+  cat
+fi
