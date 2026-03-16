@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+#
+# flatten — Recursively move all files from subdirectories into the current directory.
+#
+# Usage:  flatten [options]
+#
+# Scans all subdirectories under the current directory and moves every file
+# up into the directory where the script was invoked. Empty subdirectories
+# are removed after flattening.
+#
+# Options:
+#   -y, --yes         Replace all conflicting files without prompting
+#   -n, --dry-run     Show what would be moved without making changes
+#       --help        Show this help message
+#
+# When a filename conflict occurs (and -y is not set), you are prompted
+# with size, modification date, and path info for both files so you can
+# decide whether to replace.
+#
+# Examples:
+#   flatten
+#   flatten --yes
+#   flatten --dry-run
+#
+
+set -euo pipefail
+
+# ── Colors ───────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+log_info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_err()   { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+usage() {
+  sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+die() { echo "flatten: error: $*" >&2; exit 1; }
+
+# Human-readable file size (pure bash, no bc)
+human_size() {
+  local bytes="$1"
+  if (( bytes >= 1073741824 )); then
+    printf '%d.%02d GB' $(( bytes / 1073741824 )) $(( (bytes % 1073741824) * 100 / 1073741824 ))
+  elif (( bytes >= 1048576 )); then
+    printf '%d.%02d MB' $(( bytes / 1048576 )) $(( (bytes % 1048576) * 100 / 1048576 ))
+  elif (( bytes >= 1024 )); then
+    printf '%d.%02d KB' $(( bytes / 1024 )) $(( (bytes % 1024) * 100 / 1024 ))
+  else
+    printf '%d B' "$bytes"
+  fi
+}
+
+# Print file info (size + modification date)
+file_info() {
+  local f="$1"
+  local size mod_date
+  size=$(stat -c '%s' "$f" 2>/dev/null || stat -f '%z' "$f" 2>/dev/null || echo '?')
+  mod_date=$(stat -c '%y' "$f" 2>/dev/null || stat -f '%Sm' "$f" 2>/dev/null || echo '?')
+  # Trim fractional seconds and timezone from GNU stat output
+  mod_date="${mod_date%%.*}"
+  if [[ "$size" =~ ^[0-9]+$ ]]; then
+    printf '%s  (%s)' "$mod_date" "$(human_size "$size")"
+  else
+    printf '%s  (%s)' "$mod_date" "$size"
+  fi
+}
+
+# Prompt user for yes/no/all (single keypress).
+# Returns 0 for yes, 1 for no. Sets REPLACE_ALL=true on 'a'.
+confirm_replace() {
+  local reply
+  while true; do
+    echo -en "${YELLOW}[?]${NC} Replace? [y/n/a(ll)] "
+    read -rn1 reply < /dev/tty
+    echo ""
+    case "${reply,,}" in
+      y) return 0 ;;
+      n) return 1 ;;
+      a) REPLACE_ALL=true; return 0 ;;
+      *) echo "  Press y, n, or a." ;;
+    esac
+  done
+}
+
+# ── Defaults ─────────────────────────────────────────────────────────────────
+REPLACE_ALL=false
+DRY_RUN=false
+
+# ── Argument parsing ─────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -y|--yes)      REPLACE_ALL=true; shift ;;
+    -n|--dry-run)  DRY_RUN=true;     shift ;;
+    --help)        usage 0 ;;
+    -*)            die "unknown option: $1" ;;
+    *)             die "unexpected argument: $1" ;;
+  esac
+done
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+DEST="$(pwd)"
+
+# Collect all files in subdirectories (not files already in DEST itself)
+FILE_COUNT=0
+MOVED=0
+SKIPPED=0
+REPLACED=0
+
+log_info "Scanning subdirectories of ${CYAN}${DEST}${NC} …"
+
+while IFS= read -r -d '' src; do
+  FILE_COUNT=$((FILE_COUNT + 1))
+  filename=$(basename "$src")
+  dest_file="${DEST}/${filename}"
+
+  if $DRY_RUN; then
+    if [[ -e "$dest_file" ]]; then
+      log_warn "[dry-run] Would conflict: ${YELLOW}${src}${NC}"
+    else
+      log_info "[dry-run] Would move: ${src}"
+    fi
+    continue
+  fi
+
+  # No conflict — just move
+  if [[ ! -e "$dest_file" ]]; then
+    mv -- "$src" "$dest_file"
+    MOVED=$((MOVED + 1))
+    continue
+  fi
+
+  # ── Conflict handling ────────────────────────────────────────────────────
+  if $REPLACE_ALL; then
+    mv -f -- "$src" "$dest_file"
+    REPLACED=$((REPLACED + 1))
+    continue
+  fi
+
+  # Show comparison info
+  echo ""
+  echo -e "${BOLD}Conflict:${NC} ${YELLOW}${filename}${NC}"
+  echo -e "  ${CYAN}Existing:${NC} ${dest_file}"
+  echo -e "           $(file_info "$dest_file")"
+  echo -e "  ${CYAN}Incoming:${NC} ${src}"
+  echo -e "           $(file_info "$src")"
+
+  if confirm_replace; then
+    mv -f -- "$src" "$dest_file"
+    REPLACED=$((REPLACED + 1))
+  else
+    SKIPPED=$((SKIPPED + 1))
+  fi
+done < <(find "$DEST" -mindepth 2 -type f -print0)
+
+# ── Clean up empty directories ──────────────────────────────────────────────
+if ! $DRY_RUN; then
+  # Remove empty dirs bottom-up (deepest first)
+  find "$DEST" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+fi
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+echo ""
+if $DRY_RUN; then
+  log_info "Dry run complete. ${CYAN}${FILE_COUNT}${NC} file(s) found in subdirectories."
+else
+  log_ok "Done. ${GREEN}${MOVED}${NC} moved, ${YELLOW}${REPLACED}${NC} replaced, ${RED}${SKIPPED}${NC} skipped."
+  REMAINING=$(find "$DEST" -mindepth 1 -type d 2>/dev/null | wc -l)
+  if (( REMAINING > 0 )); then
+    log_warn "${REMAINING} non-empty subdirectory(ies) remain."
+  fi
+fi
