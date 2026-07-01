@@ -1,0 +1,659 @@
+#!/usr/bin/env python3
+"""
+x265ify — Re-encode x264 videos to x265/HEVC using hardware acceleration.
+
+Recursively scans a folder for H.264-encoded video files, transcodes each one
+to H.265/HEVC using the best available hardware encoder (NVIDIA NVENC, AMD AMF,
+Intel Quick Sync, Apple VideoToolbox, or software libx265 as fallback), then
+replaces the original with the new file — but only if it is strictly smaller.
+
+Usage:
+    x265ify [FOLDER]               scan cwd (or FOLDER) once, then exit
+    x265ify --watch                scan, then re-scan every 60 seconds
+    x265ify --watch 120            re-scan every 120 seconds
+    x265ify --crf 24               quality: lower = better (default 28, range 0-51)
+    x265ify --dry-run              show what would be converted; make no changes
+    x265ify --encoder hevc_nvenc   force a specific ffmpeg encoder
+
+Notes:
+    Resolution, audio tracks, and subtitles are always preserved unchanged.
+    HDR metadata (HDR10, HLG) is passed through automatically.
+    The original file is sent to the OS Trash, never permanently deleted.
+    If a transcode produces a larger file the original is kept untouched.
+    Interrupted transcodes (*.processing sentinels) are restored on next run.
+
+Requirements:
+    ffmpeg and ffprobe must be on PATH.
+    Python package 'rich':  pip install rich
+    Optional for better Trash support:  pip install send2trash
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.progress import (
+        Progress, SpinnerColumn, BarColumn, TextColumn,
+        TaskProgressColumn, TimeElapsedColumn,
+    )
+    from rich.table import Table
+    from rich import box
+except ImportError:
+    print("ERROR: 'rich' is required.  Install with:  pip install rich")
+    sys.exit(1)
+
+console = Console()
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+VIDEO_EXTS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
+    ".m4v", ".mpg", ".mpeg", ".ts", ".mts", ".vob",
+}
+
+ENCODER_PRIORITY = [
+    ("hevc_nvenc",        "NVIDIA NVENC"),
+    ("hevc_videotoolbox", "Apple VideoToolbox"),
+    ("hevc_qsv",          "Intel Quick Sync"),
+    ("hevc_amf",          "AMD AMF"),
+    ("hevc_vaapi",        "AMD/Intel VAAPI"),
+    ("libx265",           "Software (libx265)"),
+]
+
+X264_CODECS = {"h264", "avc", "avc1"}
+HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}   # HDR10, HLG
+
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+
+def fmt_size(n: int) -> str:
+    """Human-readable byte count."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def move_to_trash(path: Path) -> None:
+    """Send *path* to the OS Trash — never permanently delete."""
+    p = str(path.resolve())
+
+    try:
+        from send2trash import send2trash as _s2t  # type: ignore
+        _s2t(p)
+        return
+    except ImportError:
+        pass
+
+    if os.name == "nt":
+        escaped = p.replace("'", "''")
+        ps = (
+            "Add-Type -AssemblyName Microsoft.VisualBasic;"
+            "[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
+            f"'{escaped}','OnlyErrorDialogs','SendToRecycleBin')"
+        )
+        r = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", ps],
+            capture_output=True,
+        )
+        if r.returncode == 0:
+            return
+        raise RuntimeError(f"Recycle Bin failed for: {p}")
+
+    if sys.platform.startswith("linux"):
+        for cmd in (["gio", "trash", p], ["trash-put", p]):
+            if shutil.which(cmd[0]):
+                r = subprocess.run(cmd, capture_output=True)
+                if r.returncode == 0:
+                    return
+        raise RuntimeError("No trash backend; install send2trash or trash-cli")
+
+    if sys.platform == "darwin":
+        script = f'tell application "Finder" to delete POSIX file "{p}"'
+        r = subprocess.run(["osascript", "-e", script], capture_output=True)
+        if r.returncode == 0:
+            return
+        raise RuntimeError("Trash failed; install send2trash: pip install send2trash")
+
+    raise RuntimeError("No trash backend; install send2trash: pip install send2trash")
+
+
+# ── ffprobe helpers ────────────────────────────────────────────────────────────
+
+def probe_stream_info(path: Path) -> dict:
+    """Return dict with codec_name, color_transfer, color_primaries, color_space for v:0."""
+    r = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries",
+            "stream=codec_name,color_transfer,color_primaries,color_space",
+            "-of", "json", str(path),
+        ],
+        capture_output=True, text=True,
+    )
+    try:
+        data = json.loads(r.stdout)
+        streams = data.get("streams", [])
+        return streams[0] if streams else {}
+    except (json.JSONDecodeError, IndexError):
+        return {}
+
+
+def probe_duration(path: Path) -> float:
+    """Return duration in seconds (0.0 on failure)."""
+    r = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0", str(path),
+        ],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(r.stdout.strip())
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+# ── Encoder detection ──────────────────────────────────────────────────────────
+
+def _test_encoder(name: str) -> bool:
+    """Return True if ffmpeg can use this encoder via a tiny test encode."""
+    if name == "hevc_vaapi":
+        device = "/dev/dri/renderD128"
+        if not Path(device).exists():
+            return False
+        cmd = [
+            "ffmpeg", "-hide_banner",
+            "-vaapi_device", device,
+            "-f", "lavfi", "-i", "color=black:s=64x64:r=1",
+            "-vf", "format=nv12,hwupload",
+            "-t", "0.1", "-c:v", name, "-f", "null", "-",
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-hide_banner",
+            "-f", "lavfi", "-i", "color=black:s=64x64:r=1",
+            "-t", "0.1", "-c:v", name, "-f", "null", "-",
+        ]
+    r = subprocess.run(cmd, capture_output=True)
+    return r.returncode == 0
+
+
+def detect_encoder(force: Optional[str] = None) -> tuple:
+    """
+    Test each encoder in priority order; print dim lines for skipped ones.
+    Returns (encoder_name, display_label).
+    """
+    if force:
+        r = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True,
+        )
+        if force not in r.stdout:
+            console.print(f"[red bold]ERROR:[/] Encoder '{force}' not found in ffmpeg.")
+            sys.exit(1)
+        label = next((lbl for n, lbl in ENCODER_PRIORITY if n == force), force)
+        return force, label
+
+    for name, label in ENCODER_PRIORITY:
+        if _test_encoder(name):
+            return name, label
+        console.print(f"    [dim]{name:<22} skipped — not available[/]")
+
+    console.print("[red bold]ERROR:[/] No working HEVC encoder found. Is ffmpeg installed?")
+    sys.exit(1)
+
+
+# ── FFmpeg command builder ─────────────────────────────────────────────────────
+
+def _quality_args(encoder: str, crf: int) -> list:
+    """Map --crf N to each encoder's native quality parameter."""
+    if encoder == "libx265":
+        return ["-crf", str(crf)]
+    if encoder == "hevc_nvenc":
+        # vbr + -cq gives the closest constant-quality behaviour for NVENC
+        return ["-rc:v", "vbr", "-cq", str(crf)]
+    if encoder == "hevc_qsv":
+        return ["-global_quality", str(crf)]
+    if encoder == "hevc_amf":
+        return ["-rc", "cqp", "-qp_i", str(crf), "-qp_p", str(crf)]
+    if encoder == "hevc_vaapi":
+        return ["-rc_mode", "CQP", "-qp", str(crf)]
+    if encoder == "hevc_videotoolbox":
+        # VideoToolbox -q:v scale: 1–100 where lower = better quality.
+        # CRF 28 (0-51) maps reasonably to q:v 28 on that scale.
+        return ["-q:v", str(crf)]
+    return ["-crf", str(crf)]
+
+
+def build_ffmpeg_cmd(
+    input_path: Path,
+    output_path: Path,
+    encoder: str,
+    crf: int,
+    stream_info: dict,
+) -> list:
+    """Build the full ffmpeg command list."""
+    color_trc = stream_info.get("color_transfer", "") or ""
+    hdr = color_trc.lower() in HDR_TRANSFERS
+
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+
+    # VAAPI needs the device declared before -i
+    if encoder == "hevc_vaapi":
+        cmd += ["-vaapi_device", "/dev/dri/renderD128"]
+
+    cmd += ["-i", str(input_path)]
+    cmd += ["-map", "0"]            # all streams (video, audio, subs, attachments)
+    cmd += ["-map_metadata", "0"]   # container metadata and chapters
+
+    # Video codec + quality
+    cmd += ["-c:v", encoder]
+    cmd += _quality_args(encoder, crf)
+
+    # VAAPI requires an upload filter; no -vf for other encoders (preserve resolution)
+    if encoder == "hevc_vaapi":
+        cmd += ["-vf", "format=nv12,hwupload"]
+
+    # HDR passthrough: re-state colour space tags so they survive the transcode
+    if hdr:
+        cp = stream_info.get("color_primaries", "") or ""
+        cs = stream_info.get("color_space", "") or ""
+        if cp:
+            cmd += ["-color_primaries", cp]
+        if color_trc:
+            cmd += ["-color_trc", color_trc]
+        if cs:
+            cmd += ["-colorspace", cs]
+        # Software encoder needs explicit x265 bitstream HDR signalling
+        if encoder == "libx265":
+            cmd += ["-x265-params", "hdr-opt=1:repeat-headers=1"]
+
+    # Audio and subtitles: stream-copy (no re-encode, no quality loss)
+    cmd += ["-c:a", "copy"]
+    cmd += ["-c:s", "copy"]
+
+    # Apple devices require the hvc1 tag to play HEVC inside an MP4 container
+    if output_path.suffix.lower() == ".mp4":
+        cmd += ["-tag:v", "hvc1"]
+
+    # Structured progress to stdout; -y overwrites the .tmp without prompting
+    cmd += ["-progress", "pipe:1", "-y", str(output_path)]
+    return cmd
+
+
+# ── Progress reader ────────────────────────────────────────────────────────────
+
+def _progress_reader(
+    stream,
+    duration_us: int,
+    progress: Progress,
+    task_id,
+) -> None:
+    """Parse ffmpeg -progress pipe:1 output; update the rich progress bar."""
+    for raw in stream:
+        line = raw.decode("utf-8", errors="replace").strip()
+        if line.startswith("out_time_ms="):
+            try:
+                t = int(line.split("=", 1)[1])
+                if duration_us > 0 and t >= 0:
+                    pct = min(100.0, t / duration_us * 100)
+                    progress.update(task_id, completed=pct)
+            except (ValueError, IndexError):
+                pass
+
+
+# ── Transcode result ───────────────────────────────────────────────────────────
+
+@dataclass
+class TranscodeResult:
+    status: str          # "replaced" | "skipped_larger" | "failed" | "dry_run"
+    orig_size: int = 0
+    new_size: int = 0
+
+    @property
+    def saved(self) -> int:
+        return max(0, self.orig_size - self.new_size)
+
+
+# ── Core transcode ─────────────────────────────────────────────────────────────
+
+def _restore_sentinel(sentinel: Path, original: Path, tmp_out: Path) -> None:
+    """Clean up a failed transcode: remove .tmp, rename sentinel back."""
+    try:
+        tmp_out.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        if sentinel.exists():
+            sentinel.rename(original)
+    except OSError:
+        pass
+
+
+def transcode(
+    path: Path,
+    encoder: str,
+    crf: int,
+    stream_info: dict,
+    progress: Progress,
+) -> TranscodeResult:
+    """
+    Transcode *path* from x264 to x265 in-place.
+
+    1. Rename original → .processing sentinel.
+    2. Encode sentinel → .tmp output.
+    3. If .tmp is smaller: trash sentinel, promote .tmp → original name.
+       If .tmp is larger or equal: discard .tmp, restore sentinel.
+    """
+    sentinel = path.with_suffix(path.suffix + ".processing")
+    tmp_out  = path.with_suffix(path.suffix + ".tmp")
+    orig_size = path.stat().st_size
+
+    duration_s  = probe_duration(path)
+    duration_us = int(duration_s * 1_000_000)
+
+    try:
+        path.rename(sentinel)
+    except OSError as e:
+        console.print(f"  [red]Cannot create sentinel:[/] {e}")
+        return TranscodeResult("failed", orig_size=orig_size)
+
+    cmd = build_ffmpeg_cmd(sentinel, tmp_out, encoder, crf, stream_info)
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,   # -progress pipe:1 output
+            stderr=subprocess.DEVNULL, # suppress ffmpeg's verbose stderr
+        )
+
+        task = progress.add_task(
+            f"    [cyan]{path.name}[/]",
+            total=100.0,
+        )
+        reader = threading.Thread(
+            target=_progress_reader,
+            args=(proc.stdout, duration_us, progress, task),
+            daemon=True,
+        )
+        reader.start()
+        proc.wait()
+        reader.join(timeout=5)
+        progress.remove_task(task)
+
+    except Exception as e:
+        console.print(f"  [red]ffmpeg error:[/] {e}")
+        _restore_sentinel(sentinel, path, tmp_out)
+        return TranscodeResult("failed", orig_size=orig_size)
+
+    if proc.returncode != 0:
+        _restore_sentinel(sentinel, path, tmp_out)
+        return TranscodeResult("failed", orig_size=orig_size)
+
+    if not tmp_out.exists():
+        _restore_sentinel(sentinel, path, tmp_out)
+        return TranscodeResult("failed", orig_size=orig_size)
+
+    new_size = tmp_out.stat().st_size
+
+    if new_size < orig_size:
+        try:
+            move_to_trash(sentinel)
+        except Exception as e:
+            console.print(f"  [yellow]Trash failed (keeping original):[/] {e}")
+            tmp_out.unlink(missing_ok=True)
+            sentinel.rename(path)
+            return TranscodeResult("failed", orig_size=orig_size)
+        tmp_out.rename(path)
+        return TranscodeResult("replaced", orig_size=orig_size, new_size=new_size)
+    else:
+        tmp_out.unlink(missing_ok=True)
+        sentinel.rename(path)
+        return TranscodeResult("skipped_larger", orig_size=orig_size, new_size=new_size)
+
+
+# ── Crash recovery ─────────────────────────────────────────────────────────────
+
+def recover_interrupted(root: Path) -> None:
+    """Restore *.processing sentinels left by a previously interrupted run."""
+    sentinels = list(root.rglob("*.processing"))
+    if not sentinels:
+        return
+    console.print(
+        f"[yellow][WARN][/] Found {len(sentinels)} interrupted transcode(s) — restoring:\n"
+    )
+    for s in sentinels:
+        original = Path(str(s)[: -len(".processing")])
+        try:
+            s.rename(original)
+            console.print(f"  [dim]Restored:[/] {original.name}")
+        except OSError as e:
+            console.print(f"  [red]Could not restore {s.name}:[/] {e}")
+    console.print()
+
+
+# ── File discovery ─────────────────────────────────────────────────────────────
+
+def find_videos(root: Path):
+    """Yield video files under root, skipping sentinel and temp files."""
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        name_lower = p.name.lower()
+        if name_lower.endswith(".processing") or name_lower.endswith(".tmp"):
+            continue
+        if p.suffix.lower() in VIDEO_EXTS:
+            yield p
+
+
+# ── Summary ────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ScanStats:
+    converted:      int = 0
+    skipped_codec:  int = 0
+    skipped_larger: int = 0
+    failed:         int = 0
+    bytes_saved:    int = 0
+    dry_run_count:  int = 0
+
+
+def print_summary(stats: ScanStats, dry_run: bool) -> None:
+    tbl = Table(box=box.ROUNDED, title="Summary", title_style="bold cyan")
+    tbl.add_column("Result", style="bold")
+    tbl.add_column("Count", justify="right")
+    tbl.add_column("Details", style="dim")
+
+    if dry_run:
+        tbl.add_row("[green]Would convert[/]", str(stats.dry_run_count), "x264 files found")
+        tbl.add_row("[dim]Skipped — not x264[/]", str(stats.skipped_codec),
+                    "already HEVC or other codec")
+    else:
+        saved_str = fmt_size(stats.bytes_saved) + " saved" if stats.converted else ""
+        tbl.add_row("[green]Converted[/]",          str(stats.converted),      saved_str)
+        tbl.add_row("[dim]Skipped — not x264[/]",   str(stats.skipped_codec),  "already HEVC or other codec")
+        tbl.add_row("[yellow]Skipped — output larger[/]", str(stats.skipped_larger), "original kept")
+        tbl.add_row("[red]Failed[/]",               str(stats.failed),         "see errors above")
+
+    console.print()
+    console.print(tbl)
+
+
+# ── Scan loop ──────────────────────────────────────────────────────────────────
+
+def scan_and_process(
+    root: Path,
+    encoder: str,
+    crf: int,
+    dry_run: bool,
+) -> ScanStats:
+    stats = ScanStats()
+    recover_interrupted(root)
+
+    videos = list(find_videos(root))
+    if not videos:
+        console.print("[dim]No video files found.[/]")
+        return stats
+
+    console.print(
+        f"[cyan]Scanning[/] {len(videos)} video file(s) in [bold]{root}[/]\n"
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=False,
+    ) as progress:
+        overall = progress.add_task("[bold]Overall", total=len(videos))
+
+        for video in videos:
+            stream_info = probe_stream_info(video)
+            codec = (stream_info.get("codec_name") or "").lower()
+
+            if codec not in X264_CODECS:
+                progress.print(
+                    f"  [dim]SKIP[/]  {video.name}  [dim]({codec or 'unknown'})[/]"
+                )
+                stats.skipped_codec += 1
+                progress.advance(overall)
+                continue
+
+            if dry_run:
+                progress.print(f"  [cyan]WOULD CONVERT[/]  {video.name}")
+                stats.dry_run_count += 1
+                progress.advance(overall)
+                continue
+
+            progress.print(f"  [bold]Converting[/]  {video.name}")
+            result = transcode(video, encoder, crf, stream_info, progress)
+
+            if result.status == "replaced":
+                progress.print(
+                    f"  [green]✓[/]  {video.name}  "
+                    f"[dim]{fmt_size(result.orig_size)} → {fmt_size(result.new_size)}"
+                    f"  (saved {fmt_size(result.saved)})[/]"
+                )
+                stats.converted  += 1
+                stats.bytes_saved += result.saved
+
+            elif result.status == "skipped_larger":
+                progress.print(
+                    f"  [yellow]⚠ output larger — original kept[/]  {video.name}  "
+                    f"[dim]({fmt_size(result.orig_size)} → {fmt_size(result.new_size)})[/]"
+                )
+                stats.skipped_larger += 1
+
+            else:
+                progress.print(f"  [red]✗ failed[/]  {video.name}")
+                stats.failed += 1
+
+            progress.advance(overall)
+
+    return stats
+
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    # ── Dependency check ──────────────────────────────────────────────────────
+    for tool in ("ffmpeg", "ffprobe"):
+        if not shutil.which(tool):
+            console.print(f"[red bold]ERROR:[/] '{tool}' not found on PATH.")
+            sys.exit(1)
+
+    # ── Argument parsing ──────────────────────────────────────────────────────
+    parser = argparse.ArgumentParser(
+        prog="x265ify",
+        description="Re-encode x264 videos to x265/HEVC using hardware acceleration.",
+    )
+    parser.add_argument(
+        "folder", nargs="?", default=".",
+        help="Folder to scan (default: current directory)",
+    )
+    parser.add_argument(
+        "--crf", type=int, default=28, metavar="N",
+        help="Quality level 0-51, lower = better (default: 28)",
+    )
+    parser.add_argument(
+        "--watch", nargs="?", const=60, type=int, metavar="SECS",
+        help="Re-scan every N seconds after finishing (default when flag given: 60)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Show which files would be converted; make no changes",
+    )
+    parser.add_argument(
+        "--encoder", metavar="NAME",
+        help="Force a specific encoder (e.g. hevc_nvenc, hevc_qsv, libx265)",
+    )
+    args = parser.parse_args()
+
+    if not 0 <= args.crf <= 51:
+        console.print("[red bold]ERROR:[/] --crf must be between 0 and 51.")
+        sys.exit(1)
+
+    root = Path(args.folder).resolve()
+    if not root.is_dir():
+        console.print(f"[red bold]ERROR:[/] Not a directory: {root}")
+        sys.exit(1)
+
+    # ── Encoder detection ─────────────────────────────────────────────────────
+    console.print()
+    console.print("[bold cyan]x265ify[/] — detecting hardware encoder…\n")
+    encoder, label = detect_encoder(force=args.encoder)
+
+    mode_str     = "watch" if args.watch else "one-shot"
+    interval_str = f"  (every {args.watch} s)" if args.watch else ""
+
+    console.print(Panel(
+        f"  Encoder  [bold green]{encoder}[/]  [dim]({label})[/]\n"
+        f"  CRF      [bold]{args.crf}[/]\n"
+        f"  Folder   [bold]{root}[/]\n"
+        f"  Mode     [bold]{mode_str}[/]{interval_str}",
+        title="[bold cyan]x265ify[/]",
+        border_style="cyan",
+    ))
+
+    if args.dry_run:
+        console.print("[yellow][DRY RUN][/] No files will be modified.\n")
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    try:
+        while True:
+            stats = scan_and_process(root, encoder, args.crf, args.dry_run)
+            print_summary(stats, args.dry_run)
+
+            if not args.watch:
+                break
+
+            console.print(
+                f"\n[dim]Watching — next scan in {args.watch} s.  "
+                "Press Ctrl+C to stop.[/]"
+            )
+            time.sleep(args.watch)
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopped.[/]")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

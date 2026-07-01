@@ -27,6 +27,7 @@ SCRIPTS=(
   "jellyname|Rename and organize media files into a Jellyfin-compatible folder structure"
   "mergemanga|Merge One Piece chapter CBZ files into volume CBZ files with metadata"
   "sortmedia|Move video files into folders based on the camelCase type tag in each filename"
+  "x265ify|Re-encode x264 videos to x265/HEVC using the best available hardware (NVIDIA, AMD, Intel QSV, Apple)"
   "toolbox|List all custom scripts with a brief description (this script)"
 )
 
