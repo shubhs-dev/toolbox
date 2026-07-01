@@ -9,6 +9,8 @@
 #   -h, --hard        Burn subtitles directly into the video (not reversible)
 #   -l, --lang LANG   Language code for the subtitle track (default: eng)
 #   -t, --title TITLE Title for the subtitle track (default: subtitle filename)
+#   -u, --suffix      Append ' - Sub' to the output filename instead of updating in place
+#   -k, --keep        Keep the original video file (default: trash it when output differs)
 #       --help        Show this help message
 #
 # Examples:
@@ -24,10 +26,12 @@ set -euo pipefail
 MODE="soft"
 LANG_CODE="eng"
 TRACK_TITLE=""
+SUFFIX_MODE=false
+KEEP_VIDEO=false
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 usage() {
-  sed -n '3,22p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -72,6 +76,8 @@ while [[ $# -gt 0 ]]; do
     -h|--hard)   MODE="hard"; shift ;;
     -l|--lang)   [[ $# -ge 2 ]] || die "--lang requires an argument"; LANG_CODE="$2"; shift 2 ;;
     -t|--title)  [[ $# -ge 2 ]] || die "--title requires an argument"; TRACK_TITLE="$2"; shift 2 ;;
+    -u|--suffix) SUFFIX_MODE=true; shift ;;
+    -k|--keep)   KEEP_VIDEO=true; shift ;;
     --help)      usage 0 ;;
     -*)          die "unknown option: $1" ;;
     *)           POSITIONAL+=("$1"); shift ;;
@@ -86,6 +92,14 @@ SUBTITLE="${POSITIONAL[1]}"
 # Derive output filename if not provided
 if [[ ${#POSITIONAL[@]} -ge 3 ]]; then
   OUTPUT="${POSITIONAL[2]}"
+  INPLACE=false
+elif [[ "$SUFFIX_MODE" == true ]]; then
+  # -u: write to '<stem> - Sub.<ext>' alongside the original
+  VIDEO_DIR="$(dirname "$VIDEO")"
+  VIDEO_BASE="$(basename "$VIDEO")"
+  VIDEO_EXT="${VIDEO_BASE##*.}"
+  VIDEO_STEM="${VIDEO_BASE%.*}"
+  OUTPUT="${VIDEO_DIR}/${VIDEO_STEM} - Sub.${VIDEO_EXT}"
   INPLACE=false
 else
   # No output specified — write to a temp file, then replace the original
@@ -173,6 +187,10 @@ if [[ "$INPLACE" == true ]]; then
   echo "addsub: done → ${VIDEO} (updated in place)"
 else
   echo "addsub: done → ${OUTPUT}"
+  if [[ "$KEEP_VIDEO" == false ]]; then
+    trash_file "$VIDEO"
+    echo "addsub: trashed original video → ${VIDEO}"
+  fi
 fi
 
 # Move the original subtitle file to trash
