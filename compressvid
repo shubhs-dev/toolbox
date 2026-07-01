@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -104,7 +105,6 @@ def move_to_trash(path):
 
     # 3) Fallback on Linux: gio trash or trash-put
     if sys.platform.startswith("linux"):
-        import shutil
         if shutil.which("gio"):
             r = subprocess.run(["gio", "trash", path],
                                capture_output=True, text=True)
@@ -288,7 +288,7 @@ def transcode(src, dst, preset_file, preset_label, progress=None, task_id=None):
 
 
 def process_video(video, output_dir, preset_file, preset_label, log,
-                  progress, task_id):
+                  progress, task_id, copy_original=False):
     """Transcode one video, compare sizes, keep the winner.
 
     Returns a result dict for the summary table.
@@ -375,6 +375,8 @@ def process_video(video, output_dir, preset_file, preset_label, log,
         tmp.unlink()
         # Restore original filename
         src_processing.rename(video)
+        if copy_original:
+            video.rename(output_dir / vname)
         status = "original_kept"
         progress.update(task_id, completed=100, visible=False)
         console.print(
@@ -659,6 +661,10 @@ def main():
         "--list-presets", action="store_true",
         help="Show available HandBrake presets and exit",
     )
+    ap.add_argument(
+        "-f", "--copy-original", action="store_true",
+        help="Copy the original file to the output folder when it is smaller than the compressed version",
+    )
     args = ap.parse_args()
 
     # ── List presets ──────────────────────────────────────────────
@@ -764,6 +770,7 @@ def main():
                             process_video, v, output_dir,
                             preset_file, preset_label, log,
                             progress, tasks[v],
+                            args.copy_original,
                         ): v
                         for v in videos
                     }
