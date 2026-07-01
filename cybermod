@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # cybermod - Automatically install Cyberpunk 2077 mods from zip files
 # Usage: cd into folder with mod zips, then run: cybermod [file.zip ...]
 #        With no arguments, processes all zip/rar/7z files in current directory.
@@ -54,18 +54,30 @@ find_overwrites() {
     fi
 }
 
-# Send a file to the Windows Recycle Bin
-recycle() {
+# Send a file to the OS Trash / Recycle Bin (cross-platform)
+trash_file() {
+  local f="$1"
+  if command -v gio &>/dev/null; then
+    gio trash "$f"
+  elif command -v trash-put &>/dev/null; then
+    trash-put "$f"
+  elif command -v osascript &>/dev/null; then
+    osascript -e "tell app \"Finder\" to delete POSIX file \"$(realpath "$f")\"" &>/dev/null
+  elif command -v powershell.exe &>/dev/null; then
     local win_path
-    win_path=$(cygpath -w "$1")
+    win_path=$(cygpath -w "$f" 2>/dev/null || echo "$f")
     powershell.exe -NoProfile -Command "
-        Add-Type -AssemblyName Microsoft.VisualBasic
-        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
-            '$win_path',
-            'OnlyErrorDialogs',
-            'SendToRecycleBin'
-        )
-    " 2>/dev/null
+      Add-Type -AssemblyName Microsoft.VisualBasic
+      [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+        '${win_path//\'/\'\'}',
+        'OnlyErrorDialogs',
+        'SendToRecycleBin'
+      )
+    " 2>/dev/null && return
+    rm -f "$f"
+  else
+    rm -f "$f"
+  fi
 }
 
 # Extract archive to a target directory using 7z (handles zip/rar/7z and more)
@@ -165,7 +177,7 @@ install_mod() {
     if [[ "$mod_root" == LOOSE_ARCHIVE:* ]]; then
         local loose_dir="${mod_root#LOOSE_ARCHIVE:}"
         local archive_list
-        archive_list=$(find "$loose_dir" -name '*.archive' -printf '  %f\n')
+        archive_list=$(find "$loose_dir" -name '*.archive' | sed 's|.*/|  |')
         local count
         count=$(echo "$archive_list" | wc -l)
         log_info "Mod contains $count .archive file(s) -> archive/pc/mod/"
@@ -284,15 +296,11 @@ install_mod() {
     # Clean up temp dir
     rm -rf "$tmp_dir"
 
-    # Send original zip to Recycle Bin
+    # Send original zip to Trash / Recycle Bin
     local abs_path
     abs_path=$(realpath "$archive")
-    if recycle "$abs_path"; then
-        log_ok "Moved $filename to Recycle Bin"
-    else
-        log_warn "Could not move $filename to Recycle Bin (deleting instead)"
-        rm -f "$archive"
-    fi
+    trash_file "$abs_path"
+    log_ok "Sent $filename to Trash / Recycle Bin"
 
     echo ""
     return 0
@@ -312,7 +320,7 @@ files=()
 if [[ $# -gt 0 ]]; then
     while IFS= read -r -d '' f; do
         files+=("$f")
-    done < <(ls -1t --reverse -- "$@" 2>/dev/null | tr '\n' '\0')
+    done < <(ls -1tr -- "$@" 2>/dev/null | tr '\n' '\0')
     # fallback: if ls fails (e.g. files with special chars), keep original order
     [[ ${#files[@]} -eq 0 ]] && files=("$@")
 else
