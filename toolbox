@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# toolbox — List all custom scripts with a brief description of each.
+#
+# Usage:  toolbox
+#
+
+set -euo pipefail
+
+# ── Colors ───────────────────────────────────────────────────────────────────
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ── Script list: "name|description" ──────────────────────────────────────────
+SCRIPTS=(
+  "addsub|Merge a subtitle file into a video (soft-mux or hard-burn) via ffmpeg"
+  "autosub|Auto-match subtitle files to videos by episode code and run addsub"
+  "compressvid|Watch a folder for videos and transcode them with HandBrake; keeps the smaller copy"
+  "convertimg|Batch-convert all images in the current folder to a target format via ImageMagick"
+  "cutvid|Trim a video to a start/end time using ffmpeg (stream-copy or re-encode)"
+  "cybermod|Extract and install Cyberpunk 2077 mods from zip/rar/7z archives"
+  "finddupes|Find duplicate filenames across a directory tree"
+  "flatten|Move all files from subdirectories up into the current directory"
+  "jellyname|Rename and organize media files into a Jellyfin-compatible folder structure"
+  "mergemanga|Merge One Piece chapter CBZ files into volume CBZ files with metadata"
+  "sortmedia|Move video files into folders based on the camelCase type tag in each filename"
+  "toolbox|List all custom scripts with a brief description (this script)"
+)
+
+# ── Find the longest name for alignment ──────────────────────────────────────
+max_len=0
+for entry in "${SCRIPTS[@]}"; do
+  name="${entry%%|*}"
+  (( ${#name} > max_len )) && max_len=${#name}
+done
+
+# ── Print ─────────────────────────────────────────────────────────────────────
+echo
+echo -e "  ${BOLD}${YELLOW}Toolbox — Custom Scripts${NC}"
+echo -e "  ${CYAN}$(printf '─%.0s' $(seq 1 $((max_len + 42))))${NC}"
+for entry in "${SCRIPTS[@]}"; do
+  name="${entry%%|*}"
+  desc="${entry#*|}"
+  printf "  ${GREEN}%-*s${NC}  %s\n" "$max_len" "$name" "$desc"
+done
+echo
