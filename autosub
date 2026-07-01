@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+#
+# autosub — Auto-match subtitle files to videos by code and run addsub.
+#
+# For each video file in the current directory, extracts the 2nd dash-separated
+# part of the filename as a "code" (e.g. "Show - S01E01 - Title.mkv" → "S01E01"),
+# finds any subtitle file containing that code, asks for confirmation, then runs:
+#
+#   addsub -u <video_file> <sub_file>
+#
+# All video files are collected upfront, so new files created by addsub are
+# not re-processed.
+#
+# Usage:  autosub [-y]
+#
+# Options:
+#   -y, --yes   Skip confirmation prompts and run addsub for all matches.
+#
+
+set -euo pipefail
+
+# ── Argument parsing ─────────────────────────────────────────────────────────
+AUTO_YES=false
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -y|--yes) AUTO_YES=true ; shift ;;
+        *) POSITIONAL+=("$1") ; shift ;;
+    esac
+done
+set -- "${POSITIONAL[@]+${POSITIONAL[@]}}"
+
+# Extensions to recognise
+VIDEO_EXTS="mkv|mp4|avi|mov|m4v|ts|wmv"
+SUB_EXTS="srt|ass|ssa|vtt|sub"
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_err()   { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# Single-keypress yes/no prompt. Returns 0 for yes, 1 for no.
+confirm() {
+    local prompt="$1"
+    local reply
+    while true; do
+        echo -en "${YELLOW}[?]${NC} ${prompt} [y/n] "
+        read -rn1 reply
+        echo ""
+        case "${reply,,}" in
+            y) return 0 ;;
+            n) return 1 ;;
+            *) echo "  Please press y or n." ;;
+        esac
+    done
+}
+
+# ── Collect video files upfront ───────────────────────────────────────────────
+# Snapshot before running anything so files created by addsub are excluded.
+mapfile -t VIDEO_FILES < <(
+    find . -maxdepth 1 -type f \
+    | grep -iE "\.(${VIDEO_EXTS})$" \
+    | sort
+)
+
+if [[ ${#VIDEO_FILES[@]} -eq 0 ]]; then
+    log_warn "No video files found in the current directory."
+    exit 0
+fi
+
+log_info "Found ${#VIDEO_FILES[@]} video file(s). Scanning for subtitle matches..."
+echo ""
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
+for video in "${VIDEO_FILES[@]}"; do
+    filename=$(basename "$video")
+
+    # Extract 2nd ' - '-separated part as the code, trimmed of whitespace.
+    # Example: "Show Name - S01E01 - Episode Title.mkv" → "S01E01"
+    code=$(awk -F' - ' '{print $2}' <<< "$filename" | xargs)
+
+    if [[ -z "$code" ]]; then
+        log_warn "Skipping '$filename' — no ' - ' separator found, cannot extract code."
+        continue
+    fi
+
+    # Find subtitle files whose name contains the code (case-insensitive).
+    mapfile -t matches < <(
+        find . -maxdepth 1 -type f \
+        | grep -iE "\.(${SUB_EXTS})$" \
+        | grep -i "$code" \
+        | sort
+    )
+
+    if [[ ${#matches[@]} -eq 0 ]]; then
+        log_info "No subtitle found for '$filename' (code: $code)."
+        continue
+    fi
+
+    if [[ ${#matches[@]} -gt 1 ]]; then
+        log_warn "Multiple subtitles matched for '$filename' — using first match."
+        for m in "${matches[@]}"; do
+            log_warn "  $(basename "$m")"
+        done
+    fi
+
+    sub_file=$(basename "${matches[0]}")
+
+    echo -e "${CYAN}Video:${NC} $filename"
+    echo -e "${CYAN}Sub:${NC}   $sub_file"
+    echo -e "${CYAN}Code:${NC}  $code"
+
+    if $AUTO_YES || confirm "Run: addsub -u \"$filename\" \"$sub_file\"?"; then
+        log_info "Running addsub..."
+        if addsub -u "$filename" "$sub_file"; then
+            log_ok "Done: $filename"
+        else
+            log_err "addsub failed for '$filename' — continuing with next file."
+        fi
+    else
+        log_warn "Skipped: $filename"
+    fi
+
+    echo ""
+done
+
+log_ok "All done."
