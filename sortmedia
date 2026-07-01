@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+#
+# sortmedia — Move video files into folders based on the camelCase type in each filename.
+#
+# Usage:  sortmedia [LOCATION_A]
+#
+# LOCATION_A may be passed as a positional argument; if omitted the script
+# prompts for it interactively.
+# Runs in the current directory. Searches a base folder (Location A) to
+# search for destination subfolders.  For each video file found:
+#
+#   1. The last segment of the filename stem (split on spaces, underscores,
+#      hyphens, or dots) is treated as the camelCase type identifier.
+#   2. That identifier is expanded to space-separated words:
+#      - Consecutive uppercase letters are kept together (ATC, not A T C).
+#      - Digits are not treated as camelCase boundaries (Video2024 → Video2024).
+#      - Standard lowercase→uppercase transitions split words (camelCase → camel Case).
+#   3. Location A is searched recursively for a folder whose name matches the
+#      expanded words (case-insensitive).
+#   4. If a match is found, the video is moved there; otherwise it is skipped.
+#
+# Examples of camelCase expansion:
+#   elephantHerd        → elephant Herd
+#   airportTowerControl → airport Tower Control
+#   ATCRecording        → ATC Recording
+#   myATCVideo          → my ATC Video
+#   safariFlight2024    → safari Flight2024
+#
+
+import os
+import re
+import sys
+import shutil
+from pathlib import Path
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+VIDEO_EXTENSIONS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv",
+    ".m4v", ".ts", ".webm", ".mpg", ".mpeg", ".3gp", ".vob",
+}
+
+# ── Colors ────────────────────────────────────────────────────────────────────
+
+GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+CYAN   = "\033[36m"
+RED    = "\033[31m"
+BOLD   = "\033[1m"
+RESET  = "\033[0m"
+
+def col(color, text):
+    return f"{color}{text}{RESET}"
+
+
+def getkey(prompt: str) -> str:
+    """Print *prompt* and return a single keypress without requiring Enter."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    if sys.platform == "win32":
+        import msvcrt
+        ch = msvcrt.getwch()
+    else:
+        import tty, termios
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    sys.stdout.write(ch + "\n")
+    sys.stdout.flush()
+    return ch.lower()
+
+# ── Core logic ────────────────────────────────────────────────────────────────
+
+def camel_to_words(text: str) -> str:
+    """Expand a camelCase / PascalCase / ABBREVIATION identifier to space-separated words.
+
+    Rules applied in order:
+      1. Insert a space before an uppercase+lowercase pair that immediately follows
+         one or more uppercase letters — this splits abbreviation from next word.
+         e.g. ATCRecording → ATC Recording, myATCVideo → myATC Video
+      2. Insert a space before an uppercase letter that follows a lowercase letter.
+         e.g. camelCase → camel Case, myATC Video → my ATC Video
+
+    Digits are invisible to both rules, so numbers never cause splits.
+    """
+    result = re.sub(r'(?<=[A-Z])(?=[A-Z][a-z])', ' ', text)   # rule 1
+    result = re.sub(r'(?<=[a-z])(?=[A-Z])',        ' ', result) # rule 2
+    return result
+
+
+def extract_type(stem: str) -> str | None:
+    """Return the last segment of a filename stem split on common separators."""
+    parts = [p for p in re.split(r'[ _\-.]+', stem) if p]
+    return parts[-1] if parts else None
+
+
+def find_folder(base: Path, name: str) -> Path | None:
+    """Walk *base* recursively and return the first folder whose name matches
+    *name* (case-insensitive), or None if none is found."""
+    name_lower = name.lower()
+    for root, dirs, _ in os.walk(base):
+        for d in dirs:
+            if d.lower() == name_lower:
+                return Path(root) / d
+    return None
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    cwd = Path.cwd()
+
+    print(f"\n{col(BOLD, 'sortmedia')} — video organizer")
+    print(f"Scanning: {col(CYAN, str(cwd))}\n")
+
+    if len(sys.argv) >= 2:
+        raw = sys.argv[1].strip().strip('"').strip("'")
+    else:
+        raw = input("Location A (base folder to search for destination folders): ").strip().strip('"').strip("'")
+    if not raw:
+        sys.exit(col(RED, "Error: no location provided."))
+
+    # Convert Git Bash / MSYS2 paths like /d/foo/bar → D:\foo\bar
+    msys_match = re.match(r'^/([a-zA-Z])(/.*)?$', raw)
+    if msys_match:
+        drive = msys_match.group(1).upper()
+        rest  = (msys_match.group(2) or "").replace("/", "\\")
+        raw   = f"{drive}:{rest}"
+
+    location_a = Path(raw)
+    if not location_a.is_dir():
+        sys.exit(col(RED, f"Error: '{location_a}' is not a valid directory."))
+
+    videos = sorted(
+        f for f in cwd.iterdir()
+        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
+    )
+
+    if not videos:
+        print("No video files found in the current directory.")
+        return
+
+    print(f"Found {col(BOLD, str(len(videos)))} video file(s).\n")
+
+    moved, skipped = 0, 0
+
+    for video in videos:
+        type_part = extract_type(video.stem)
+        if not type_part:
+            print(f"  {col(YELLOW, 'SKIP')}  {video.name}  (could not extract type)")
+            skipped += 1
+            continue
+
+        folder_name = camel_to_words(type_part)
+        dest_dir = find_folder(location_a, folder_name)
+
+        if dest_dir:
+            dest_file = dest_dir / video.name
+            if dest_file.exists():
+                print(f"  {col(YELLOW, 'SKIP')}  {video.name}  (destination already exists: {dest_file})")
+                skipped += 1
+            else:
+                print(f"  {col(GREEN, 'MOVE')}  {video.name}")
+                print(f"        '{type_part}' → '{folder_name}'")
+                print(f"        → {dest_dir}")
+                shutil.move(str(video), str(dest_file))
+                moved += 1
+        else:
+            print(f"  {col(YELLOW, '????')}  {video.name}  (no folder named '{folder_name}')")
+            answer = getkey(f"        Create '{folder_name}' inside {location_a}? [y/N] ")
+            if answer == 'y':
+                new_dir = location_a / folder_name
+                new_dir.mkdir(parents=True, exist_ok=True)
+                dest_file = new_dir / video.name
+                print(f"        {col(GREEN, 'MKDIR')} {new_dir}")
+                shutil.move(str(video), str(dest_file))
+                print(f"        {col(GREEN, 'MOVE')}  → {dest_file}")
+                moved += 1
+            else:
+                skipped += 1
+
+    print(f"\nDone. {col(GREEN, f'Moved: {moved}')}  {col(YELLOW, f'Skipped: {skipped}')}")
+
+
+if __name__ == "__main__":
+    main()
