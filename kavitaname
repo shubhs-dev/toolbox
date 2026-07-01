@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+#
+# kavitaname — Rename chapter CBZ/CBR files for Kavita server compatibility.
+#
+# Usage:  kavitaname [options] <type> [series-name]
+#
+#   type         Content type: "manga" or "manhwa"
+#   series-name  Series name override (default: current folder name)
+#
+# Scans the current folder for "Chapter N.cbz" / "Chapter N.cbr" files.
+# For manga, prompts for a volume-map data file (see one-piece-volumes format).
+#
+# Output format:
+#   manga:   {Series} c{ch:03d} (v{vol:02d}).cbz   e.g. "One Piece c001 (v01).cbz"
+#   manhwa:  {Series} c{ch:03d}.cbz      e.g. "Solo Leveling c001.cbz"
+#
+# Volume map file format (pipe-delimited, # comments supported):
+#   vol_number|first_chapter|last_chapter|Title
+#
+# Options:
+#   -n, --dry-run   Preview renames without making any changes
+#       --help      Show this help message
+#
+# Examples:
+#   kavitaname manga "One Piece"
+#   kavitaname manhwa
+#   kavitaname --dry-run manga "Berserk"
+#
+
+set -euo pipefail
+
+# ── Colors / logging ──────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_info() { echo -e "${CYAN}[INFO]${NC} $*"; }
+log_ok()   { echo -e "${GREEN}[ OK ]${NC} $*"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
+log_err()  { echo -e "${RED}[ERR ]${NC} $*" >&2; }
+
+die()   { log_err "$*"; exit 1; }
+usage() { sed -n '3,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+TYPE=""
+SERIES=""
+DRY_RUN=false
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n|--dry-run) DRY_RUN=true; shift ;;
+    --help|-h)    usage 0 ;;
+    -*)           die "Unknown option: $1" ;;
+    *)            POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+if [[ ${#POSITIONAL[@]} -lt 1 ]]; then
+  log_err "Missing required argument: type"
+  usage 1
+fi
+
+TYPE="${POSITIONAL[0]}"
+[[ ${#POSITIONAL[@]} -ge 2 ]] && SERIES="${POSITIONAL[1]}"
+
+[[ "$TYPE" != "manga" && "$TYPE" != "manhwa" ]] \
+  && die "type must be 'manga' or 'manhwa', got: '${TYPE}'"
+
+if [[ -z "$SERIES" ]]; then
+  SERIES="$(basename "$PWD")"
+  log_info "Series name not provided — using folder name: ${SERIES}"
+fi
+
+# ── Volume map (manga only) ───────────────────────────────────────────────────
+declare -A CH_VOL=()
+
+if [[ "$TYPE" == "manga" ]]; then
+  read -rp "Volume map file: " vol_file
+  vol_file="${vol_file/#\~/$HOME}"
+
+  [[ -z "$vol_file" ]] && die "No volume map file specified."
+  [[ ! -f "$vol_file" ]] && die "Volume map file not found: ${vol_file}"
+
+  log_info "Loading volume map: ${vol_file}"
+
+  while IFS='|' read -r vol_num ch_start ch_end _rest; do
+    # Strip carriage returns (Windows line endings)
+    vol_num="${vol_num//$'\r'/}"
+    ch_start="${ch_start//$'\r'/}"
+    ch_end="${ch_end//$'\r'/}"
+    for ch in $(seq "$ch_start" "$ch_end"); do
+      CH_VOL["$ch"]="$vol_num"
+    done
+  done < <(grep -v '^[[:space:]]*#' "$vol_file" | grep -v '^[[:space:]]*$')
+
+  log_info "Loaded ${#CH_VOL[@]} chapter-to-volume mappings."
+fi
+
+# ── Discover files ────────────────────────────────────────────────────────────
+shopt -s nullglob nocaseglob
+raw_files=(Chapter\ *.cbz Chapter\ *.cbr)
+shopt -u nullglob nocaseglob
+
+mapfile -t files < <(printf '%s\n' "${raw_files[@]}" | sort -V)
+
+[[ ${#files[@]} -eq 0 ]] \
+  && die "No 'Chapter *.cbz' / 'Chapter *.cbr' files found in: ${PWD}"
+
+log_info "Found ${#files[@]} file(s). Series: \"${SERIES}\"  Type: ${TYPE}"
+$DRY_RUN && log_info "(dry-run — no files will be renamed)"
+echo ""
+
+# ── Rename loop ───────────────────────────────────────────────────────────────
+renamed=0
+skipped=0
+
+for f in "${files[@]}"; do
+  ext="${f##*.}"
+  stem="${f%.*}"
+
+  # Extract chapter number (int or decimal) from "Chapter N" stem
+  ch_num=$(echo "$stem" | sed 's/^[Cc]hapter[[:space:]]*//' | grep -oE '^[0-9]+(\.[0-9]+)?') || {
+    log_warn "Cannot parse chapter number from: ${f}  — skipping"
+    ((skipped++)) || true
+    continue
+  }
+
+  if [[ -z "$ch_num" ]]; then
+    log_warn "Cannot parse chapter number from: ${f}  — skipping"
+    ((skipped++)) || true
+    continue
+  fi
+
+  ch_int=$(printf '%d' "${ch_num%%.*}")  # strip leading zeros; integer part only
+
+  if [[ "$TYPE" == "manga" ]]; then
+    vol_num="${CH_VOL["$ch_int"]:-}"
+
+    if [[ -z "$vol_num" ]]; then
+      log_warn "Chapter ${ch_num} not in volume map — skipping: ${f}"
+      ((skipped++)) || true
+      continue
+    fi
+
+    vol_padded=$(printf '%02d' "$vol_num")
+    ch_padded=$(printf '%03d' "$ch_int")
+    [[ "$ch_num" == *.* ]] && ch_padded="${ch_padded}.${ch_num#*.}"
+    new_name="${SERIES} c${ch_padded} (v${vol_padded}).${ext}"
+
+  else
+    # manhwa — no volumes, zero-pad chapter to 3 digits; preserve decimal if present
+    ch_padded=$(printf '%03d' "$ch_int")
+    [[ "$ch_num" == *.* ]] && ch_padded="${ch_padded}.${ch_num#*.}"
+    new_name="${SERIES} c${ch_padded}.${ext}"
+  fi
+
+  if [[ "$f" == "$new_name" ]]; then
+    log_info "Unchanged: ${f}"
+    ((skipped++)) || true
+    continue
+  fi
+
+  if $DRY_RUN; then
+    log_info "${f}  →  ${new_name}"
+  else
+    if [[ -e "$new_name" ]]; then
+      log_warn "Target already exists, skipping: ${new_name}"
+      ((skipped++)) || true
+      continue
+    fi
+    mv -- "$f" "$new_name"
+    log_ok "${f}  →  ${new_name}"
+    ((renamed++)) || true
+  fi
+done
+
+echo ""
+if $DRY_RUN; then
+  log_info "Dry-run complete — ${#files[@]} file(s) previewed."
+else
+  log_info "Done. Renamed: ${renamed}  Skipped: ${skipped}"
+fi
