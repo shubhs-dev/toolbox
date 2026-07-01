@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+#
+# cutvid — Trim a video to a start/end time using ffmpeg.
+#
+# Usage:  cutvid [options] <video_file> [output_file]
+#
+# Options:
+#   -s, --start TIME   Start time (default: beginning). Accepts HH:MM:SS, MM:SS, or seconds.
+#   -e, --end TIME     End time (default: end of file). Accepts HH:MM:SS, MM:SS, or seconds.
+#   -d, --duration DUR Duration of the cut instead of end time.
+#   -r, --reencode     Re-encode output (slower, frame-accurate). Default: stream-copy.
+#       --help         Show this help message.
+#
+# Examples:
+#   cutvid -s 00:01:30 -e 00:05:00 movie.mkv        # cut from 1:30 to 5:00
+#   cutvid -s 90 -d 120 movie.mp4 clip.mp4           # 2-minute clip starting at 1:30
+#   cutvid -s 00:01:30 movie.mkv                     # trim start, keep to end
+#   cutvid -e 00:05:00 movie.mkv                     # keep from beginning to 5:00
+#   cutvid --start 1:30 --end 5:00 --reencode movie.mkv clip.mkv
+#
+# Notes:
+#   Stream-copy mode (default) is near-instant but cuts on keyframes, so the
+#   actual start may be slightly before the requested time. Use --reencode for
+#   frame-accurate cuts at the cost of re-encoding time.
+#
+
+set -euo pipefail
+
+# ── Defaults ─────────────────────────────────────────────────────────────────
+START_TIME=""
+END_TIME=""
+DURATION=""
+REENCODE=false
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+log_info() { echo -e "\e[34m[INFO]\e[0m  $*"; }
+log_ok()   { echo -e "\e[32m[ OK ]\e[0m  $*"; }
+log_warn() { echo -e "\e[33m[WARN]\e[0m  $*" >&2; }
+log_err()  { echo -e "\e[31m[ERR ]\e[0m  $*" >&2; }
+
+usage() {
+  sed -n '3,25p' "$0" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+die() { log_err "$*"; exit 1; }
+
+require() {
+  command -v "$1" &>/dev/null || die "'$1' is not installed or not in PATH"
+}
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -s|--start)
+      [[ $# -ge 2 ]] || die "--start requires an argument"
+      START_TIME="$2"; shift 2 ;;
+    -e|--end)
+      [[ $# -ge 2 ]] || die "--end requires an argument"
+      END_TIME="$2"; shift 2 ;;
+    -d|--duration)
+      [[ $# -ge 2 ]] || die "--duration requires an argument"
+      DURATION="$2"; shift 2 ;;
+    -r|--reencode)
+      REENCODE=true; shift ;;
+    --help)
+      usage 0 ;;
+    -*)
+      die "unknown option: $1" ;;
+    *)
+      POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+# ── Validation ────────────────────────────────────────────────────────────────
+require ffmpeg
+
+[[ ${#POSITIONAL[@]} -ge 1 ]] || { log_err "video file is required"; echo; usage 1; }
+
+INPUT="${POSITIONAL[0]}"
+[[ -f "$INPUT" ]] || die "file not found: $INPUT"
+
+[[ -n "$END_TIME" && -n "$DURATION" ]] && die "--end and --duration are mutually exclusive"
+
+# Derive output path
+if [[ ${#POSITIONAL[@]} -ge 2 ]]; then
+  OUTPUT="${POSITIONAL[1]}"
+else
+  EXT="${INPUT##*.}"
+  BASE="${INPUT%.*}"
+  SUFFIX="${START_TIME:-0}-${END_TIME:-${DURATION:-end}}"
+  # Sanitize colons for filenames on Windows
+  SUFFIX="${SUFFIX//:/-}"
+  OUTPUT="${BASE}.cut.${SUFFIX}.${EXT}"
+fi
+
+[[ "$OUTPUT" != "$INPUT" ]] || die "output path must differ from input path"
+
+# ── Build ffmpeg arguments ────────────────────────────────────────────────────
+FFMPEG_ARGS=(-y)
+
+# Seek before input for stream-copy efficiency; after input for reencode accuracy
+if [[ "$REENCODE" == false && -n "$START_TIME" ]]; then
+  FFMPEG_ARGS+=(-ss "$START_TIME")
+fi
+
+FFMPEG_ARGS+=(-i "$INPUT")
+
+if [[ "$REENCODE" == true && -n "$START_TIME" ]]; then
+  FFMPEG_ARGS+=(-ss "$START_TIME")
+fi
+
+if [[ -n "$END_TIME" ]]; then
+  # Stream-copy: timestamps preserved from input, so -to refers to original timeline.
+  # Re-encode with -ss after -i: output timestamps also match input, so -to still works.
+  FFMPEG_ARGS+=(-to "$END_TIME")
+elif [[ -n "$DURATION" ]]; then
+  FFMPEG_ARGS+=(-t "$DURATION")
+fi
+
+if [[ "$REENCODE" == true ]]; then
+  FFMPEG_ARGS+=(-c:v libx264 -crf 18 -preset slow -c:a aac)
+else
+  FFMPEG_ARGS+=(-c copy)
+fi
+
+FFMPEG_ARGS+=("$OUTPUT")
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+log_info "Input  : $INPUT"
+log_info "Output : $OUTPUT"
+[[ -n "$START_TIME" ]] && log_info "Start  : $START_TIME"
+[[ -n "$END_TIME"   ]] && log_info "End    : $END_TIME"
+[[ -n "$DURATION"   ]] && log_info "Duration: $DURATION"
+log_info "Mode   : $( [[ "$REENCODE" == true ]] && echo "re-encode" || echo "stream-copy (fast)" )"
+echo
+
+ffmpeg "${FFMPEG_ARGS[@]}"
+
+echo
+log_ok "Done → $OUTPUT"
