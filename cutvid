@@ -22,6 +22,8 @@
 #   Stream-copy mode (default) is near-instant but cuts on keyframes, so the
 #   actual start may be slightly before the requested time. Use --reencode for
 #   frame-accurate cuts at the cost of re-encoding time.
+#   Both modes use input seeking (-ss before -i), which preserves original
+#   timestamps so --end always refers to the original file timeline.
 #
 
 set -euo pipefail
@@ -47,6 +49,20 @@ die() { log_err "$*"; exit 1; }
 
 require() {
   command -v "$1" &>/dev/null || die "'$1' is not installed or not in PATH"
+}
+
+# Convert HH:MM:SS, MM:SS, or plain seconds to total seconds (decimal)
+to_seconds() {
+  local t="$1"
+  if [[ "$t" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "$t"
+  else
+    echo "$t" | awk -F: '{
+      if (NF==3) printf "%.6f", ($1*3600 + $2*60 + $3)
+      else if (NF==2) printf "%.6f", ($1*60 + $2)
+      else printf "%.6f", $1
+    }'
+  fi
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -100,21 +116,26 @@ fi
 # ── Build ffmpeg arguments ────────────────────────────────────────────────────
 FFMPEG_ARGS=(-y)
 
-# Seek before input for stream-copy efficiency; after input for reencode accuracy
-if [[ "$REENCODE" == false && -n "$START_TIME" ]]; then
+if [[ -n "$START_TIME" ]]; then
   FFMPEG_ARGS+=(-ss "$START_TIME")
 fi
 
 FFMPEG_ARGS+=(-i "$INPUT")
 
-if [[ "$REENCODE" == true && -n "$START_TIME" ]]; then
-  FFMPEG_ARGS+=(-ss "$START_TIME")
-fi
-
 if [[ -n "$END_TIME" ]]; then
-  # Stream-copy: timestamps preserved from input, so -to refers to original timeline.
-  # Re-encode with -ss after -i: output timestamps also match input, so -to still works.
-  FFMPEG_ARGS+=(-to "$END_TIME")
+  if [[ -n "$START_TIME" ]]; then
+    # After input-seeking, ffmpeg resets output timestamps to 0, so -to would
+    # act as a duration. Instead compute the true duration and use -t.
+    start_sec=$(to_seconds "$START_TIME")
+    end_sec=$(to_seconds "$END_TIME")
+    dur=$(awk -v s="$start_sec" -v e="$end_sec" 'BEGIN { printf "%.6f", e - s }')
+    awk -v d="$dur" 'BEGIN { if (d <= 0) { print "[ERR ] --end must be after --start" > "/dev/stderr"; exit 1 } }' \
+      || exit 1
+    FFMPEG_ARGS+=(-t "$dur")
+  else
+    # No seek — timestamps start at 0, so -to correctly refers to the file timeline.
+    FFMPEG_ARGS+=(-to "$END_TIME")
+  fi
 elif [[ -n "$DURATION" ]]; then
   FFMPEG_ARGS+=(-t "$DURATION")
 fi
