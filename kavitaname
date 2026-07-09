@@ -8,11 +8,13 @@
 #   series-name  Series name override (default: current folder name)
 #
 # Scans the current folder for "Chapter N.cbz" / "Chapter N.cbr" files.
-# For manga, prompts for a volume-map data file (see one-piece-volumes format).
+# For manga, optionally prompts for a volume-map data file (see one-piece-volumes format).
+# Press Enter to skip — chapters will be named without volume info.
 #
 # Output format:
-#   manga:   {Series} c{ch:03d} (v{vol:02d}).cbz   e.g. "One Piece c001 (v01).cbz"
-#   manhwa:  {Series} c{ch:03d}.cbz      e.g. "Solo Leveling c001.cbz"
+#   manga (with map):    {Series} c{ch:03d} (v{vol:02d}).cbz   e.g. "One Piece c001 (v01).cbz"
+#   manga (no map):      {Series} c{ch:03d}.cbz
+#   manhwa:              {Series} c{ch:03d}.cbz      e.g. "Solo Leveling c001.cbz"
 #
 # Volume map file format (pipe-delimited, # comments supported):
 #   vol_number|first_chapter|last_chapter|Title
@@ -77,38 +79,43 @@ fi
 
 # ── Volume map (manga only) ───────────────────────────────────────────────────
 declare -A CH_VOL=()
+HAS_VOL_MAP=false
 
 if [[ "$TYPE" == "manga" ]]; then
-  read -rp "Volume map file: " vol_file
+  read -rp "Volume map file (Enter to skip): " vol_file
   vol_file="${vol_file/#\~/$HOME}"
 
-  [[ -z "$vol_file" ]] && die "No volume map file specified."
-  [[ ! -f "$vol_file" ]] && die "Volume map file not found: ${vol_file}"
+  if [[ -n "$vol_file" ]]; then
+    [[ ! -f "$vol_file" ]] && die "Volume map file not found: ${vol_file}"
 
-  log_info "Loading volume map: ${vol_file}"
+    log_info "Loading volume map: ${vol_file}"
 
-  while IFS='|' read -r vol_num ch_start ch_end _rest; do
-    # Strip carriage returns (Windows line endings)
-    vol_num="${vol_num//$'\r'/}"
-    ch_start="${ch_start//$'\r'/}"
-    ch_end="${ch_end//$'\r'/}"
-    for ch in $(seq "$ch_start" "$ch_end"); do
-      CH_VOL["$ch"]="$vol_num"
-    done
-  done < <(grep -v '^[[:space:]]*#' "$vol_file" | grep -v '^[[:space:]]*$')
+    while IFS='|' read -r vol_num ch_start ch_end _rest; do
+      # Strip carriage returns (Windows line endings)
+      vol_num="${vol_num//$'\r'/}"
+      ch_start="${ch_start//$'\r'/}"
+      ch_end="${ch_end//$'\r'/}"
+      for ch in $(seq "$ch_start" "$ch_end"); do
+        CH_VOL["$ch"]="$vol_num"
+      done
+    done < <(grep -v '^[[:space:]]*#' "$vol_file" | grep -v '^[[:space:]]*$')
 
-  log_info "Loaded ${#CH_VOL[@]} chapter-to-volume mappings."
+    log_info "Loaded ${#CH_VOL[@]} chapter-to-volume mappings."
+    HAS_VOL_MAP=true
+  else
+    log_info "No volume map provided — chapters will be named without volume info."
+  fi
 fi
 
 # ── Discover files ────────────────────────────────────────────────────────────
 shopt -s nullglob nocaseglob
-raw_files=(Chapter\ *.cbz Chapter\ *.cbr)
+raw_files=(Chapter\ *.cbz Chapter\ *.cbr Prologue\ *.cbz Prologue\ *.cbr)
 shopt -u nullglob nocaseglob
 
 mapfile -t files < <(printf '%s\n' "${raw_files[@]}" | sort -V)
 
 [[ ${#files[@]} -eq 0 ]] \
-  && die "No 'Chapter *.cbz' / 'Chapter *.cbr' files found in: ${PWD}"
+  && die "No 'Chapter *.cbz' / 'Chapter *.cbr' / 'Prologue *.cbz' files found in: ${PWD}"
 
 log_info "Found ${#files[@]} file(s). Series: \"${SERIES}\"  Type: ${TYPE}"
 $DRY_RUN && log_info "(dry-run — no files will be renamed)"
@@ -121,35 +128,53 @@ skipped=0
 for f in "${files[@]}"; do
   ext="${f##*.}"
   stem="${f%.*}"
+  is_prologue=false
 
-  # Extract chapter number (int or decimal) from "Chapter N" stem
-  ch_num=$(echo "$stem" | sed 's/^[Cc]hapter[[:space:]]*//' | grep -oE '^[0-9]+(\.[0-9]+)?') || {
-    log_warn "Cannot parse chapter number from: ${f}  — skipping"
-    ((skipped++)) || true
-    continue
-  }
+  if [[ "$stem" =~ ^[Pp]rologue ]]; then
+    # Extract the trailing integer from "Prologue N"
+    pro_num=$(echo "$stem" | grep -oE '[0-9]+$') || pro_num=""
+    if [[ -z "$pro_num" ]]; then
+      log_warn "Cannot parse prologue number from: ${f}  — skipping"
+      ((skipped++)) || true
+      continue
+    fi
+    ch_num="0.${pro_num}"
+    is_prologue=true
+  else
+    # Extract chapter number (int or decimal) from "Chapter N" stem
+    ch_num=$(echo "$stem" | sed 's/^[Cc]hapter[[:space:]]*//' | grep -oE '^[0-9]+(\.[0-9]+)?') || {
+      log_warn "Cannot parse chapter number from: ${f}  — skipping"
+      ((skipped++)) || true
+      continue
+    }
 
-  if [[ -z "$ch_num" ]]; then
-    log_warn "Cannot parse chapter number from: ${f}  — skipping"
-    ((skipped++)) || true
-    continue
+    if [[ -z "$ch_num" ]]; then
+      log_warn "Cannot parse chapter number from: ${f}  — skipping"
+      ((skipped++)) || true
+      continue
+    fi
   fi
 
   ch_int=$(printf '%d' "${ch_num%%.*}")  # strip leading zeros; integer part only
 
   if [[ "$TYPE" == "manga" ]]; then
-    vol_num="${CH_VOL["$ch_int"]:-}"
-
-    if [[ -z "$vol_num" ]]; then
-      log_warn "Chapter ${ch_num} not in volume map — skipping: ${f}"
-      ((skipped++)) || true
-      continue
-    fi
-
-    vol_padded=$(printf '%02d' "$vol_num")
     ch_padded=$(printf '%03d' "$ch_int")
     [[ "$ch_num" == *.* ]] && ch_padded="${ch_padded}.${ch_num#*.}"
-    new_name="${SERIES} c${ch_padded} (v${vol_padded}).${ext}"
+
+    if $HAS_VOL_MAP && ! $is_prologue; then
+      vol_num="${CH_VOL["$ch_int"]:-}"
+
+      if [[ -z "$vol_num" ]]; then
+        log_warn "Chapter ${ch_num} not in volume map — skipping: ${f}"
+        ((skipped++)) || true
+        continue
+      fi
+
+      vol_padded=$(printf '%02d' "$vol_num")
+      new_name="${SERIES} c${ch_padded} (v${vol_padded}).${ext}"
+    else
+      new_name="${SERIES} c${ch_padded}.${ext}"
+    fi
 
   else
     # manhwa — no volumes, zero-pad chapter to 3 digits; preserve decimal if present
