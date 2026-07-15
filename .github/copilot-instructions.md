@@ -25,6 +25,20 @@ A collection of standalone CLI scripts for media processing, file organisation, 
 | `mergemanga` | Bash | `7z` | Merge One Piece chapter CBZs into volume CBZs with metadata |
 | `sortmedia` | Python 3 | — | Move video files into folders by camelCase type tag in filename |
 | `toolbox` | Bash | — | List all scripts with descriptions |
+| `x265ify` | Python 3 | `ffmpeg`/`ffprobe`, `rich`, opt. `send2trash` | Re-encode x264 videos to x265/HEVC via hardware encoder |
+
+---
+
+## Keeping the README Updated
+
+**`README.md` must always reflect the current state of the scripts in this repo.** Whenever you add, remove, or modify a script — including changing its language, options/flags, arguments, defaults, dependencies, or behavior — update the corresponding section(s) of `README.md` in the same change:
+
+- New script → add a row to the `## Scripts` table and a new `###` usage section (dependencies, examples, options table), and add it to the `chmod +x` line and the `SCRIPTS` array in `toolbox`.
+- Removed script → delete its table row, usage section, and entry from `toolbox`'s `SCRIPTS` array and the `chmod +x` line.
+- Changed options/behavior/dependencies/language → update the matching table row and usage section so the README never drifts from actual script behavior.
+- Also update the `Scripts at a Glance` table and the relevant `Script-Specific Conventions` entry below in this file for the same change.
+
+Treat README and copilot-instructions updates as part of the definition of done for any script change, not a follow-up task.
 
 ---
 
@@ -270,6 +284,14 @@ Use `send2trash` if available, then fall back to `powershell` (Windows) → `gio
 - `SCRIPTS` array of `"name|description"` pairs; add new scripts here when creating them
 - Column width auto-calculated from the longest script name for alignment
 
+### x265ify
+- Encoder chosen automatically via `ENCODER_PRIORITY` list (NVENC → VideoToolbox → QSV → AMF → VAAPI → software `libx265` fallback); override with `--encoder`
+- Sentinel file pattern mirrors `compressvid`: source renamed to `*.processing` during transcode; `recover_interrupted()` restores sentinels on startup
+- Resolution, audio, subtitles, and HDR metadata (HDR10/HLG) always passed through unchanged
+- Size comparison: keep transcoded file only if strictly smaller; otherwise discard and leave original in place
+- `--watch [SECS]` re-scans on an interval (default 60s when flag given with no value, via `nargs="?", const=60`)
+- Original sent to Trash via `send2trash` → `powershell` → `gio`/`trash-put` → `osascript` fallback chain (same pattern as `compressvid`)
+
 ---
 
 ## Data Files
@@ -290,3 +312,10 @@ Use `send2trash` if available, then fall back to `powershell` (Windows) → `gio
 5. Add an entry to the `SCRIPTS` array in `toolbox`
 6. Make it executable: `chmod +x <scriptname>`
 7. Verify it works on both macOS and Git Bash on Windows — check the cross-platform checklist above
+8. Update `README.md` (table row + usage section) and this file's `Scripts at a Glance` table + `Script-Specific Conventions` entry
+
+## When Modifying or Removing a Script
+
+1. Update `README.md`'s table row and usage section (options, examples, dependencies) to match the new behavior, or remove them entirely if the script is deleted
+2. Update this file's `Scripts at a Glance` table and `Script-Specific Conventions` entry to match
+3. If removed, also drop the entry from the `SCRIPTS` array in `toolbox` and the `chmod +x` line in the README
