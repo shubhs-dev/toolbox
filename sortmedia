@@ -11,20 +11,10 @@
 #
 #   1. The last segment of the filename stem (split on spaces, underscores,
 #      hyphens, or dots) is treated as the camelCase type identifier.
-#   2. That identifier is expanded to space-separated words:
-#      - Consecutive uppercase letters are kept together (ATC, not A T C).
-#      - Digits are not treated as camelCase boundaries (Video2024 → Video2024).
-#      - Standard lowercase→uppercase transitions split words (camelCase → camel Case).
-#   3. Location A is searched recursively for a folder whose name matches the
-#      expanded words (case-insensitive).
-#   4. If a match is found, the video is moved there; otherwise it is skipped.
+#   2. Location A is searched recursively for a folder whose name matches the
+#      camelCase type identifier (case-insensitive).
+#   3. If a match is found, the video is moved there; otherwise it is skipped.
 #
-# Examples of camelCase expansion:
-#   elephantHerd        → elephant Herd
-#   airportTowerControl → airport Tower Control
-#   ATCRecording        → ATC Recording
-#   myATCVideo          → my ATC Video
-#   safariFlight2024    → safari Flight2024
 #
 
 import os
@@ -74,23 +64,6 @@ def getkey(prompt: str) -> str:
     return ch.lower()
 
 # ── Core logic ────────────────────────────────────────────────────────────────
-
-def camel_to_words(text: str) -> str:
-    """Expand a camelCase / PascalCase / ABBREVIATION identifier to space-separated words.
-
-    Rules applied in order:
-      1. Insert a space before an uppercase+lowercase pair that immediately follows
-         one or more uppercase letters — this splits abbreviation from next word.
-         e.g. ATCRecording → ATC Recording, myATCVideo → myATC Video
-      2. Insert a space before an uppercase letter that follows a lowercase letter.
-         e.g. camelCase → camel Case, myATC Video → my ATC Video
-
-    Digits are invisible to both rules, so numbers never cause splits.
-    """
-    result = re.sub(r'(?<=[A-Z])(?=[A-Z][a-z])', ' ', text)   # rule 1
-    result = re.sub(r'(?<=[a-z])(?=[A-Z])',        ' ', result) # rule 2
-    return result
-
 
 def extract_type(stem: str) -> str | None:
     """Return the last segment of a filename stem split on common separators."""
@@ -154,8 +127,7 @@ def main() -> None:
             skipped += 1
             continue
 
-        folder_name = camel_to_words(type_part)
-        dest_dir = find_folder(location_a, folder_name)
+        dest_dir = find_folder(location_a, type_part)
 
         if dest_dir:
             dest_file = dest_dir / video.name
@@ -164,15 +136,14 @@ def main() -> None:
                 skipped += 1
             else:
                 print(f"  {col(GREEN, 'MOVE')}  {video.name}")
-                print(f"        '{type_part}' → '{folder_name}'")
                 print(f"        → {dest_dir}")
                 shutil.move(str(video), str(dest_file))
                 moved += 1
         else:
-            print(f"  {col(YELLOW, '????')}  {video.name}  (no folder named '{folder_name}')")
-            answer = getkey(f"        Create '{folder_name}' inside {location_a}? [y/N] ")
+            print(f"  {col(YELLOW, '????')}  {video.name}  (no folder named '{type_part}')")
+            answer = getkey(f"        Create '{type_part}' inside {location_a}? [y/N] ")
             if answer == 'y':
-                new_dir = location_a / folder_name
+                new_dir = location_a / type_part
                 new_dir.mkdir(parents=True, exist_ok=True)
                 dest_file = new_dir / video.name
                 print(f"        {col(GREEN, 'MKDIR')} {new_dir}")
