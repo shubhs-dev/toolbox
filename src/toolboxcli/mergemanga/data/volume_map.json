@@ -1,0 +1,692 @@
+[
+  {
+    "volume": 1,
+    "start": 1,
+    "end": 8,
+    "title": "Romance Dawn"
+  },
+  {
+    "volume": 2,
+    "start": 9,
+    "end": 17,
+    "title": "Buggy the Clown"
+  },
+  {
+    "volume": 3,
+    "start": 18,
+    "end": 26,
+    "title": "Don't Get Fooled Again"
+  },
+  {
+    "volume": 4,
+    "start": 27,
+    "end": 35,
+    "title": "The Black Cat Pirates"
+  },
+  {
+    "volume": 5,
+    "start": 36,
+    "end": 44,
+    "title": "For Whom the Bell Tolls"
+  },
+  {
+    "volume": 6,
+    "start": 45,
+    "end": 53,
+    "title": "The Oath"
+  },
+  {
+    "volume": 7,
+    "start": 54,
+    "end": 62,
+    "title": "The Crap-Geezer"
+  },
+  {
+    "volume": 8,
+    "start": 63,
+    "end": 71,
+    "title": "I Won't Die"
+  },
+  {
+    "volume": 9,
+    "start": 72,
+    "end": 81,
+    "title": "Tears"
+  },
+  {
+    "volume": 10,
+    "start": 82,
+    "end": 90,
+    "title": "OK, Let's Stand Up!"
+  },
+  {
+    "volume": 11,
+    "start": 91,
+    "end": 99,
+    "title": "The Meanest Man In the East"
+  },
+  {
+    "volume": 12,
+    "start": 100,
+    "end": 108,
+    "title": "The Legend Begins"
+  },
+  {
+    "volume": 13,
+    "start": 109,
+    "end": 117,
+    "title": "It's All Right!"
+  },
+  {
+    "volume": 14,
+    "start": 118,
+    "end": 126,
+    "title": "Instinct"
+  },
+  {
+    "volume": 15,
+    "start": 127,
+    "end": 136,
+    "title": "Straight Ahead!!!"
+  },
+  {
+    "volume": 16,
+    "start": 137,
+    "end": 145,
+    "title": "Carrying On His Will"
+  },
+  {
+    "volume": 17,
+    "start": 146,
+    "end": 155,
+    "title": "Hiriluk's Cherry Blossoms"
+  },
+  {
+    "volume": 18,
+    "start": 156,
+    "end": 166,
+    "title": "Ace Arrives"
+  },
+  {
+    "volume": 19,
+    "start": 167,
+    "end": 176,
+    "title": "Rebellion"
+  },
+  {
+    "volume": 20,
+    "start": 177,
+    "end": 186,
+    "title": "Showdown At Alubarna"
+  },
+  {
+    "volume": 21,
+    "start": 187,
+    "end": 195,
+    "title": "Utopia"
+  },
+  {
+    "volume": 22,
+    "start": 196,
+    "end": 205,
+    "title": "HOPE!!"
+  },
+  {
+    "volume": 23,
+    "start": 206,
+    "end": 216,
+    "title": "Vivi's Adventure"
+  },
+  {
+    "volume": 24,
+    "start": 217,
+    "end": 226,
+    "title": "People's Dreams"
+  },
+  {
+    "volume": 25,
+    "start": 227,
+    "end": 236,
+    "title": "The 100 Million Berry Man"
+  },
+  {
+    "volume": 26,
+    "start": 237,
+    "end": 246,
+    "title": "Adventure on Kami's Island"
+  },
+  {
+    "volume": 27,
+    "start": 247,
+    "end": 255,
+    "title": "Overture"
+  },
+  {
+    "volume": 28,
+    "start": 256,
+    "end": 264,
+    "title": "Wyper the Berserker"
+  },
+  {
+    "volume": 29,
+    "start": 265,
+    "end": 275,
+    "title": "Oratorio"
+  },
+  {
+    "volume": 30,
+    "start": 276,
+    "end": 285,
+    "title": "Capriccio"
+  },
+  {
+    "volume": 31,
+    "start": 286,
+    "end": 295,
+    "title": "We'll Be Here"
+  },
+  {
+    "volume": 32,
+    "start": 296,
+    "end": 305,
+    "title": "Love Song"
+  },
+  {
+    "volume": 33,
+    "start": 306,
+    "end": 316,
+    "title": "Davy Back Fight"
+  },
+  {
+    "volume": 34,
+    "start": 317,
+    "end": 327,
+    "title": "The City of Water, Water Seven"
+  },
+  {
+    "volume": 35,
+    "start": 328,
+    "end": 336,
+    "title": "Captain"
+  },
+  {
+    "volume": 36,
+    "start": 337,
+    "end": 346,
+    "title": "The Ninth Justice"
+  },
+  {
+    "volume": 37,
+    "start": 347,
+    "end": 357,
+    "title": "Tom"
+  },
+  {
+    "volume": 38,
+    "start": 358,
+    "end": 367,
+    "title": "Rocketman!!"
+  },
+  {
+    "volume": 39,
+    "start": 368,
+    "end": 377,
+    "title": "Scramble"
+  },
+  {
+    "volume": 40,
+    "start": 378,
+    "end": 388,
+    "title": "Gear"
+  },
+  {
+    "volume": 41,
+    "start": 389,
+    "end": 399,
+    "title": "Declaration of War"
+  },
+  {
+    "volume": 42,
+    "start": 400,
+    "end": 409,
+    "title": "Pirates vs. CP9"
+  },
+  {
+    "volume": 43,
+    "start": 410,
+    "end": 419,
+    "title": "Legend of a Hero"
+  },
+  {
+    "volume": 44,
+    "start": 420,
+    "end": 430,
+    "title": "Let's Go Back"
+  },
+  {
+    "volume": 45,
+    "start": 431,
+    "end": 440,
+    "title": "You Have My Sympathies"
+  },
+  {
+    "volume": 46,
+    "start": 441,
+    "end": 449,
+    "title": "Adventure on Ghost Island"
+  },
+  {
+    "volume": 47,
+    "start": 450,
+    "end": 459,
+    "title": "Cloudy, Partly Bony"
+  },
+  {
+    "volume": 48,
+    "start": 460,
+    "end": 470,
+    "title": "Adventures of Oars"
+  },
+  {
+    "volume": 49,
+    "start": 471,
+    "end": 481,
+    "title": "Nightmare Luffy"
+  },
+  {
+    "volume": 50,
+    "start": 482,
+    "end": 491,
+    "title": "Arriving Again"
+  },
+  {
+    "volume": 51,
+    "start": 492,
+    "end": 502,
+    "title": "The Eleven Supernovas"
+  },
+  {
+    "volume": 52,
+    "start": 503,
+    "end": 512,
+    "title": "Roger and Rayleigh"
+  },
+  {
+    "volume": 53,
+    "start": 513,
+    "end": 522,
+    "title": "Natural Born King"
+  },
+  {
+    "volume": 54,
+    "start": 523,
+    "end": 532,
+    "title": "Unstoppable"
+  },
+  {
+    "volume": 55,
+    "start": 533,
+    "end": 541,
+    "title": "A Ray of Hope"
+  },
+  {
+    "volume": 56,
+    "start": 542,
+    "end": 551,
+    "title": "Thank You"
+  },
+  {
+    "volume": 57,
+    "start": 552,
+    "end": 562,
+    "title": "Paramount War"
+  },
+  {
+    "volume": 58,
+    "start": 563,
+    "end": 573,
+    "title": "The Name Of This Era Is Whitebeard"
+  },
+  {
+    "volume": 59,
+    "start": 574,
+    "end": 584,
+    "title": "The Death of Portgaz D. Ace"
+  },
+  {
+    "volume": 60,
+    "start": 585,
+    "end": 594,
+    "title": "My Little Brother"
+  },
+  {
+    "volume": 61,
+    "start": 595,
+    "end": 603,
+    "title": "Romance Dawn For The New World"
+  },
+  {
+    "volume": 62,
+    "start": 604,
+    "end": 614,
+    "title": "Adventure on Fish-Man Island"
+  },
+  {
+    "volume": 63,
+    "start": 615,
+    "end": 626,
+    "title": "Otohime and Tiger"
+  },
+  {
+    "volume": 64,
+    "start": 627,
+    "end": 636,
+    "title": "100,000 vs. 10"
+  },
+  {
+    "volume": 65,
+    "start": 637,
+    "end": 646,
+    "title": "To Nothing"
+  },
+  {
+    "volume": 66,
+    "start": 647,
+    "end": 656,
+    "title": "The Road Toward the Sun"
+  },
+  {
+    "volume": 67,
+    "start": 657,
+    "end": 667,
+    "title": "Cool Fight"
+  },
+  {
+    "volume": 68,
+    "start": 668,
+    "end": 678,
+    "title": "Pirate Alliance"
+  },
+  {
+    "volume": 69,
+    "start": 679,
+    "end": 690,
+    "title": "S.A.D."
+  },
+  {
+    "volume": 70,
+    "start": 691,
+    "end": 700,
+    "title": "Enter Doflamingo"
+  },
+  {
+    "volume": 71,
+    "start": 701,
+    "end": 711,
+    "title": "Coliseum of Scoundrels"
+  },
+  {
+    "volume": 72,
+    "start": 712,
+    "end": 721,
+    "title": "Dressrosa's Forgotten"
+  },
+  {
+    "volume": 73,
+    "start": 722,
+    "end": 731,
+    "title": "Operation Dressrosa S.O.P."
+  },
+  {
+    "volume": 74,
+    "start": 732,
+    "end": 742,
+    "title": "Ever At Your Side"
+  },
+  {
+    "volume": 75,
+    "start": 743,
+    "end": 752,
+    "title": "My Repayment"
+  },
+  {
+    "volume": 76,
+    "start": 753,
+    "end": 763,
+    "title": "Just Keep Going"
+  },
+  {
+    "volume": 77,
+    "start": 764,
+    "end": 775,
+    "title": "Smile"
+  },
+  {
+    "volume": 78,
+    "start": 776,
+    "end": 785,
+    "title": "Champion of Evil"
+  },
+  {
+    "volume": 79,
+    "start": 786,
+    "end": 795,
+    "title": "Lucy!!"
+  },
+  {
+    "volume": 80,
+    "start": 796,
+    "end": 806,
+    "title": "Opening Speech"
+  },
+  {
+    "volume": 81,
+    "start": 807,
+    "end": 816,
+    "title": "Let's Go See Master Nekomamushi"
+  },
+  {
+    "volume": 82,
+    "start": 817,
+    "end": 827,
+    "title": "A World Abuzz"
+  },
+  {
+    "volume": 83,
+    "start": 828,
+    "end": 838,
+    "title": "Emperor of the Sea, Charlotte Linlin"
+  },
+  {
+    "volume": 84,
+    "start": 839,
+    "end": 848,
+    "title": "Luffy vs. Sanji"
+  },
+  {
+    "volume": 85,
+    "start": 849,
+    "end": 858,
+    "title": "Liar"
+  },
+  {
+    "volume": 86,
+    "start": 859,
+    "end": 869,
+    "title": "Emperor Assassination Plan"
+  },
+  {
+    "volume": 87,
+    "start": 870,
+    "end": 879,
+    "title": "Not Sweet"
+  },
+  {
+    "volume": 88,
+    "start": 880,
+    "end": 889,
+    "title": "Lion"
+  },
+  {
+    "volume": 89,
+    "start": 890,
+    "end": 900,
+    "title": "Bad End Musical"
+  },
+  {
+    "volume": 90,
+    "start": 901,
+    "end": 910,
+    "title": "The Holy Land Mary Geoise"
+  },
+  {
+    "volume": 91,
+    "start": 911,
+    "end": 921,
+    "title": "Adventure in the Land of Samurai"
+  },
+  {
+    "volume": 92,
+    "start": 922,
+    "end": 931,
+    "title": "Introducing Komurasaki the Oiran"
+  },
+  {
+    "volume": 93,
+    "start": 932,
+    "end": 942,
+    "title": "The Star of Ebisu Town"
+  },
+  {
+    "volume": 94,
+    "start": 943,
+    "end": 953,
+    "title": "A Soldier's Dream"
+  },
+  {
+    "volume": 95,
+    "start": 954,
+    "end": 964,
+    "title": "Oden's Adventure"
+  },
+  {
+    "volume": 96,
+    "start": 965,
+    "end": 974,
+    "title": "I am Oden, And I Was Born to Boil"
+  },
+  {
+    "volume": 97,
+    "start": 975,
+    "end": 984,
+    "title": "My Bible"
+  },
+  {
+    "volume": 98,
+    "start": 985,
+    "end": 994,
+    "title": "Vassals of Glory"
+  },
+  {
+    "volume": 99,
+    "start": 995,
+    "end": 1004,
+    "title": "Straw Hat Luffy"
+  },
+  {
+    "volume": 100,
+    "start": 1005,
+    "end": 1015,
+    "title": "Color of the Supreme King"
+  },
+  {
+    "volume": 101,
+    "start": 1016,
+    "end": 1025,
+    "title": "The Stars Take the Stage"
+  },
+  {
+    "volume": 102,
+    "start": 1026,
+    "end": 1035,
+    "title": "The Pivotal Clash"
+  },
+  {
+    "volume": 103,
+    "start": 1036,
+    "end": 1046,
+    "title": "Warrior of Liberation"
+  },
+  {
+    "volume": 104,
+    "start": 1047,
+    "end": 1055,
+    "title": "Shogun of Wano, Kozuki Momonosuke"
+  },
+  {
+    "volume": 105,
+    "start": 1056,
+    "end": 1065,
+    "title": "Luffy's Dream"
+  },
+  {
+    "volume": 106,
+    "start": 1066,
+    "end": 1076,
+    "title": "A Genius's Dream"
+  },
+  {
+    "volume": 107,
+    "start": 1077,
+    "end": 1088,
+    "title": "The Hero of Legend"
+  },
+  {
+    "volume": 108,
+    "start": 1089,
+    "end": 1100,
+    "title": "Better Off Dead in This World"
+  },
+  {
+    "volume": 109,
+    "start": 1101,
+    "end": 1110,
+    "title": "On Your Side"
+  },
+  {
+    "volume": 110,
+    "start": 1111,
+    "end": 1121,
+    "title": "The Upheaval of the Era"
+  },
+  {
+    "volume": 111,
+    "start": 1122,
+    "end": 1133,
+    "title": "Adventure in Elbaph"
+  },
+  {
+    "volume": 112,
+    "start": 1134,
+    "end": 1144,
+    "title": "The Harley"
+  },
+  {
+    "volume": 113,
+    "start": 1145,
+    "end": 1155,
+    "title": "The Birth of Loki"
+  },
+  {
+    "volume": 114,
+    "start": 1156,
+    "end": 1167,
+    "title": "The God Valley Incident"
+  },
+  {
+    "volume": 115,
+    "start": 1168,
+    "end": 1179,
+    "title": "The Strongest Thing in the World"
+  }
+]
