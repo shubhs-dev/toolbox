@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Death Stranding Material Dashboard</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family:
+          "Inter",
+          "Segoe UI",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background: #0c0e14;
+        color: #c8cdd8;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        background: #12151f;
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid #1e2331;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      header h1 {
+        font-size: 1.15rem;
+        font-weight: 700;
+        margin-bottom: 0.75rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #e0a544;
+        text-shadow: 0 0 12px rgba(224, 165, 68, 0.25);
+      }
+      header h1 span {
+        color: #5b6270;
+        font-weight: 400;
+        letter-spacing: 0.04em;
+      }
+      #creator {
+        width: 100%;
+        padding: 12px 16px;
+        font-size: 1rem;
+        background: #181b26;
+        color: #c8cdd8;
+        border: 1px solid #2a2f3e;
+        border-radius: 8px;
+        outline: none;
+        transition:
+          border-color 0.15s,
+          box-shadow 0.15s;
+      }
+      #creator:focus {
+        border-color: #e0a544;
+        box-shadow: 0 0 0 3px rgba(224, 165, 68, 0.12);
+      }
+      #creator::placeholder {
+        color: #4a5060;
+      }
+      main {
+        flex: 1;
+        padding: 1rem 1.5rem;
+      }
+      #grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+        gap: 1rem;
+      }
+      .card {
+        background: #151822;
+        border-radius: 10px;
+        border: 1px solid #1e2331;
+        border-left: 4px solid #2a2f3e;
+        padding: 1rem 1.25rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        transition:
+          border-color 0.25s,
+          box-shadow 0.25s;
+      }
+      .card.complete {
+        border-left-color: #34d399;
+        box-shadow:
+          0 0 10px rgba(52, 211, 153, 0.08),
+          inset 0 0 20px rgba(52, 211, 153, 0.03);
+      }
+      .card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+      }
+      .card-name {
+        font-weight: 600;
+        font-size: 1.05rem;
+        word-break: break-word;
+        color: #e2e6ee;
+        letter-spacing: 0.02em;
+      }
+      .check {
+        color: #34d399;
+        font-size: 1.1rem;
+        display: none;
+        flex-shrink: 0;
+        text-shadow: 0 0 6px rgba(52, 211, 153, 0.4);
+      }
+      .card.complete .check {
+        display: inline;
+      }
+      .btn-del {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #4a5060;
+        font-size: 1.1rem;
+        padding: 4px 6px;
+        border-radius: 6px;
+        line-height: 1;
+        transition:
+          background 0.15s,
+          color 0.15s;
+      }
+      .btn-del:hover {
+        background: rgba(239, 68, 68, 0.12);
+        color: #f87171;
+      }
+      .totals {
+        display: flex;
+        gap: 1rem;
+      }
+      .total-box {
+        flex: 1;
+        text-align: center;
+        padding: 0.5rem;
+        border-radius: 8px;
+        font-variant-numeric: tabular-nums;
+      }
+      .total-box.need {
+        background: rgba(224, 165, 68, 0.07);
+        border: 1px solid rgba(224, 165, 68, 0.2);
+      }
+      .total-box.have {
+        background: rgba(52, 211, 153, 0.07);
+        border: 1px solid rgba(52, 211, 153, 0.2);
+      }
+      .total-label {
+        font-size: 0.7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 2px;
+      }
+      .total-box.need .total-label {
+        color: #cb8e35;
+      }
+      .total-box.have .total-label {
+        color: #34d399;
+      }
+      .total-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+      }
+      .total-box.need .total-value {
+        color: #e0a544;
+      }
+      .total-box.have .total-value {
+        color: #34d399;
+      }
+      .inputs {
+        display: flex;
+        gap: 0.75rem;
+      }
+      .input-wrap {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .input-wrap label {
+        font-size: 0.7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .input-wrap.need label {
+        color: #cb8e35;
+      }
+      .input-wrap.have label {
+        color: #34d399;
+      }
+      .input-wrap input {
+        width: 100%;
+        padding: 10px 12px;
+        font-size: 1rem;
+        background: #0f1119;
+        color: #c8cdd8;
+        border: 1px solid #2a2f3e;
+        border-radius: 8px;
+        outline: none;
+        transition:
+          border-color 0.15s,
+          box-shadow 0.15s;
+        font-variant-numeric: tabular-nums;
+      }
+      .input-wrap.need input:focus {
+        border-color: #e0a544;
+        box-shadow: 0 0 0 3px rgba(224, 165, 68, 0.12);
+      }
+      .input-wrap.have input:focus {
+        border-color: #34d399;
+        box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.12);
+      }
+      .history {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        min-height: 22px;
+      }
+      .pill {
+        font-size: 0.65rem;
+        font-weight: 600;
+        padding: 2px 7px;
+        border-radius: 999px;
+        line-height: 1.4;
+      }
+      .pill.need {
+        background: rgba(224, 165, 68, 0.12);
+        color: #e0a544;
+      }
+      .pill.have {
+        background: rgba(52, 211, 153, 0.12);
+        color: #34d399;
+      }
+      .pill {
+        cursor: pointer;
+        transition: opacity 0.15s;
+      }
+      .pill:hover {
+        opacity: 0.5;
+      }
+      footer {
+        padding: 1rem 1.5rem;
+        text-align: center;
+        display: flex;
+        justify-content: center;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        border-top: 1px solid #1e2331;
+      }
+      .btn-reset {
+        background: transparent;
+        color: #f87171;
+        border: 1px solid rgba(248, 113, 113, 0.3);
+        padding: 10px 28px;
+        font-size: 0.875rem;
+        font-weight: 600;
+        border-radius: 8px;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s;
+      }
+      .btn-reset:hover {
+        background: rgba(248, 113, 113, 0.08);
+        border-color: #f87171;
+      }
+      .btn-reset.secondary {
+        color: #e0a544;
+        border-color: rgba(224, 165, 68, 0.3);
+      }
+      .btn-reset.secondary:hover {
+        background: rgba(224, 165, 68, 0.08);
+        border-color: #e0a544;
+      }
+      .empty-state {
+        grid-column: 1/-1;
+        text-align: center;
+        padding: 3rem 1rem;
+        color: #4a5060;
+        font-size: 1rem;
+      }
+      @media (max-width: 480px) {
+        #grid {
+          grid-template-columns: 1fr;
+        }
+        .totals,
+        .inputs {
+          gap: 0.5rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Death Stranding <span>Material Dashboard</span></h1>
+      <input
+        id="creator"
+        type="text"
+        placeholder="Type a material name and press Enter to add…"
+        autocomplete="off"
+      />
+    </header>
+    <main><div id="grid"></div></main>
+    <footer>
+      <button class="btn-reset secondary" id="resetNumbers">Reset Numbers</button>
+      <button class="btn-reset" id="resetAll">Reset All</button>
+    </footer>
+
+    <script>
+      const STORAGE_KEY = "inventory_items";
+      const grid = document.getElementById("grid");
+      const creator = document.getElementById("creator");
+
+      function load() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+        } catch {
+          return [];
+        }
+      }
+
+      function save(items) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+      }
+
+      function formatEntry(e) {
+        const sign = e.value >= 0 ? "+" : "";
+        const prefix = e.type === "need" ? "N" : "H";
+        return `${prefix}:${sign}${e.value}`;
+      }
+
+      function render() {
+        const items = load();
+        grid.innerHTML = "";
+
+        if (!items.length) {
+          grid.innerHTML =
+            '<div class="empty-state">No items yet — add one above.</div>';
+          return;
+        }
+
+        items.forEach((item) => {
+          const complete = item.have >= item.need && item.need > 0;
+          const card = document.createElement("div");
+          card.className = "card" + (complete ? " complete" : "");
+          card.dataset.id = item.id;
+
+          card.innerHTML = `
+      <div class="card-header">
+        <span class="card-name">${escapeHtml(item.name)}</span>
+        <span class="check" aria-label="Complete">&#10003;</span>
+        <button class="btn-del" data-action="delete" title="Delete item">&times;</button>
+      </div>
+      <div class="totals">
+        <div class="total-box need"><div class="total-label">Need</div><div class="total-value">${item.need}</div></div>
+        <div class="total-box have"><div class="total-label">Have</div><div class="total-value">${item.have}</div></div>
+      </div>
+      <div class="inputs">
+        <div class="input-wrap need"><label>+ Need</label><input type="number" data-action="add-need" placeholder="0"></div>
+        <div class="input-wrap have"><label>+ Have</label><input type="number" data-action="add-have" placeholder="0"></div>
+      </div>
+      <div class="history">${item.history.map((e, i) => `<span class="pill ${e.type}" data-action="remove-pill" data-index="${i}">${formatEntry(e)}</span>`).join("")}</div>`;
+
+          grid.appendChild(card);
+        });
+      }
+
+      function escapeHtml(str) {
+        const d = document.createElement("div");
+        d.textContent = str;
+        return d.innerHTML;
+      }
+
+      function cardId(el) {
+        return el.closest(".card")?.dataset.id;
+      }
+
+      // Creator bar
+      creator.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        const name = creator.value.trim();
+        if (!name) return;
+        const items = load();
+        if (items.some((i) => i.name.toLowerCase() === name.toLowerCase())) {
+          creator.value = "";
+          creator.setCustomValidity("Item already exists");
+          creator.reportValidity();
+          setTimeout(() => creator.setCustomValidity(""), 2000);
+          return;
+        }
+        items.push({
+          id: crypto.randomUUID(),
+          name,
+          need: 0,
+          have: 0,
+          history: [],
+        });
+        save(items);
+        creator.value = "";
+        render();
+      });
+
+      // Delegated events on grid
+      grid.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        const input = e.target;
+        const action = input.dataset.action;
+        if (action !== "add-need" && action !== "add-have") return;
+
+        const val = Number(input.value);
+        if (!val && val !== 0) return;
+        if (val === 0) {
+          input.value = "";
+          return;
+        }
+
+        const id = cardId(input);
+        const items = load();
+        const item = items.find((i) => i.id === id);
+        if (!item) return;
+
+        const type = action === "add-need" ? "need" : "have";
+        item[type] += val;
+        item.history.push({ type, value: val });
+        save(items);
+        input.value = "";
+        render();
+
+        // Re-focus the same input type in the same card after re-render
+        const rebuilt = grid.querySelector(
+          `.card[data-id="${id}"] input[data-action="${action}"]`,
+        );
+        rebuilt?.focus();
+      });
+
+      grid.addEventListener("click", (e) => {
+        if (e.target.dataset.action === "delete") {
+          const id = cardId(e.target);
+          if (!id) return;
+          const items = load();
+          const item = items.find((i) => i.id === id);
+          if (!item || !confirm(`Delete "${item.name}"?`)) return;
+          save(items.filter((i) => i.id !== id));
+          render();
+          return;
+        }
+
+        if (e.target.dataset.action === "remove-pill") {
+          const id = cardId(e.target);
+          const idx = Number(e.target.dataset.index);
+          if (!id) return;
+          const items = load();
+          const item = items.find((i) => i.id === id);
+          if (!item || idx < 0 || idx >= item.history.length) return;
+          const entry = item.history[idx];
+          item[entry.type] -= entry.value;
+          item.history.splice(idx, 1);
+          save(items);
+          render();
+          return;
+        }
+      });
+
+      // Reset Numbers (keep items, zero out totals & history)
+      document.getElementById("resetNumbers").addEventListener("click", () => {
+        const items = load();
+        if (
+          !items.length ||
+          !confirm("Reset all numbers and history? Items will be kept.")
+        )
+          return;
+        items.forEach((i) => {
+          i.need = 0;
+          i.have = 0;
+          i.history = [];
+        });
+        save(items);
+        render();
+      });
+
+      // Reset All
+      document.getElementById("resetAll").addEventListener("click", () => {
+        if (!confirm("Delete ALL items? This cannot be undone.")) return;
+        localStorage.removeItem(STORAGE_KEY);
+        render();
+      });
+
+      // Initial render
+      render();
+    </script>
+  </body>
+</html>

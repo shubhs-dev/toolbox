@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shubhs-toolbox"
+version = "0.1.0"
+description = "Personal CLI toolbox for media processing and game modding"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Shubhanshu", email = "shubhanshu@createdigitalsolutions.com" }]
+
+dependencies = [
+    "rich>=13.7",
+    "send2trash>=1.8",
+]
+
+[project.optional-dependencies]
+ai = ["google-genai>=0.3", "keyring>=25.0"]
+
+[project.scripts]
+addsub = "toolboxcli.addsub.cli:main"
+autosub = "toolboxcli.autosub.cli:main"
+check-deps = "toolboxcli.checkdeps.cli:main"
+compressvid = "toolboxcli.compressvid.cli:main"
+convertimg = "toolboxcli.convertimg.cli:main"
+cutvid = "toolboxcli.cutvid.cli:main"
+cybermod = "toolboxcli.cybermod.cli:main"
+finddupes = "toolboxcli.finddupes.cli:main"
+flatten = "toolboxcli.flatten.cli:main"
+jellyname = "toolboxcli.jellyname.cli:main"
+kavitaname = "toolboxcli.kavitaname.cli:main"
+mergemanga = "toolboxcli.mergemanga.cli:main"
+sortmedia = "toolboxcli.sortmedia.cli:main"
+toolbox = "toolboxcli.toolbox.cli:main"
+worksummary = "toolboxcli.worksummary.cli:main"
+x265ify = "toolboxcli.x265ify.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"toolboxcli.compressvid" = ["data/handbrake-presets/*.json"]
+"toolboxcli.mergemanga" = ["data/*.json"]
