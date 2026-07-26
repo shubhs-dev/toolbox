@@ -16,6 +16,7 @@ in Python and installed as a single pipx package.
 | `cybermod` | Extract and install Cyberpunk 2077 mods from zip/rar/7z archives |
 | `finddupes` | Find duplicate filenames across a directory tree |
 | `flatten` | Move all files from subdirectories up into the current directory |
+| `flipvid` | Flip a video horizontally or vertically using ffmpeg |
 | `jellyname` | Rename and organize media files into a Jellyfin-compatible folder structure |
 | `kavitaname` | Rename chapter CBZ/CBR files for Kavita server compatibility |
 | `mergemanga` | Merge individual One Piece chapter CBZ files into volume CBZ files with metadata |
@@ -39,7 +40,7 @@ materials — just open it in a browser, no install needed.
 
 | Tool | Required by |
 |------|-------------|
-| `ffmpeg` | `addsub`, `cutvid` |
+| `ffmpeg` | `addsub`, `cutvid`, `flipvid` |
 | `ffmpeg`, `ffprobe` | `x265ify` |
 | `HandBrakeCLI` | `compressvid` |
 | `magick` (ImageMagick 7) | `convertimg` |
@@ -242,6 +243,29 @@ cutvid -s 1:30 -e 5:00 -r movie.mkv clip.mkv     # re-encode for frame accuracy
 Stream-copy mode (default) is near-instant but cuts on keyframes, so the actual start may be
 slightly before the requested time. Use `-r`/`--reencode` for frame-accurate cuts. Output
 filename is auto-derived as `<stem>.cut.<start>-<end>.<ext>` if not given.
+
+---
+
+### flipvid
+
+Flip a video horizontally or vertically using **ffmpeg**.
+
+```bash
+flipvid -x movie.mp4                 # flip horizontally (mirror)
+flipvid -y movie.mp4                 # flip vertically (upside down)
+flipvid -x -y movie.mp4 out.mp4      # flip both axes
+flipvid -x -q 20 movie.mp4           # custom encode quality
+```
+
+| Flag | Description |
+|------|-------------|
+| `-x, --horizontal` | Flip horizontally (mirror left-right) |
+| `-y, --vertical` | Flip vertically (upside down) |
+| `-q, --quality CRF` | x264 CRF quality, lower is better (default: `18`) |
+
+Flipping re-encodes the video stream (filters can't stream-copy); audio is always
+stream-copied unchanged. Output filename is auto-derived as `<stem>.flip.<h|v|hv>.<ext>` if
+not given.
 
 ---
 
