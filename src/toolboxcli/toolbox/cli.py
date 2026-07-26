@@ -24,6 +24,7 @@ SCRIPTS = [
     ("cybermod", "Extract and install Cyberpunk 2077 mods from zip/rar/7z archives"),
     ("finddupes", "Find duplicate filenames across a directory tree"),
     ("flatten", "Move all files from subdirectories up into the current directory"),
+    ("flipvid", "Flip a video horizontally or vertically using ffmpeg"),
     ("jellyname", "Rename and organize media files into a Jellyfin-compatible folder structure"),
     ("kavitaname", "Rename chapter CBZ/CBR files for Kavita server compatibility"),
     ("mergemanga", "Merge One Piece chapter CBZ files into volume CBZ files with metadata"),
