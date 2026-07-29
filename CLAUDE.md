@@ -51,7 +51,7 @@ src/toolboxcli/
 ├── finddupes/cli.py
 ├── flatten/cli.py
 ├── flipvid/cli.py
-├── jellyname/cli.py
+├── jellyname/{cli.py, core.py}
 ├── kavitaname/cli.py
 ├── mergemanga/{cli.py, data/volume_map.json}
 ├── sortmedia/cli.py
@@ -59,10 +59,10 @@ src/toolboxcli/
 ```
 
 Each script is a `<name>/cli.py` with a `main()` function wired up in `pyproject.toml`'s
-`[project.scripts]` table as the console-script entry point. `cybermod` additionally splits
-its mod-installation logic into `core.py`, keeping `cli.py` to argparse wiring only — follow
-this `cli.py`/`core.py` split for any future script whose logic grows beyond simple
-argument-parsing-and-dispatch.
+`[project.scripts]` table as the console-script entry point. `cybermod` and `jellyname`
+additionally split their logic into `core.py`, keeping `cli.py` to argparse wiring and
+filesystem I/O only — follow this `cli.py`/`core.py` split for any future script whose logic
+grows beyond simple argument-parsing-and-dispatch.
 
 **Bundled data**: `compressvid`'s HandBrake presets and `mergemanga`'s volume map are package
 data (declared in `pyproject.toml`'s `[tool.setuptools.package-data]`), resolved at runtime via
@@ -121,15 +121,26 @@ Progress *factories* themselves) were extracted from it.
 - `autosub` shells out to the installed `addsub` command (`subprocess.run(["addsub", "-u", ...])`)
   rather than importing `toolboxcli.addsub`'s internals — keeps each script independently
   invocable, matching the original design where every script is a standalone executable.
-- `jellyname`'s and `kavitaname`'s filename-parsing regexes were ported directly from the
-  original Bash (`perl`/`sed`/`grep -oE` patterns) — when touching them, verify against real
-  filename fixtures rather than reasoning about the regex in isolation, since these are the
-  most fragile/fiddly logic in the repo. Two known, deliberate deviations from the original
-  Bash behavior: `kavitaname`'s chapter-number parsing is case-insensitive for the
-  `Chapter`/`Prologue` prefix (the original was case-sensitive despite case-insensitive file
-  *discovery*, silently skipping mixed-case files); and it uses plain `int()` parsing instead
-  of replicating a bash `printf '%d'` octal-misparse bug that affected zero-padded chapter
-  numbers like `Chapter 010`.
+- `kavitaname`'s filename-parsing regexes were ported directly from the original Bash
+  (`perl`/`sed`/`grep -oE` patterns) — when touching them, verify against real filename
+  fixtures rather than reasoning about the regex in isolation, since this is fragile/fiddly
+  logic. Two known, deliberate deviations from the original Bash behavior: chapter-number
+  parsing is case-insensitive for the `Chapter`/`Prologue` prefix (the original was
+  case-sensitive despite case-insensitive file *discovery*, silently skipping mixed-case
+  files); and it uses plain `int()` parsing instead of replicating a bash `printf '%d'`
+  octal-misparse bug that affected zero-padded chapter numbers like `Chapter 010`.
+- `jellyname/core.py` uses a tokenize-then-classify parser rather than the substring-deleting
+  regex chain the previous version used: the stem is split into whitespace/bracket-delimited
+  tokens, a season/episode marker (`SxxExx`, optionally `SxxExx-Eyy`/`SxxExxEyy`) or release
+  year is located by *whole-token* match (never substring `.search`) to anchor the
+  title/show-name split, and every other token is classified against ordered per-category
+  dictionaries (`RESOLUTION_TAGS`, `HDR_TAGS`, `AUDIO_TAGS`, `VIDEO_CODEC_TAGS`,
+  `BIT_DEPTH_TAGS`, `SOURCE_TAGS`, `EDITION_TAGS` — first match wins) into a `MediaTags`
+  dataclass. Unlike the old version, matched tags are *preserved* in a bracketed filename
+  suffix instead of being discarded — only unrecognized tokens (release-group names, hashes,
+  fansub tags) are dropped. When extending the tag vocabularies or anchor-detection regexes,
+  verify against real filename fixtures (still no test framework in this repo) rather than
+  reasoning about the regex in isolation — this is still the most fragile/fiddly logic here.
 
 ### Dependencies
 

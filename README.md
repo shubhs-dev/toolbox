@@ -331,8 +331,8 @@ conflicts).
 ### jellyname
 
 Rename and organize media files for Jellyfin compatibility. Scans the top level of a directory
-for video files, parses each filename for title/year/season/episode/resolution, then renames
-and moves each file into a Jellyfin-compatible folder structure.
+for video files, parses each filename for title/year/season/episode/media-info tags, then
+renames and moves each file into a Jellyfin-compatible folder structure.
 
 ```bash
 jellyname
@@ -345,11 +345,22 @@ jellyname --dry-run /mnt/media/shows
 | `-n, --dry-run` | Preview what would be renamed without moving any files |
 
 Output structure:
-- Movies: `Movie Name (Year)/Movie Name (Year) - 1080p.mkv`
-- TV/Anime: `Show Name/Season 01/Show Name S01E01 - 720p.mkv`
+- Movies: `Movie Name (Year) [tags] - 1080p.mkv`
+- TV/Anime: `Show Name/Season 01/Show Name S01E01 [tags] - 720p.mkv`
 
-Junk tags (BluRay, x264, HEVC, WEB-DL, etc.) are stripped, and characters illegal in Jellyfin
-paths (`< > : " / \ | ? *`) are removed.
+Resolution is preserved as a Jellyfin version-label suffix (` - 1080p`), since that's the only
+tag Jellyfin itself understands for sorting multiple versions of the same title. Other detected
+media info is preserved in a bracketed suffix instead of being discarded:
+
+- **Source/edition**: BluRay, WEB-DL, REMUX, IMAX, PROPER, REPACK, EXTENDED, etc.
+- **Video codec/bit-depth**: x264, x265, HEVC, 10bit, etc.
+- **HDR/Dolby Vision variant**: HDR10, HDR10+, Dolby Vision, HDR, SDR
+- **Audio codec**: Atmos, TrueHD, DTS, DDP5.1, etc.
+
+e.g. `Dune Part Two (2024) [BluRay IMAX x265 HDR10 DDP5.1 Atmos] - 2160p.mkv`. Unrecognized
+tokens (release-group names, hashes, fansub tags) are still dropped, and multi-episode files
+(`S01E01-E02`) are supported. Characters illegal in Jellyfin paths (`< > : " / \ | ? *`) are
+removed.
 
 ---
 
