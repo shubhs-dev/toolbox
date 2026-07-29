@@ -10,9 +10,9 @@ written in Python and packaged as a single pipx-installable distribution
 packaging and no test suite.
 
 Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
-`pipx install -e ".[ai]"`, every script is a real executable on `PATH` — `addsub`, `autosub`,
+`pipx install -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
 `check-deps`, `compressvid`, `convertimg`, `cutvid`, `cybermod`, `finddupes`, `flatten`,
-`jellyname`, `kavitaname`, `mergemanga`, `sortmedia`, `toolbox`, `worksummary`, `x265ify` —
+`flipvid`, `jellyname`, `kavitaname`, `mergemanga`, `sortmedia`, `toolbox` —
 identically on both platforms. `inventory.html` is a standalone static HTML dashboard,
 unrelated to the Python package.
 
@@ -20,14 +20,14 @@ unrelated to the Python package.
 
 ```bash
 # Install/reinstall after changes to pyproject.toml (dependencies, entry points)
-pipx install -e ".[ai]" --force
+pipx install -e . --force
 
 # Run a script directly during development, without going through the installed entry point
 python -m toolboxcli.<script>.cli --help
 
 # Smoke-test everything after a change
 for cmd in addsub autosub check-deps compressvid convertimg cutvid cybermod finddupes \
-           flatten jellyname kavitaname mergemanga sortmedia toolbox worksummary x265ify; do
+           flatten flipvid jellyname kavitaname mergemanga sortmedia toolbox; do
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 ```
@@ -50,13 +50,12 @@ src/toolboxcli/
 ├── cybermod/{cli.py, core.py}
 ├── finddupes/cli.py
 ├── flatten/cli.py
+├── flipvid/cli.py
 ├── jellyname/cli.py
 ├── kavitaname/cli.py
 ├── mergemanga/{cli.py, data/volume_map.json}
 ├── sortmedia/cli.py
-├── toolbox/cli.py
-├── worksummary/cli.py
-└── x265ify/cli.py
+└── toolbox/cli.py
 ```
 
 Each script is a `<name>/cli.py` with a `main()` function wired up in `pyproject.toml`'s
@@ -92,15 +91,11 @@ Every script should reach for these instead of reimplementing the same logic:
   determinate work respectively.
 - **`tooling.py`** — `require_tool(name, install_hint=None)`. Check an external CLI binary is
   on `PATH` before shelling out to it; dies with a clear message if missing.
-- **`gitrepo.py`** — `discover_repos(root)`, `git(*args, cwd)`. Generic git repo discovery and
-  subprocess wrapper (used by `worksummary`, kept shared for future scripts).
-- **`secrets.py`** — `get_secret(...)`, `set_secret_interactive(...)`. Keyring-backed credential
-  storage with an env-var fallback (used by `worksummary`).
 
-`compressvid` and `x265ify` both have substantial bespoke rich UI (Panels, Tables, live
-per-file Progress tasks driven by parsed ffmpeg/HandBrake output) that stays inline in their
-own `cli.py` rather than being generalized into `_common` — only genuinely cross-script pieces
-(trash, byte formatting, the Progress *factories* themselves) were extracted from them.
+`compressvid` has substantial bespoke rich UI (Panels, Tables, live per-file Progress tasks
+driven by parsed HandBrake output) that stays inline in its own `cli.py` rather than being
+generalized into `_common` — only genuinely cross-script pieces (trash, byte formatting, the
+Progress *factories* themselves) were extracted from it.
 
 ### Per-script conventions
 
@@ -135,25 +130,18 @@ own `cli.py` rather than being generalized into `_common` — only genuinely cro
   *discovery*, silently skipping mixed-case files); and it uses plain `int()` parsing instead
   of replicating a bash `printf '%d'` octal-misparse bug that affected zero-padded chapter
   numbers like `Chapter 010`.
-- `x265ify`'s encoder auto-detection (`ENCODER_PRIORITY`), HDR passthrough, and per-encoder
-  quality-argument mapping (`_quality_args`) are intentionally verbose/explicit rather than
-  data-driven — keep new encoders as an explicit `if`/`elif` branch matching the existing style
-  rather than introducing a lookup table, since the quality-arg shapes differ enough per
-  encoder (some take one flag, some take two) that a table would need almost as much special
-  casing anyway.
 
 ### Dependencies
 
-Base dependencies (`rich`, `send2trash`) are required by most scripts. `google-genai` and
-`keyring` are an optional `ai` extra, needed only by `worksummary` — don't promote them to base
-dependencies, and don't add new third-party libraries without a clear reason: `argparse`
-(stdlib) is used for all CLI parsing, and single-keypress confirmation is hand-rolled via
-`termios`/`tty`/`msvcrt` in `_common/confirm.py` rather than pulling in a library for it.
-External tools (`ffmpeg`, `ffprobe`, `HandBrakeCLI`, `magick`, `7z`, `git`) remain required
-system binaries invoked via `subprocess` — there was a deliberate decision *not* to replace any
-of them with a pure-Python library (e.g. no Pillow for `convertimg`, no rarfile for `cybermod`)
-except `mergemanga`'s move from `7z` to stdlib `zipfile`, which was safe specifically because
-CBZ files are already zip archives.
+Base dependencies (`rich`, `send2trash`) are required by most scripts — don't add new
+third-party libraries without a clear reason: `argparse` (stdlib) is used for all CLI parsing,
+and single-keypress confirmation is hand-rolled via `termios`/`tty`/`msvcrt` in
+`_common/confirm.py` rather than pulling in a library for it. External tools (`ffmpeg`,
+`ffprobe`, `HandBrakeCLI`, `magick`, `7z`) remain required system binaries invoked via
+`subprocess` — there was a deliberate decision *not* to replace any of them with a pure-Python
+library (e.g. no Pillow for `convertimg`, no rarfile for `cybermod`) except `mergemanga`'s move
+from `7z` to stdlib `zipfile`, which was safe specifically because CBZ files are already zip
+archives.
 
 ## When Modifying Scripts
 

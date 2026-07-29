@@ -29,8 +29,6 @@ SCRIPTS = [
     ("kavitaname", "Rename chapter CBZ/CBR files for Kavita server compatibility"),
     ("mergemanga", "Merge One Piece chapter CBZ files into volume CBZ files with metadata"),
     ("sortmedia", "Move video files into folders based on the camelCase type tag in each filename"),
-    ("worksummary", "Scan git repos and generate an AI-powered work summary via Gemini"),
-    ("x265ify", "Re-encode x264 videos to x265/HEVC using the best available hardware encoder"),
     ("toolbox", "List all custom scripts with a brief description (this script)"),
 ]
 

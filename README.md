@@ -21,8 +21,6 @@ in Python and installed as a single pipx package.
 | `kavitaname` | Rename chapter CBZ/CBR files for Kavita server compatibility |
 | `mergemanga` | Merge individual One Piece chapter CBZ files into volume CBZ files with metadata |
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
-| `worksummary` | Scan git repos and generate an AI-powered work summary via Gemini |
-| `x265ify` | Re-encode x264 videos to x265/HEVC using the best available hardware encoder |
 | `toolbox` | List all scripts in this repo with a brief description |
 
 `inventory.html` is a standalone, dependency-free HTML dashboard for tracking Death Stranding
@@ -41,12 +39,10 @@ materials — just open it in a browser, no install needed.
 | Tool | Required by |
 |------|-------------|
 | `ffmpeg` | `addsub`, `cutvid`, `flipvid` |
-| `ffmpeg`, `ffprobe` | `x265ify` |
 | `HandBrakeCLI` | `compressvid` |
 | `magick` (ImageMagick 7) | `convertimg` |
 | `7z` (7-Zip) | `cybermod` |
 | `addsub` (on PATH) | `autosub` |
-| `git` | `worksummary` |
 
 ### macOS
 
@@ -58,7 +54,7 @@ pipx ensurepath
 ```bash
 git clone git@github.com:shubhs-dev/toolbox.git
 cd toolbox
-pipx install -e ".[ai]"
+pipx install -e .
 ```
 
 ### Windows (Git Bash)
@@ -73,11 +69,8 @@ Restart your shell, then:
 ```bash
 git clone git@github.com:shubhs-dev/toolbox.git
 cd toolbox
-pipx install -e ".[ai]"
+pipx install -e .
 ```
-
-The `[ai]` extra installs `google-genai` and `keyring`, which `worksummary` needs. If you don't
-use `worksummary`, a plain `pipx install -e .` is enough for every other command.
 
 This gives you real commands on your PATH — identically on Windows Git Bash and macOS. No
 symlinking, no manual `PATH` exports.
@@ -89,7 +82,7 @@ under `src/toolboxcli/` take effect immediately. If `pyproject.toml` itself chan
 dependency, new script), re-run:
 
 ```bash
-pipx install -e ".[ai]" --force
+pipx install -e . --force
 ```
 
 ### Uninstall
@@ -426,33 +419,6 @@ create it.
 
 ---
 
-### worksummary
-
-Scan all git repositories under a directory, collect your commits for a date range, and
-generate a concise work summary using Google Gemini.
-
-**Requires:** the `ai` extra (`pipx install -e ".[ai]"`)
-
-```bash
-worksummary                              # interactive date prompt
-worksummary /path/to/projects
-worksummary -s 2026-01-01 -u 2026-01-31  # explicit date range
-worksummary -F                           # skip git fetch (offline / faster)
-worksummary -k                           # store your Gemini API key and exit
-```
-
-| Flag | Description |
-|------|-------------|
-| `-s, --since DATE` | Start date, `YYYY-MM-DD` (prompted if omitted) |
-| `-u, --until DATE` | End date, `YYYY-MM-DD` (defaults to today) |
-| `-F, --no-fetch` | Skip `git fetch --all` before collecting commits |
-| `-k, --set-key` | Store your Gemini API key in the OS credential store and exit |
-
-On first run, use `worksummary -k` to store your Gemini API key securely in the OS keychain
-(or set the `GEMINI_API_KEY` environment variable instead).
-
----
-
 ### toolbox
 
 List all scripts in this repo with a brief description of each.
@@ -460,37 +426,6 @@ List all scripts in this repo with a brief description of each.
 ```bash
 toolbox
 ```
-
----
-
-### x265ify
-
-Recursively re-encode H.264 videos to H.265/HEVC using the best available hardware encoder
-(NVIDIA NVENC, AMD AMF/VAAPI, Intel Quick Sync, Apple VideoToolbox, or software `libx265` as
-fallback). Replaces the original with the transcoded file only if it's strictly smaller.
-
-**Requires:** `ffmpeg`, `ffprobe`
-
-```bash
-x265ify                    # scan cwd once, then exit
-x265ify ~/Videos           # scan a specific folder
-x265ify -w                 # scan, then re-scan every 60 seconds
-x265ify -w 120             # re-scan every 120 seconds
-x265ify -c 24              # quality: lower = better (default 28, range 0-51)
-x265ify -n                 # show what would be converted; make no changes
-x265ify -e hevc_nvenc      # force a specific ffmpeg encoder
-```
-
-| Flag | Description |
-|------|-------------|
-| `-c, --crf N` | Quality level 0–51, lower = better (default: `28`) |
-| `-w, --watch [SECS]` | Re-scan every `SECS` seconds after finishing (default when flag given: `60`) |
-| `-n, --dry-run` | Show which files would be converted; make no changes |
-| `-e, --encoder NAME` | Force a specific encoder (e.g. `hevc_nvenc`, `hevc_qsv`, `libx265`) |
-
-Resolution, audio tracks, subtitles, and HDR metadata (HDR10, HLG) are always preserved. The
-original file is sent to the OS Trash, never permanently deleted. Interrupted transcodes
-(`*.processing` sentinels) are restored on the next run.
 
 ---
 
