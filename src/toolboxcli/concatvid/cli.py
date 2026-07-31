@@ -9,6 +9,14 @@ stream-copy (`-c copy`) — no re-encoding. Files with no sequence marker, or wh
 marker has no siblings, are left untouched. The output is named after the shared
 base name; the original part files are trashed after a successful concat.
 
+Before concatenating, each group is checked via ffprobe for stream-copy compatibility.
+Mismatched codecs/audio can't be auto-fixed and are skipped. A resolution-only mismatch
+(e.g. a 4K part mixed with 1440p parts) triggers a prompt to downscale the larger parts
+to match via `downscalevid` first (skippable/auto-accepted with -y).
+
+Requires:
+    ffmpeg, ffprobe, downscalevid (only if a resolution mismatch needs fixing)
+
 Usage:
     concatvid
     concatvid ~/Videos/raw
@@ -19,10 +27,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from toolboxcli._common.confirm import confirm
@@ -31,6 +41,77 @@ from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
 
 VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts", ".webm", ".wmv"}
+
+
+@dataclass(frozen=True)
+class StreamInfo:
+    vcodec: str
+    width: int
+    height: int
+    pix_fmt: str
+    acodec: str | None
+    sample_rate: str | None
+    channels: int | None
+
+
+def probe(path: Path) -> StreamInfo | None:
+    """Read the primary video/audio stream properties of *path* via ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries",
+            "stream=codec_type,codec_name,width,height,pix_fmt,sample_rate,channels",
+            "-of", "json",
+            str(path),
+        ],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+
+    try:
+        streams = json.loads(result.stdout)["streams"]
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    if video is None or "width" not in video or "height" not in video:
+        return None
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+
+    return StreamInfo(
+        vcodec=video.get("codec_name", ""),
+        width=video["width"],
+        height=video["height"],
+        pix_fmt=video.get("pix_fmt", ""),
+        acodec=audio.get("codec_name") if audio else None,
+        sample_rate=audio.get("sample_rate") if audio else None,
+        channels=audio.get("channels") if audio else None,
+    )
+
+
+def probe_group(members: list[tuple[int, Path, str]]) -> dict[Path, StreamInfo] | None:
+    """Probe every member of a group; return None if any file can't be read."""
+    infos: dict[Path, StreamInfo] = {}
+    for _num, path, _base in members:
+        result = probe(path)
+        if result is None:
+            return None
+        infos[path] = result
+    return infos
+
+
+def find_incompatibilities(infos: dict[Path, StreamInfo]) -> tuple[bool, bool]:
+    """Return (resolution_mismatch, other_mismatch) across a group's stream info."""
+    values = list(infos.values())
+    ref = values[0]
+    resolution_mismatch = any((v.width, v.height) != (ref.width, ref.height) for v in values)
+    other_mismatch = any(
+        (v.vcodec, v.pix_fmt, v.acodec, v.sample_rate, v.channels)
+        != (ref.vcodec, ref.pix_fmt, ref.acodec, ref.sample_rate, ref.channels)
+        for v in values
+    )
+    return resolution_mismatch, other_mismatch
 
 _KEYWORD = r"(?:part|pt|cd|disc|disk)"
 _SEQUENCE_RE = re.compile(
@@ -68,6 +149,7 @@ def main() -> None:
 
     if not args.dry_run:
         require_tool("ffmpeg")
+        require_tool("ffprobe")
 
     target_dir = Path(args.directory)
     if not target_dir.is_dir():
@@ -112,10 +194,71 @@ def main() -> None:
     for (base_lower, ext), members in sorted(groups.items()):
         display_base = members[0][2]
         console.print()
+
+        scaled_paths: dict[Path, Path] = {}
+
+        infos = probe_group(members)
+        if infos is None:
+            warn(f"ffprobe couldn't read one or more parts of '{display_base}{ext}' — proceeding without a compatibility check")
+        else:
+            resolution_mismatch, other_mismatch = find_incompatibilities(infos)
+
+            if other_mismatch:
+                warn(f"Parts of '{display_base}{ext}' have mismatched codec/format — can't stream-copy concat them:")
+                for _num, path, _base in members:
+                    si = infos[path]
+                    console.print(
+                        f"  {path.name}: {si.width}x{si.height} {si.vcodec}/{si.pix_fmt}, "
+                        f"audio {si.acodec or 'none'}"
+                    )
+                warn("Skipping — re-encode the parts to a matching format first.")
+                continue
+
+            if resolution_mismatch:
+                target = min(infos.values(), key=lambda si: si.width * si.height)
+                resolutions = sorted({(si.width, si.height) for si in infos.values()}, reverse=True)
+                res_str = ", ".join(f"{w}x{h}" for w, h in resolutions)
+                do_scale = True
+                if not args.yes:
+                    do_scale = confirm(
+                        f"Parts of '{display_base}{ext}' have mismatched resolutions ({res_str}). "
+                        f"Downscale larger parts to {target.width}x{target.height} before concatenating?",
+                        default="y",
+                    ) == "y"
+                if not do_scale:
+                    info("Skipped.")
+                    continue
+
+                require_tool("downscalevid")
+                scale_failed = False
+                for _num, path, _base in members:
+                    si = infos[path]
+                    if (si.width, si.height) == (target.width, target.height):
+                        continue
+                    tmp_fd, tmp_name = tempfile.mkstemp(suffix=path.suffix, dir=target_dir)
+                    os.close(tmp_fd)
+                    tmp_path = Path(tmp_name)
+                    tmp_path.unlink()
+                    result = subprocess.run(
+                        ["downscalevid", str(path), str(tmp_path), "-r", f"{target.width}x{target.height}"]
+                    )
+                    if result.returncode != 0 or not tmp_path.exists():
+                        warn(f"downscalevid failed for '{path.name}', skipping group")
+                        scale_failed = True
+                        break
+                    scaled_paths[path] = tmp_path
+
+                if scale_failed:
+                    for tmp in scaled_paths.values():
+                        tmp.unlink(missing_ok=True)
+                    continue
+
         if not args.yes:
             reply = confirm(f"Concatenate {len(members)} parts into '{display_base}{ext}'?", default="y")
             if reply != "y":
                 info("Skipped.")
+                for tmp in scaled_paths.values():
+                    tmp.unlink(missing_ok=True)
                 continue
 
         output_path = target_dir / f"{display_base}{ext}"
@@ -128,7 +271,8 @@ def main() -> None:
         try:
             with os.fdopen(list_fd, "w", encoding="utf-8") as f:
                 for _num, path, _base in members:
-                    escaped = str(path.resolve()).replace("'", "'\\''")
+                    concat_path = scaled_paths.get(path, path)
+                    escaped = str(concat_path.resolve()).replace("'", "'\\''")
                     f.write(f"file '{escaped}'\n")
 
             result = subprocess.run(
@@ -142,6 +286,8 @@ def main() -> None:
             )
         finally:
             list_path.unlink(missing_ok=True)
+            for tmp in scaled_paths.values():
+                tmp.unlink(missing_ok=True)
 
         if result.returncode != 0:
             if output_path.exists():

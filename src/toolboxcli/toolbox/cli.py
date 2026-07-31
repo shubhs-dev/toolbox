@@ -23,6 +23,7 @@ SCRIPTS = [
     ("convertimg", "Batch-convert all images in the current folder to a target format via ImageMagick"),
     ("cutvid", "Trim a video to a start/end time using ffmpeg (stream-copy or re-encode)"),
     ("cybermod", "Extract and install Cyberpunk 2077 mods from zip/rar/7z archives"),
+    ("downscalevid", "Reduce a video's resolution using ffmpeg (never upscales)"),
     ("finddupes", "Find duplicate filenames across a directory tree"),
     ("flatten", "Move all files from subdirectories up into the current directory"),
     ("flipvid", "Flip a video horizontally or vertically using ffmpeg"),
