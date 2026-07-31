@@ -24,23 +24,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 from pathlib import Path
 
 from toolboxcli._common.console import die, info, ok, warn
-from toolboxcli._common.tooling import require_tool
-from toolboxcli.downscalevid.core import (
-    BACKENDS,
+from toolboxcli._common.encoders import (
     CODECS,
-    PRESET_HEIGHTS,
+    GPU_CHOICES,
     Encoder,
     cpu_encoder,
-    parse_resolution,
+    gpu_preference,
     select_encoder,
 )
+from toolboxcli._common.tooling import require_tool
+from toolboxcli.downscalevid.core import PRESET_HEIGHTS, parse_resolution
 
-GPU_CHOICES = ["auto", *sorted(BACKENDS), "cpu"]
+GPU_ENV_VAR = "DOWNSCALEVID_GPU"
 
 
 def probe_dimensions(path: Path) -> tuple[int, int]:
@@ -64,16 +63,6 @@ def probe_dimensions(path: Path) -> tuple[int, int]:
     return streams[0]["width"], streams[0]["height"]
 
 
-def default_gpu_preference() -> str:
-    """Resolve the default for -g/--gpu: env var → 'auto'."""
-    value = os.environ.get("DOWNSCALEVID_GPU", "").strip().lower()
-    if not value:
-        return "auto"
-    if value not in GPU_CHOICES:
-        die(f"invalid DOWNSCALEVID_GPU='{value}' — expected one of: {', '.join(GPU_CHOICES)}")
-    return value
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="downscalevid",
@@ -93,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-g", "--gpu", choices=GPU_CHOICES, default=None,
         help="Encoder to use (default: auto — first available GPU, else CPU). "
-             "Env: DOWNSCALEVID_GPU",
+             f"Env: {GPU_ENV_VAR}",
     )
     parser.add_argument("-f", "--force", action="store_true", help="Allow upscaling (default: refuse)")
     return parser
@@ -151,7 +140,7 @@ def main() -> None:
 
     scale_expr = f"{target_width}:{target_height}" if target_width else f"-2:{target_height}"
 
-    preference = args.gpu or default_gpu_preference()
+    preference = args.gpu or gpu_preference(GPU_ENV_VAR)
     encoder = select_encoder(args.codec, preference)
 
     info(f"Input      : {input_path}  ({src_width}x{src_height})")

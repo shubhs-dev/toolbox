@@ -11,7 +11,7 @@ in Python and installed as a single pipx package.
 | `autosub` | Auto-match subtitle files to videos by episode code, then run `addsub` |
 | `check-deps` | Scan subdirectories for specific npm package versions |
 | `compressvid` | Watch a folder for videos and transcode them with HandBrake; keeps the smaller copy |
-| `concatvid` | Concatenate split video parts in a folder using ffmpeg (no re-encoding) |
+| `concatvid` | Concatenate split video parts in a folder using ffmpeg (stream-copy, re-encoding only mismatched parts) |
 | `convertimg` | Batch-convert all images in the current folder to a target format via ImageMagick |
 | `cutvid` | Trim a video to a start/end time using ffmpeg (stream-copy or re-encode) |
 | `cybermod` | Extract and install Cyberpunk 2077 mods from zip/rar/7z archives |
@@ -198,19 +198,21 @@ Use `-P` to point at your own directory of preset `.json` files instead.
 ### concatvid
 
 Concatenate split video parts in a folder using **ffmpeg**'s concat demuxer with
-`-c copy` — no re-encoding.
+`-c copy` — no re-encoding, unless the parts don't match each other.
 
 ```bash
 concatvid                     # scan cwd, concat groups after confirmation
 concatvid ~/Videos/raw
 concatvid -y ~/Videos/raw     # skip confirmation prompts
 concatvid -n ~/Videos/raw     # preview groups without concatenating
+concatvid -g cpu ~/Videos/raw # force software encoding when re-encoding
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-y, --yes` | Skip confirmation prompts |
 | `-n, --dry-run` | Preview groups without concatenating |
+| `-g, --gpu` | Encoder to use when parts need re-encoding: `auto` (default), `nvidia`, `amd`, `apple`, `cpu`. Env: `CONCATVID_GPU` |
 
 Groups files by a common base name with a trailing sequence marker — `Movie 1.mp4`/
 `Movie 2.mp4`, `Movie_pt1.mkv`/`Movie_pt2.mkv`, `Movie (01).mp4`/`Movie (02).mp4`, etc. — and
@@ -219,12 +221,26 @@ siblings sharing the same base name and extension, are left untouched. The outpu
 after the shared base name (falling back to `<base>.concat<ext>` on a collision); original
 part files are trashed after a successful concat.
 
-Before concatenating, each group is checked via **ffprobe** for stream-copy compatibility.
-Mismatched video/audio codecs can't be fixed automatically, so those groups are skipped with
-a warning. A resolution-only mismatch (e.g. a 4K part mixed with 1440p parts) prompts to
-downscale the larger parts down to the smallest part's resolution first, via `downscalevid`
-(auto-accepted with `-y`); the downscaled copies are temporary and only the originals get
-trashed.
+Before concatenating, each group is checked via **ffprobe** for stream-copy compatibility —
+resolution, video codec, pixel format, audio codec, sample rate and channel count. Parts that
+disagree are normalized to the group's dominant format first, after a prompt (auto-accepted
+with `-y`):
+
+- The **smallest** resolution in the group wins, so parts are only ever downscaled.
+- Every other property is a majority vote across the parts; codecs with no available encoder
+  fall back to H.264 / AAC.
+- Parts already in the target format are left alone, and a part whose video already matches
+  gets `-c:v copy` — so a group differing only in, say, channel count never has its video
+  re-encoded.
+- Normalized copies are temporary; only the originals get trashed.
+
+Re-encoding runs on the GPU when one is available (NVENC / AMF / VideoToolbox), falling back
+to the CPU encoder — same probing and auto-retry behavior as [`downscalevid`](#downscalevid).
+
+One case still can't be repaired automatically: a group where some parts have an audio track
+and others have none. Those are skipped with a warning. Where parts carry extra streams
+(subtitles, secondary audio) *and* a re-encode is needed anyway, every part is normalized down
+to its primary video + audio stream so the stream layouts agree.
 
 ---
 

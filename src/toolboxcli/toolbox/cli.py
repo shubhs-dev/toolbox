@@ -19,7 +19,7 @@ SCRIPTS = [
     ("autosub", "Auto-match subtitle files to videos by episode code and run addsub"),
     ("check-deps", "Scan subdirectories for specific npm package versions"),
     ("compressvid", "Watch a folder for videos and transcode them with HandBrake; keeps the smaller copy"),
-    ("concatvid", "Concatenate split video parts in a folder using ffmpeg (no re-encoding)"),
+    ("concatvid", "Concatenate split video parts in a folder using ffmpeg (stream-copy where possible)"),
     ("convertimg", "Batch-convert all images in the current folder to a target format via ImageMagick"),
     ("cutvid", "Trim a video to a start/end time using ffmpeg (stream-copy or re-encode)"),
     ("cybermod", "Extract and install Cyberpunk 2077 mods from zip/rar/7z archives"),

@@ -1,5 +1,5 @@
 """
-concatvid — Concatenate split video parts in a folder using ffmpeg (no re-encoding).
+concatvid — Concatenate split video parts in a folder using ffmpeg.
 
 Scans a directory (default: current directory) for video files, groups them by a
 common base name with a trailing sequence marker (`Movie 1.mp4`/`Movie 2.mp4`,
@@ -10,18 +10,25 @@ marker has no siblings, are left untouched. The output is named after the shared
 base name; the original part files are trashed after a successful concat.
 
 Before concatenating, each group is checked via ffprobe for stream-copy compatibility.
-Mismatched codecs/audio can't be auto-fixed and are skipped. A resolution-only mismatch
-(e.g. a 4K part mixed with 1440p parts) triggers a prompt to downscale the larger parts
-to match via `downscalevid` first (skippable/auto-accepted with -y).
+Parts that disagree on resolution, video codec, pixel format or audio layout are
+normalized to the group's dominant format first (prompted, auto-accepted with -y):
+the smallest resolution wins, so parts are only ever downscaled, and parts already
+in the target format are left untouched. A part whose video already matches has only
+its audio re-encoded.
+
+Re-encoding runs on the GPU when a supported one is available — NVIDIA (NVENC), AMD
+(AMF) or Apple silicon (VideoToolbox) — and falls back to the CPU encoder otherwise.
+Override with -g/--gpu or the CONCATVID_GPU env var.
 
 Requires:
-    ffmpeg, ffprobe, downscalevid (only if a resolution mismatch needs fixing)
+    ffmpeg, ffprobe
 
 Usage:
     concatvid
     concatvid ~/Videos/raw
     concatvid -y ~/Videos/raw     # skip confirmation prompts
     concatvid -n ~/Videos/raw     # preview groups without concatenating
+    concatvid -g cpu ~/Videos/raw # force software encoding when re-encoding
 """
 
 from __future__ import annotations
@@ -29,33 +36,40 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 
 from toolboxcli._common.confirm import confirm
 from toolboxcli._common.console import console, die, info, ok, warn
+from toolboxcli._common.encoders import (
+    GPU_CHOICES,
+    Encoder,
+    cpu_encoder,
+    gpu_preference,
+    select_encoder,
+)
 from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
+from toolboxcli.concatvid.core import (
+    VIDEO_EXTS,
+    StreamInfo,
+    TargetProfile,
+    audio_presence_mismatch,
+    choose_target,
+    find_incompatibilities,
+    needs_normalizing,
+    normalize_command,
+    parse_streams,
+    split_sequence,
+    video_matches,
+)
 
-VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts", ".webm", ".wmv"}
-
-
-@dataclass(frozen=True)
-class StreamInfo:
-    vcodec: str
-    width: int
-    height: int
-    pix_fmt: str
-    acodec: str | None
-    sample_rate: str | None
-    channels: int | None
+GPU_ENV_VAR = "CONCATVID_GPU"
 
 
 def probe(path: Path) -> StreamInfo | None:
-    """Read the primary video/audio stream properties of *path* via ffprobe."""
+    """Read the stream properties of *path* via ffprobe."""
     result = subprocess.run(
         [
             "ffprobe", "-v", "error",
@@ -70,24 +84,11 @@ def probe(path: Path) -> StreamInfo | None:
         return None
 
     try:
-        streams = json.loads(result.stdout)["streams"]
-    except (json.JSONDecodeError, KeyError):
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
         return None
 
-    video = next((s for s in streams if s.get("codec_type") == "video"), None)
-    if video is None or "width" not in video or "height" not in video:
-        return None
-    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
-
-    return StreamInfo(
-        vcodec=video.get("codec_name", ""),
-        width=video["width"],
-        height=video["height"],
-        pix_fmt=video.get("pix_fmt", ""),
-        acodec=audio.get("codec_name") if audio else None,
-        sample_rate=audio.get("sample_rate") if audio else None,
-        channels=audio.get("channels") if audio else None,
-    )
+    return parse_streams(payload)
 
 
 def probe_group(members: list[tuple[int, Path, str]]) -> dict[Path, StreamInfo] | None:
@@ -101,34 +102,31 @@ def probe_group(members: list[tuple[int, Path, str]]) -> dict[Path, StreamInfo] 
     return infos
 
 
-def find_incompatibilities(infos: dict[Path, StreamInfo]) -> tuple[bool, bool]:
-    """Return (resolution_mismatch, other_mismatch) across a group's stream info."""
-    values = list(infos.values())
-    ref = values[0]
-    resolution_mismatch = any((v.width, v.height) != (ref.width, ref.height) for v in values)
-    other_mismatch = any(
-        (v.vcodec, v.pix_fmt, v.acodec, v.sample_rate, v.channels)
-        != (ref.vcodec, ref.pix_fmt, ref.acodec, ref.sample_rate, ref.channels)
-        for v in values
-    )
-    return resolution_mismatch, other_mismatch
+def normalize_part(
+    src: Path,
+    dst: Path,
+    stream_info: StreamInfo,
+    target: TargetProfile,
+    encoder: Encoder | None,
+    preference: str,
+) -> bool:
+    """Rewrite one part into the target format, retrying on CPU if an auto GPU fails."""
+    result = subprocess.run(normalize_command(src, dst, stream_info, target, encoder))
 
-_KEYWORD = r"(?:part|pt|cd|disc|disk)"
-_SEQUENCE_RE = re.compile(
-    rf"^(?P<base>.+?)[\s_.-]*\(?(?:{_KEYWORD}[\s_.-]*)?(?P<num>\d{{1,3}})\)?$",
-    re.IGNORECASE,
-)
+    # A GPU we picked ourselves can still fail on a specific input (unsupported
+    # pixel format, session limit, driver hiccup) — retry once on the CPU rather
+    # than making the user rerun with -g cpu. An explicitly requested GPU is not
+    # second-guessed.
+    if result.returncode != 0 and encoder is not None and encoder.is_hardware and preference == "auto":
+        dst.unlink(missing_ok=True)
+        warn(f"{encoder.label} encode failed (exit {result.returncode}), retrying on CPU...")
+        fallback = cpu_encoder(target.codec)
+        result = subprocess.run(normalize_command(src, dst, stream_info, target, fallback))
 
-
-def split_sequence(stem: str) -> tuple[str, int] | None:
-    """Split a filename stem into (base_name, sequence_number), or None if no marker."""
-    m = _SEQUENCE_RE.match(stem)
-    if not m:
-        return None
-    base = re.sub(r"[\s_.-]+$", "", m.group("base"))
-    if not base:
-        return None
-    return base, int(m.group("num"))
+    if result.returncode != 0 or not dst.exists():
+        dst.unlink(missing_ok=True)
+        return False
+    return True
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("directory", nargs="?", default=".", help="Directory to scan (default: .)")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
     parser.add_argument("-n", "--dry-run", action="store_true", help="Preview groups without concatenating")
+    parser.add_argument(
+        "-g", "--gpu", choices=GPU_CHOICES, default=None,
+        help="Encoder to use when parts need re-encoding (default: auto — first "
+             f"available GPU, else CPU). Env: {GPU_ENV_VAR}",
+    )
     return parser
 
 
@@ -150,6 +153,8 @@ def main() -> None:
     if not args.dry_run:
         require_tool("ffmpeg")
         require_tool("ffprobe")
+
+    preference = args.gpu or gpu_preference(GPU_ENV_VAR)
 
     target_dir = Path(args.directory)
     if not target_dir.is_dir():
@@ -190,66 +195,80 @@ def main() -> None:
 
     concatenated = 0
     trashed = 0
+    reencoded = 0
 
     for (base_lower, ext), members in sorted(groups.items()):
         display_base = members[0][2]
         console.print()
 
-        scaled_paths: dict[Path, Path] = {}
+        normalized: dict[Path, Path] = {}
 
         infos = probe_group(members)
         if infos is None:
             warn(f"ffprobe couldn't read one or more parts of '{display_base}{ext}' — proceeding without a compatibility check")
         else:
-            resolution_mismatch, other_mismatch = find_incompatibilities(infos)
+            ordered = [infos[path] for _num, path, _base in members]
+            resolution_mismatch, mismatched = find_incompatibilities(ordered)
 
-            if other_mismatch:
-                warn(f"Parts of '{display_base}{ext}' have mismatched codec/format — can't stream-copy concat them:")
+            if resolution_mismatch or mismatched:
+                reasons = (["resolution"] if resolution_mismatch else []) + mismatched
+                warn(
+                    f"Parts of '{display_base}{ext}' differ in {', '.join(reasons)} "
+                    f"— can't stream-copy concat them as-is:"
+                )
                 for _num, path, _base in members:
-                    si = infos[path]
-                    console.print(
-                        f"  {path.name}: {si.width}x{si.height} {si.vcodec}/{si.pix_fmt}, "
-                        f"audio {si.acodec or 'none'}"
-                    )
-                warn("Skipping — re-encode the parts to a matching format first.")
-                continue
+                    console.print(f"  {path.name}: {infos[path].describe()}")
 
-            if resolution_mismatch:
-                target = min(infos.values(), key=lambda si: si.width * si.height)
-                resolutions = sorted({(si.width, si.height) for si in infos.values()}, reverse=True)
-                res_str = ", ".join(f"{w}x{h}" for w, h in resolutions)
-                do_scale = True
+                if audio_presence_mismatch(ordered):
+                    warn("Skipping — some parts have no audio track at all, which "
+                         "re-encoding can't reconcile. Fix those parts first.")
+                    continue
+
+                target = choose_target(ordered)
+                drop_extras = any(p.has_extra_streams for p in ordered)
+                todo = [
+                    (path, infos[path])
+                    for _num, path, _base in members
+                    if needs_normalizing(infos[path], target, drop_extras)
+                ]
+
+                console.print(f"  → target: {target.describe()}")
+                if drop_extras:
+                    warn("  Extra streams (subtitles, secondary audio) will be dropped so "
+                         "every part ends up with the same stream layout.")
+
+                do_encode = True
                 if not args.yes:
-                    do_scale = confirm(
-                        f"Parts of '{display_base}{ext}' have mismatched resolutions ({res_str}). "
-                        f"Downscale larger parts to {target.width}x{target.height} before concatenating?",
+                    do_encode = confirm(
+                        f"Re-encode {len(todo)} of {len(members)} part(s) to match before concatenating?",
                         default="y",
                     ) == "y"
-                if not do_scale:
+                if not do_encode:
                     info("Skipped.")
                     continue
 
-                require_tool("downscalevid")
-                scale_failed = False
-                for _num, path, _base in members:
-                    si = infos[path]
-                    if (si.width, si.height) == (target.width, target.height):
-                        continue
+                # Only probe for a GPU if some part actually needs its video redone —
+                # an audio-only fixup stream-copies the video and needs no encoder.
+                encoder: Encoder | None = None
+                if any(not video_matches(si, target) for _path, si in todo):
+                    encoder = select_encoder(target.codec, preference)
+                    info(f"Encoder: {encoder.label} ({encoder.name})")
+
+                failed = False
+                for path, stream_info in todo:
                     tmp_fd, tmp_name = tempfile.mkstemp(suffix=path.suffix, dir=target_dir)
                     os.close(tmp_fd)
                     tmp_path = Path(tmp_name)
                     tmp_path.unlink()
-                    result = subprocess.run(
-                        ["downscalevid", str(path), str(tmp_path), "-r", f"{target.width}x{target.height}"]
-                    )
-                    if result.returncode != 0 or not tmp_path.exists():
-                        warn(f"downscalevid failed for '{path.name}', skipping group")
-                        scale_failed = True
+                    if not normalize_part(path, tmp_path, stream_info, target, encoder, preference):
+                        warn(f"re-encode failed for '{path.name}', skipping group")
+                        failed = True
                         break
-                    scaled_paths[path] = tmp_path
+                    normalized[path] = tmp_path
+                    reencoded += 1
 
-                if scale_failed:
-                    for tmp in scaled_paths.values():
+                if failed:
+                    for tmp in normalized.values():
                         tmp.unlink(missing_ok=True)
                     continue
 
@@ -257,7 +276,7 @@ def main() -> None:
             reply = confirm(f"Concatenate {len(members)} parts into '{display_base}{ext}'?", default="y")
             if reply != "y":
                 info("Skipped.")
-                for tmp in scaled_paths.values():
+                for tmp in normalized.values():
                     tmp.unlink(missing_ok=True)
                 continue
 
@@ -271,7 +290,7 @@ def main() -> None:
         try:
             with os.fdopen(list_fd, "w", encoding="utf-8") as f:
                 for _num, path, _base in members:
-                    concat_path = scaled_paths.get(path, path)
+                    concat_path = normalized.get(path, path)
                     escaped = str(concat_path.resolve()).replace("'", "'\\''")
                     f.write(f"file '{escaped}'\n")
 
@@ -286,7 +305,7 @@ def main() -> None:
             )
         finally:
             list_path.unlink(missing_ok=True)
-            for tmp in scaled_paths.values():
+            for tmp in normalized.values():
                 tmp.unlink(missing_ok=True)
 
         if result.returncode != 0:
@@ -303,7 +322,10 @@ def main() -> None:
         concatenated += 1
 
     console.print()
-    ok(f"Done. {concatenated} group(s) concatenated, {trashed} file(s) trashed.")
+    ok(
+        f"Done. {concatenated} group(s) concatenated, {reencoded} part(s) re-encoded, "
+        f"{trashed} file(s) trashed."
+    )
 
 
 if __name__ == "__main__":

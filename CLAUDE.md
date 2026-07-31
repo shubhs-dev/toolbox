@@ -47,7 +47,7 @@ src/toolboxcli/
 ├── autosub/cli.py
 ├── checkdeps/cli.py
 ├── compressvid/{cli.py, data/handbrake-presets/*.json}
-├── concatvid/cli.py
+├── concatvid/{cli.py, core.py}
 ├── convertimg/cli.py
 ├── cutvid/cli.py
 ├── cybermod/{cli.py, core.py}
@@ -63,10 +63,10 @@ src/toolboxcli/
 ```
 
 Each script is a `<name>/cli.py` with a `main()` function wired up in `pyproject.toml`'s
-`[project.scripts]` table as the console-script entry point. `cybermod` and `jellyname`
-additionally split their logic into `core.py`, keeping `cli.py` to argparse wiring and
-filesystem I/O only — follow this `cli.py`/`core.py` split for any future script whose logic
-grows beyond simple argument-parsing-and-dispatch.
+`[project.scripts]` table as the console-script entry point. `concatvid`, `cybermod`,
+`downscalevid` and `jellyname` additionally split their logic into `core.py`, keeping `cli.py`
+to argparse wiring, filesystem I/O and subprocess calls only — follow this `cli.py`/`core.py`
+split for any future script whose logic grows beyond simple argument-parsing-and-dispatch.
 
 **Bundled data**: `compressvid`'s HandBrake presets and `mergemanga`'s volume map are package
 data (declared in `pyproject.toml`'s `[tool.setuptools.package-data]`), resolved at runtime via
@@ -95,6 +95,10 @@ Every script should reach for these instead of reimplementing the same logic:
   determinate work respectively.
 - **`tooling.py`** — `require_tool(name, install_hint=None)`. Check an external CLI binary is
   on `PATH` before shelling out to it; dies with a clear message if missing.
+- **`encoders.py`** — `select_encoder(codec, preference)`, `cpu_encoder(codec)`,
+  `gpu_preference(env_var)`, `Encoder`, `BACKENDS`, `GPU_CHOICES`. GPU/CPU encoder selection
+  for every script that re-encodes video (`downscalevid`, `concatvid`). See the encoder-probing
+  note under per-script conventions below.
 
 `compressvid` has substantial bespoke rich UI (Panels, Tables, live per-file Progress tasks
 driven by parsed HandBrake output) that stays inline in its own `cli.py` rather than being
@@ -122,15 +126,26 @@ Progress *factories* themselves) were extracted from it.
   `kind` + `path`) replace the original bash script's magic-number return codes and
   stringly-typed `"LOOSE_ARCHIVE:$dir"` sentinel — prefer typed returns like this over string
   sentinels when porting or extending mod-detection logic.
-- `downscalevid/core.py` picks its encoder by *probing*: it encodes one throwaway lavfi frame
+- `_common/encoders.py` picks an encoder by *probing*: it encodes one throwaway lavfi frame
   with the exact encoder + rate-control args it would use, because `ffmpeg -encoders` lists
   everything the build was compiled with regardless of whether the hardware exists. Backends
   (`nvidia`/`amd`/`apple`, tried in a per-platform order; no Intel QSV or VAAPI) each carry
   their own quality args since there's no portable `-crf` for hardware encoders. Selection
-  follows the flag → env var → default pattern (`-g/--gpu` → `DOWNSCALEVID_GPU` → `auto`);
+  follows the flag → env var → default pattern, with each script owning its env var name and
+  passing it to `gpu_preference()` (`-g/--gpu` → `DOWNSCALEVID_GPU`/`CONCATVID_GPU` → `auto`);
   an *auto*-selected GPU that fails mid-encode is retried once on the CPU, an explicitly
   requested one is not. Verify changes here on real hardware — a wrong rate-control flag
   fails the probe and silently demotes the script to CPU encoding.
+- `concatvid/core.py` plans a *normalization* pass when a group's parts can't be stream-copy
+  concatenated. The target format is a per-property majority vote across the parts, except
+  resolution, which is the group's smallest (parts are only ever downscaled), and codecs with
+  no encoder in `_common/encoders.py`, which fall back to H.264/AAC. Video and audio are
+  decided independently so a part that only disagrees on audio gets `-c:v copy` — don't
+  collapse those back into a single "re-encode the whole part" branch, it's the common case
+  and the expensive one to get wrong. Normalized parts are mapped to `-map 0:v:0 -map 0:a:0`,
+  so when any part carries extra streams *and* a re-encode is needed, every part is normalized
+  to keep stream layouts identical. A group where some parts have audio and others don't is
+  skipped outright — reconciling it would mean synthesizing silent tracks.
 - `autosub` shells out to the installed `addsub` command (`subprocess.run(["addsub", "-u", ...])`)
   rather than importing `toolboxcli.addsub`'s internals — keeps each script independently
   invocable, matching the original design where every script is a standalone executable.
