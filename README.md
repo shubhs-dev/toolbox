@@ -15,6 +15,7 @@ in Python and installed as a single pipx package.
 | `convertimg` | Batch-convert all images in the current folder to a target format via ImageMagick |
 | `cutvid` | Trim a video to a start/end time using ffmpeg (stream-copy or re-encode) |
 | `cybermod` | Extract and install Cyberpunk 2077 mods from zip/rar/7z archives |
+| `downscalevid` | Reduce a video's resolution using ffmpeg (never upscales) |
 | `finddupes` | Find duplicate filenames across a directory tree |
 | `flatten` | Move all files from subdirectories up into the current directory |
 | `flipvid` | Flip a video horizontally or vertically using ffmpeg |
@@ -39,7 +40,8 @@ materials — just open it in a browser, no install needed.
 
 | Tool | Required by |
 |------|-------------|
-| `ffmpeg` | `addsub`, `concatvid`, `cutvid`, `flipvid` |
+| `ffmpeg` | `addsub`, `concatvid`, `cutvid`, `downscalevid`, `flipvid` |
+| `ffprobe` (ships with ffmpeg) | `concatvid`, `downscalevid` |
 | `HandBrakeCLI` | `compressvid` |
 | `magick` (ImageMagick 7) | `convertimg` |
 | `7z` (7-Zip) | `cybermod` |
@@ -217,6 +219,13 @@ siblings sharing the same base name and extension, are left untouched. The outpu
 after the shared base name (falling back to `<base>.concat<ext>` on a collision); original
 part files are trashed after a successful concat.
 
+Before concatenating, each group is checked via **ffprobe** for stream-copy compatibility.
+Mismatched video/audio codecs can't be fixed automatically, so those groups are skipped with
+a warning. A resolution-only mismatch (e.g. a 4K part mixed with 1440p parts) prompts to
+downscale the larger parts down to the smallest part's resolution first, via `downscalevid`
+(auto-accepted with `-y`); the downscaled copies are temporary and only the originals get
+trashed.
+
 ---
 
 ### convertimg
@@ -313,6 +322,30 @@ Recognizes mod roots up to 2 levels deep inside extracted archives (looking for 
 `bin`, `engine`, `r6`, `red4ext`, `mods`, or `tools` folders). Loose `.archive` files with no
 recognizable structure are routed to `archive/pc/mod/` automatically. Shows an overwrite
 preview before each install and sends processed archives to Trash.
+
+---
+
+### downscalevid
+
+Reduce a video's resolution using **ffmpeg**. Preserves aspect ratio unless an explicit
+`WIDTHxHEIGHT` is given; never upscales unless forced.
+
+```bash
+downscalevid movie.mkv -r 1440p
+downscalevid movie.mkv -r 1920x1080 -o movie.1080p.mkv
+downscalevid movie.mkv -r 720 -c h265
+downscalevid movie.mkv -r 1440p -f     # allow upscaling too
+```
+
+| Flag | Description |
+|------|-------------|
+| `-r, --resolution RES` | Target resolution: preset (`8k`, `4k`/`2160p`, `1440p`, `1080p`, `720p`, `480p`, `360p`), a height, or `WIDTHxHEIGHT` |
+| `-c, --codec {h264,h265}` | Video codec to re-encode with (default: `h264`) |
+| `-f, --force` | Allow upscaling (default: refuse and skip) |
+
+Re-encodes the video stream (resolution changes can't stream-copy); audio is always
+stream-copied unchanged. Output filename is auto-derived as `<stem>.<resolution>.<ext>` if
+not given.
 
 ---
 
