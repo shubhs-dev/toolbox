@@ -11,6 +11,7 @@ in Python and installed as a single pipx package.
 | `autosub` | Auto-match subtitle files to videos by episode code, then run `addsub` |
 | `check-deps` | Scan subdirectories for specific npm package versions |
 | `compressvid` | Watch a folder for videos and transcode them with HandBrake; keeps the smaller copy |
+| `concatvid` | Concatenate split video parts in a folder using ffmpeg (no re-encoding) |
 | `convertimg` | Batch-convert all images in the current folder to a target format via ImageMagick |
 | `cutvid` | Trim a video to a start/end time using ffmpeg (stream-copy or re-encode) |
 | `cybermod` | Extract and install Cyberpunk 2077 mods from zip/rar/7z archives |
@@ -38,7 +39,7 @@ materials — just open it in a browser, no install needed.
 
 | Tool | Required by |
 |------|-------------|
-| `ffmpeg` | `addsub`, `cutvid`, `flipvid` |
+| `ffmpeg` | `addsub`, `concatvid`, `cutvid`, `flipvid` |
 | `HandBrakeCLI` | `compressvid` |
 | `magick` (ImageMagick 7) | `convertimg` |
 | `7z` (7-Zip) | `cybermod` |
@@ -189,6 +190,32 @@ compressvid -f                       # copy the original into the output folder 
 
 Presets ship inside the installed package (`hw-1080`, `hw-720` — hardware-accelerated H.265).
 Use `-P` to point at your own directory of preset `.json` files instead.
+
+---
+
+### concatvid
+
+Concatenate split video parts in a folder using **ffmpeg**'s concat demuxer with
+`-c copy` — no re-encoding.
+
+```bash
+concatvid                     # scan cwd, concat groups after confirmation
+concatvid ~/Videos/raw
+concatvid -y ~/Videos/raw     # skip confirmation prompts
+concatvid -n ~/Videos/raw     # preview groups without concatenating
+```
+
+| Flag | Description |
+|------|-------------|
+| `-y, --yes` | Skip confirmation prompts |
+| `-n, --dry-run` | Preview groups without concatenating |
+
+Groups files by a common base name with a trailing sequence marker — `Movie 1.mp4`/
+`Movie 2.mp4`, `Movie_pt1.mkv`/`Movie_pt2.mkv`, `Movie (01).mp4`/`Movie (02).mp4`, etc. — and
+concatenates each group in sequence order. Files with no marker, or whose marker has no
+siblings sharing the same base name and extension, are left untouched. The output is named
+after the shared base name (falling back to `<base>.concat<ext>` on a collision); original
+part files are trashed after a successful concat.
 
 ---
 
