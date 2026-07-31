@@ -11,8 +11,9 @@ packaging and no test suite.
 
 Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
 `pipx install -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
-`check-deps`, `compressvid`, `convertimg`, `cutvid`, `cybermod`, `finddupes`, `flatten`,
-`flipvid`, `jellyname`, `kavitaname`, `mergemanga`, `sortmedia`, `toolbox` —
+`check-deps`, `compressvid`, `concatvid`, `convertimg`, `cutvid`, `cybermod`,
+`downscalevid`, `finddupes`, `flatten`, `flipvid`, `jellyname`, `kavitaname`,
+`mergemanga`, `sortmedia`, `toolbox` —
 identically on both platforms. `inventory.html` is a standalone static HTML dashboard,
 unrelated to the Python package.
 
@@ -26,8 +27,9 @@ pipx install -e . --force
 python -m toolboxcli.<script>.cli --help
 
 # Smoke-test everything after a change
-for cmd in addsub autosub check-deps compressvid convertimg cutvid cybermod finddupes \
-           flatten flipvid jellyname kavitaname mergemanga sortmedia toolbox; do
+for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cybermod \
+           downscalevid finddupes flatten flipvid jellyname kavitaname mergemanga \
+           sortmedia toolbox; do
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 ```
@@ -45,9 +47,11 @@ src/toolboxcli/
 ├── autosub/cli.py
 ├── checkdeps/cli.py
 ├── compressvid/{cli.py, data/handbrake-presets/*.json}
+├── concatvid/cli.py
 ├── convertimg/cli.py
 ├── cutvid/cli.py
 ├── cybermod/{cli.py, core.py}
+├── downscalevid/{cli.py, core.py}
 ├── finddupes/cli.py
 ├── flatten/cli.py
 ├── flipvid/cli.py
@@ -118,6 +122,15 @@ Progress *factories* themselves) were extracted from it.
   `kind` + `path`) replace the original bash script's magic-number return codes and
   stringly-typed `"LOOSE_ARCHIVE:$dir"` sentinel — prefer typed returns like this over string
   sentinels when porting or extending mod-detection logic.
+- `downscalevid/core.py` picks its encoder by *probing*: it encodes one throwaway lavfi frame
+  with the exact encoder + rate-control args it would use, because `ffmpeg -encoders` lists
+  everything the build was compiled with regardless of whether the hardware exists. Backends
+  (`nvidia`/`amd`/`apple`, tried in a per-platform order; no Intel QSV or VAAPI) each carry
+  their own quality args since there's no portable `-crf` for hardware encoders. Selection
+  follows the flag → env var → default pattern (`-g/--gpu` → `DOWNSCALEVID_GPU` → `auto`);
+  an *auto*-selected GPU that fails mid-encode is retried once on the CPU, an explicitly
+  requested one is not. Verify changes here on real hardware — a wrong rate-control flag
+  fails the probe and silently demotes the script to CPU encoding.
 - `autosub` shells out to the installed `addsub` command (`subprocess.run(["addsub", "-u", ...])`)
   rather than importing `toolboxcli.addsub`'s internals — keeps each script independently
   invocable, matching the original design where every script is a standalone executable.

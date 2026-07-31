@@ -15,7 +15,7 @@ in Python and installed as a single pipx package.
 | `convertimg` | Batch-convert all images in the current folder to a target format via ImageMagick |
 | `cutvid` | Trim a video to a start/end time using ffmpeg (stream-copy or re-encode) |
 | `cybermod` | Extract and install Cyberpunk 2077 mods from zip/rar/7z archives |
-| `downscalevid` | Reduce a video's resolution using ffmpeg (never upscales) |
+| `downscalevid` | Reduce a video's resolution using ffmpeg, GPU-accelerated when available (never upscales) |
 | `finddupes` | Find duplicate filenames across a directory tree |
 | `flatten` | Move all files from subdirectories up into the current directory |
 | `flipvid` | Flip a video horizontally or vertically using ffmpeg |
@@ -327,25 +327,40 @@ preview before each install and sends processed archives to Trash.
 
 ### downscalevid
 
-Reduce a video's resolution using **ffmpeg**. Preserves aspect ratio unless an explicit
-`WIDTHxHEIGHT` is given; never upscales unless forced.
+Reduce a video's resolution using **ffmpeg**, encoding on the GPU when one is available.
+Preserves aspect ratio unless an explicit `WIDTHxHEIGHT` is given; never upscales unless
+forced.
 
 ```bash
 downscalevid movie.mkv -r 1440p
-downscalevid movie.mkv -r 1920x1080 -o movie.1080p.mkv
+downscalevid movie.mkv -r 1920x1080 movie.1080p.mkv
 downscalevid movie.mkv -r 720 -c h265
-downscalevid movie.mkv -r 1440p -f     # allow upscaling too
+downscalevid movie.mkv -r 1440p -g cpu   # force software encoding
+downscalevid movie.mkv -r 1440p -f       # allow upscaling too
 ```
 
 | Flag | Description |
 |------|-------------|
 | `-r, --resolution RES` | Target resolution: preset (`8k`, `4k`/`2160p`, `1440p`, `1080p`, `720p`, `480p`, `360p`), a height, or `WIDTHxHEIGHT` |
 | `-c, --codec {h264,h265}` | Video codec to re-encode with (default: `h264`) |
+| `-g, --gpu {auto,amd,apple,nvidia,cpu}` | Which encoder to use (default: `auto`). Env: `DOWNSCALEVID_GPU` |
 | `-f, --force` | Allow upscaling (default: refuse and skip) |
 
 Re-encodes the video stream (resolution changes can't stream-copy); audio is always
 stream-copied unchanged. Output filename is auto-derived as `<stem>.<resolution>.<ext>` if
 not given.
+
+**GPU acceleration.** With `-g auto` (the default) the first working hardware encoder is
+used, in platform preference order — **Apple VideoToolbox** on macOS, **NVIDIA NVENC** then
+**AMD AMF** elsewhere — falling back to the CPU encoder (`libx264`/`libx265`) when none is
+usable. Availability is confirmed by encoding a throwaway frame, since `ffmpeg -encoders`
+lists encoders the build was compiled with whether or not the hardware is present; on Intel
+Macs this correctly rejects VideoToolbox, which has no constant-quality mode there. If an
+auto-selected GPU then fails on the actual input, the encode is retried once on the CPU. Ask
+for a vendor explicitly (`-g nvidia`) and it's used or the run fails — no silent fallback.
+Only encoding is offloaded; decoding and scaling stay on the CPU. Hardware encoders are much
+faster but not bit-for-bit equal to `libx264` at the same nominal quality — use `-g cpu` when
+size/quality matters more than time.
 
 ---
 

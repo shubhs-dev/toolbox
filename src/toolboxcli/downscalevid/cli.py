@@ -1,69 +1,46 @@
 """
-downscalevid — Reduce a video's resolution using ffmpeg.
+downscalevid — Reduce a video's resolution using ffmpeg, GPU-accelerated when possible.
 
 Scales down to a target resolution while preserving aspect ratio (unless an explicit
 WIDTHxHEIGHT is given). Never upscales unless -f/--force is passed. Re-encodes video
 (H.264 by default); audio is stream-copied unchanged.
+
+Encoding runs on the GPU when a supported one is available — NVIDIA (NVENC), AMD (AMF)
+or Apple silicon (VideoToolbox) — and falls back to the CPU encoder otherwise. Override
+with -g/--gpu or the DOWNSCALEVID_GPU env var.
 
 Requires:
     ffmpeg, ffprobe
 
 Usage:
     downscalevid movie.mkv -r 1440p
-    downscalevid movie.mkv -r 1920x1080 -o movie.1080p.mkv
+    downscalevid movie.mkv -r 1920x1080 movie.1080p.mkv
     downscalevid movie.mkv -r 720 -c h265
-    downscalevid movie.mkv -r 1440p -f     # allow upscaling too
+    downscalevid movie.mkv -r 1440p -g cpu   # force software encoding
+    downscalevid movie.mkv -r 1440p -f       # allow upscaling too
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
+import os
 import subprocess
 from pathlib import Path
 
 from toolboxcli._common.console import die, info, ok, warn
 from toolboxcli._common.tooling import require_tool
+from toolboxcli.downscalevid.core import (
+    BACKENDS,
+    CODECS,
+    PRESET_HEIGHTS,
+    Encoder,
+    cpu_encoder,
+    parse_resolution,
+    select_encoder,
+)
 
-PRESET_HEIGHTS = {
-    "8k": 4320,
-    "4k": 2160,
-    "2160p": 2160,
-    "1440p": 1440,
-    "1080p": 1080,
-    "720p": 720,
-    "480p": 480,
-    "360p": 360,
-}
-
-CODECS = {
-    "h264": "libx264",
-    "h265": "libx265",
-}
-
-_WXH_RE = re.compile(r"^(\d+)x(\d+)$", re.IGNORECASE)
-_HEIGHT_RE = re.compile(r"^(\d+)p?$", re.IGNORECASE)
-
-
-def parse_resolution(spec: str) -> tuple[int | None, int]:
-    """Parse a -r/--resolution spec into (width_or_None, height)."""
-    key = spec.strip().lower()
-    if key in PRESET_HEIGHTS:
-        return None, PRESET_HEIGHTS[key]
-
-    m = _WXH_RE.match(key)
-    if m:
-        return int(m.group(1)), int(m.group(2))
-
-    m = _HEIGHT_RE.match(key)
-    if m:
-        return None, int(m.group(1))
-
-    die(
-        f"invalid resolution '{spec}' — use a preset ({', '.join(PRESET_HEIGHTS)}), "
-        "a height (e.g. 900), or WIDTHxHEIGHT (e.g. 1920x1080)"
-    )
+GPU_CHOICES = ["auto", *sorted(BACKENDS), "cpu"]
 
 
 def probe_dimensions(path: Path) -> tuple[int, int]:
@@ -87,6 +64,16 @@ def probe_dimensions(path: Path) -> tuple[int, int]:
     return streams[0]["width"], streams[0]["height"]
 
 
+def default_gpu_preference() -> str:
+    """Resolve the default for -g/--gpu: env var → 'auto'."""
+    value = os.environ.get("DOWNSCALEVID_GPU", "").strip().lower()
+    if not value:
+        return "auto"
+    if value not in GPU_CHOICES:
+        die(f"invalid DOWNSCALEVID_GPU='{value}' — expected one of: {', '.join(GPU_CHOICES)}")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="downscalevid",
@@ -103,8 +90,26 @@ def build_parser() -> argparse.ArgumentParser:
         "-c", "--codec", choices=sorted(CODECS), default="h264",
         help="Video codec to re-encode with (default: h264)",
     )
+    parser.add_argument(
+        "-g", "--gpu", choices=GPU_CHOICES, default=None,
+        help="Encoder to use (default: auto — first available GPU, else CPU). "
+             "Env: DOWNSCALEVID_GPU",
+    )
     parser.add_argument("-f", "--force", action="store_true", help="Allow upscaling (default: refuse)")
     return parser
+
+
+def run_ffmpeg(input_path: Path, output_path: Path, scale_expr: str, encoder: Encoder) -> int:
+    result = subprocess.run([
+        "ffmpeg",
+        "-y",
+        "-i", str(input_path),
+        "-vf", f"scale={scale_expr}",
+        "-c:v", encoder.name, *encoder.args,
+        "-c:a", "copy",
+        str(output_path),
+    ])
+    return result.returncode
 
 
 def main() -> None:
@@ -146,27 +151,31 @@ def main() -> None:
 
     scale_expr = f"{target_width}:{target_height}" if target_width else f"-2:{target_height}"
 
-    ffmpeg_args = [
-        "-y",
-        "-i", str(input_path),
-        "-vf", f"scale={scale_expr}",
-        "-c:v", CODECS[args.codec],
-        "-crf", "18",
-        "-preset", "medium",
-        "-c:a", "copy",
-        str(output_path),
-    ]
+    preference = args.gpu or default_gpu_preference()
+    encoder = select_encoder(args.codec, preference)
 
     info(f"Input      : {input_path}  ({src_width}x{src_height})")
     info(f"Output     : {output_path}")
     info(f"Resolution : {args.resolution}")
     info(f"Codec      : {args.codec}")
+    info(f"Encoder    : {encoder.label} ({encoder.name})")
 
-    result = subprocess.run(["ffmpeg", *ffmpeg_args])
-    if result.returncode != 0:
-        if output_path.exists():
-            output_path.unlink()
-        die(f"ffmpeg failed with exit code {result.returncode}")
+    returncode = run_ffmpeg(input_path, output_path, scale_expr, encoder)
+
+    # A GPU we picked ourselves can still fail on a specific input (unsupported
+    # pixel format, session limit, driver hiccup) — retry once on the CPU rather
+    # than making the user rerun with -g cpu. An explicitly requested GPU is not
+    # second-guessed.
+    if returncode != 0 and encoder.is_hardware and preference == "auto":
+        output_path.unlink(missing_ok=True)
+        warn(f"{encoder.label} encode failed (exit {returncode}), retrying on CPU...")
+        encoder = cpu_encoder(args.codec)
+        info(f"Encoder    : {encoder.label} ({encoder.name})")
+        returncode = run_ffmpeg(input_path, output_path, scale_expr, encoder)
+
+    if returncode != 0:
+        output_path.unlink(missing_ok=True)
+        die(f"ffmpeg failed with exit code {returncode}")
 
     ok(f"Done → {output_path}")
 
