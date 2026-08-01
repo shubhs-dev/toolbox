@@ -4,7 +4,7 @@ sortmedia — Move video files into folders based on the camelCase type tag in e
 For each video file in the current directory, the last space/underscore/hyphen/dot-separated
 segment of the filename stem is treated as a camelCase type identifier (e.g. `elephantHerd`
 -> `ElephantHerd`, `ATCRecording` -> `ATCRecording`) with only its first letter capitalized.
-The base folder ("Location A" -- passed as an argument, or prompted for interactively) is
+The base folder ("Location A" -- passed as an argument, or the current directory if omitted) is
 searched recursively for a matching subfolder (case-insensitive); if found, the video is
 moved there, otherwise you're prompted to create it.
 
@@ -64,7 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("location_a", nargs="?", default=None, help="Base folder to search for destination folders")
+    parser.add_argument(
+        "location_a",
+        nargs="?",
+        default=None,
+        help="Base folder to search for destination folders (default: current directory)",
+    )
     return parser
 
 
@@ -74,11 +79,12 @@ def main() -> None:
 
     raw = args.location_a
     if raw is None:
-        raw = console.input("Location A (base folder to search for destination folders): ")
-    raw = raw.strip().strip('"').strip("'")
-    raw = _normalize_path(raw)
+        location_a = Path.cwd()
+    else:
+        raw = raw.strip().strip('"').strip("'")
+        raw = _normalize_path(raw)
+        location_a = Path(raw)
 
-    location_a = Path(raw)
     if not location_a.is_dir():
         die(f"not a directory: {location_a}")
 
