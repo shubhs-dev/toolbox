@@ -3,10 +3,10 @@ sortmedia — Move video files into folders based on the camelCase type tag in e
 
 For each video file in the current directory, the last space/underscore/hyphen/dot-separated
 segment of the filename stem is treated as a camelCase type identifier (e.g. `elephantHerd`
--> `elephant Herd`, `ATCRecording` -> `ATC Recording`). The base folder ("Location A" -- passed
-as an argument, or prompted for interactively) is searched recursively for a matching
-subfolder (case-insensitive); if found, the video is moved there, otherwise you're prompted
-to create it.
+-> `ElephantHerd`, `ATCRecording` -> `ATCRecording`) with only its first letter capitalized.
+The base folder ("Location A" -- passed as an argument, or prompted for interactively) is
+searched recursively for a matching subfolder (case-insensitive); if found, the video is
+moved there, otherwise you're prompted to create it.
 
 Usage:
     sortmedia
@@ -45,13 +45,8 @@ def extract_type(stem: str) -> str | None:
     return parts[-1] if parts else None
 
 
-def expand_camel_case(word: str) -> str:
-    # Insert a space before an uppercase run that's followed by a lowercase letter
-    # (e.g. "ATCRecording" -> "ATC Recording"), then before any other uppercase letter
-    # (e.g. "elephantHerd" -> "elephant Herd").
-    word = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", word)
-    word = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", word)
-    return word
+def capitalize_type(word: str) -> str:
+    return word[:1].upper() + word[1:] if word else word
 
 
 def find_folder(base: Path, name: str) -> Path | None:
@@ -99,15 +94,15 @@ def main() -> None:
             skipped += 1
             continue
 
-        expanded = expand_camel_case(type_tag)
-        dest_folder = find_folder(location_a, expanded)
+        folder_name = capitalize_type(type_tag)
+        dest_folder = find_folder(location_a, folder_name)
 
         if dest_folder is None:
-            if confirm(f"No folder matching '{expanded}' found. Create it?", choices="yn", default="n") != "y":
+            if confirm(f"No folder matching '{folder_name}' found. Create it?", choices="yn", default="n") != "y":
                 info(f"Skipped: {video.name}")
                 skipped += 1
                 continue
-            dest_folder = location_a / expanded
+            dest_folder = location_a / folder_name
             dest_folder.mkdir(parents=True, exist_ok=True)
 
         dest_file = dest_folder / video.name
