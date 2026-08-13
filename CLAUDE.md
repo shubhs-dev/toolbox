@@ -175,12 +175,23 @@ Progress *factories* themselves) were extracted from it.
   (0–100, higher better) and must be remapped; passing the presets' CQ 25 straight through
   would silently produce near-worst quality. As with `encoders.py`, an *auto*-selected backend
   that fails mid-encode retries once on CPU; an explicitly requested one does not.
-- The bundled presets pass **all** audio tracks through (`AudioTrackSelectionBehavior: "all"`,
-  `AudioEncoder: "copy"`, `AudioEncoderFallback: "av_aac"`). They previously kept only the
-  first track and re-encoded it to 160k stereo AAC. The library isn't only home videos, so
-  don't reintroduce a single-track or forced-stereo default. Verified on HandBrake 1.11.2 by
-  encoding a 3-track source (AAC/AC3 5.1/MP3) and confirming with `ffprobe` that all three
-  survived at their source codec, bitrate and channel count.
+- The bundled presets keep **every** audio track (`AudioTrackSelectionBehavior: "all"`) and
+  encode each one to stereo AAC at 160 kbps (`AudioEncoder: "av_aac"`,
+  `AudioMixdown: "stereo"`, `AudioBitrate: 160`). Two separate decisions, easily conflated:
+  *track selection* was previously `"first"`, silently discarding second-language and
+  commentary tracks — don't reintroduce that. *Encoding* is deliberate: passthrough was
+  measured at ~28% larger on a PCM+DTS+AAC source, since a DTS track copies through at
+  1411 kbps. Surround is downmixed rather than re-encoded as 5.1 because ffmpeg's `av_aac` is
+  weak at multichannel — asked for 384 kbps on a 5.1 track it capped at ~250, and HandBrake's
+  own default gave it just 125.
+- **`AudioBitrate: 0` does not mean "auto"** in a HandBrake preset — it yields roughly 30 kbps
+  AAC on real (incompressible) content, which is catastrophic for PCM camcorder audio hitting
+  the fallback path. Always set an explicit bitrate. This is easy to get wrong because sine-wave
+  test signals compress so well that the bug looks like a plausible bitrate; verify audio
+  changes with `anoisesrc` and `ffprobe`, never with `sine`.
+- `AudioCopyMask` and `AudioEncoderFallback` only take effect when `AudioEncoder` is a `copy:*`
+  passthrough. With `av_aac` they are inert — keep `AudioCopyMask` minimal so it doesn't read
+  as though passthrough is happening.
 - `autosub` shells out to the installed `addsub` command (`subprocess.run(["addsub", "-u", ...])`)
   rather than importing `toolboxcli.addsub`'s internals — keeps each script independently
   invocable, matching the original design where every script is a standalone executable.

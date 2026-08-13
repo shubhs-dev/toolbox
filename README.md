@@ -194,6 +194,11 @@ compressvid -f                       # copy the original into the output folder 
 Presets ship inside the installed package (`hw-1080`, `hw-720` — hardware-accelerated H.265).
 Use `-P` to point at your own directory of preset `.json` files instead.
 
+**Audio:** both presets keep *every* audio track and encode each to stereo AAC at 160 kbps.
+Surround is downmixed rather than kept as 5.1 — measured, that's the better trade, since
+ffmpeg's AAC encoder handles multichannel poorly. Passthrough was measured ~28% larger on a
+PCM + DTS + AAC source. These presets are shared with `optimiselib`.
+
 ---
 
 ### concatvid
@@ -521,8 +526,9 @@ optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off unde
 For every video that appears **directly in the library root**:
 
 1. **Transcode** — the `hw-720` preset for ≤720p sources, `hw-1080` otherwise. Neither preset
-   upscales. The result is kept only when it's smaller than the original; the original goes to
-   the Recycle Bin, never deleted outright.
+   upscales. Every audio track is kept and encoded to stereo AAC 160k. The result is kept only
+   when it's smaller than the original; the original goes to the Recycle Bin, never deleted
+   outright.
 2. **Tag** — `People - Title - Trip` → `People - Title - Trip [1080p].mp4`. Tags you added
    yourself survive, and the resolution is replaced rather than duplicated, so
    `[Restored 720p]` becomes `[Restored 1080p]` after an external upscale.

@@ -5,8 +5,9 @@ Runs continuously on a media server. For every video that appears directly in th
 root it will:
 
   1. Transcode it with HandBrake — the 720p preset for <=720p sources, the 1080p preset
-     otherwise. Neither preset upscales. The result is kept only when it is smaller than
-     the original; the original goes to the Recycle Bin, never deleted outright.
+     otherwise. Neither preset upscales. Every audio track is kept, encoded to stereo AAC
+     at 160k. The result is kept only when it is smaller than the original; the original
+     goes to the Recycle Bin, never deleted outright.
   2. Rewrite the filename to carry a resolution tag, so 720p files you may want to upscale
      later with a better tool are visible at a glance:
          People - Title - Trip  ->  People - Title - Trip [1080p].mp4

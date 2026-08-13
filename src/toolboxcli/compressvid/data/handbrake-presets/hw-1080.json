@@ -3,23 +3,16 @@
     {
       "AlignAVStart": false,
       "AudioCopyMask": [
-        "copy:aac",
-        "copy:ac3",
-        "copy:eac3",
-        "copy:dts",
-        "copy:dtshd",
-        "copy:mp3",
-        "copy:flac",
-        "copy:opus"
+        "copy:aac"
       ],
       "AudioEncoderFallback": "av_aac",
       "AudioLanguageList": [],
       "AudioList": [
         {
-          "AudioBitrate": 0,
+          "AudioBitrate": 160,
           "AudioCompressionLevel": 0,
-          "AudioEncoder": "copy",
-          "AudioMixdown": "none",
+          "AudioEncoder": "av_aac",
+          "AudioMixdown": "stereo",
           "AudioNormalizeMixLevel": false,
           "AudioSamplerate": "auto",
           "AudioTrackQualityEnable": false,
