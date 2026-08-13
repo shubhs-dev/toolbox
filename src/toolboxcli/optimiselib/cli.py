@@ -21,8 +21,17 @@ root it will:
 Only files sitting directly in the root are touched. Subfolders — including the trip
 folders and any folder you use to stage files by hand — are left completely alone.
 
+On every poll it also looks for subtitle files sitting in the root. A subtitle is matched to
+a video by the first " - " field of its name (e.g. "People" in "People - Title - Trip") —
+only an unambiguous 1:1 match is merged; anything ambiguous is left alone and retried next
+poll. A match is merged in with `addsub` and the file is tagged [... Sub] instead of getting
+an addsub-style " - Sub" filename suffix. This works both for a subtitle already sitting next
+to a brand-new video, and for one dropped in later for a video that's already been optimised
+and filed into a trip folder.
+
 Requires:
     HandBrakeCLI, ffprobe
+    addsub (optional — enables automatic subtitle merging when present)
 
 Usage:
     optimiselib /srv/library              # watch, poll every 30s
@@ -30,6 +39,7 @@ Usage:
     optimiselib -n                        # dry run: show what would happen
     optimiselib -r                        # report sub-1080p files and the review queue
     optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
+    optimiselib -S                        # don't scan for or merge subtitle files
 """
 
 from __future__ import annotations
@@ -100,8 +110,10 @@ def update_log(root: Path, log: dict, key: str, value: dict) -> None:
 
 # ── Probing ───────────────────────────────────────────────────────────
 
-def probe(path: Path) -> tuple[int, float, int] | None:
-    """Return (height, duration_seconds, bit_depth), or None if ffprobe can't read it."""
+def probe(path: Path) -> tuple[int, float, int, bool] | None:
+    """Return (height, duration_seconds, bit_depth, has_subtitle), or None if ffprobe can't
+    read it. Subtitle presence is measured from the real streams rather than trusted from the
+    filename, the same way resolution and bit depth are."""
     try:
         result = subprocess.run(
             [
@@ -121,10 +133,8 @@ def probe(path: Path) -> tuple[int, float, int] | None:
     except json.JSONDecodeError:
         return None
 
-    video = next(
-        (s for s in payload.get("streams", []) if s.get("codec_type") == "video"),
-        None,
-    )
+    streams = payload.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
     if video is None or "height" not in video:
         return None
 
@@ -134,22 +144,52 @@ def probe(path: Path) -> tuple[int, float, int] | None:
         duration = 0.0
 
     depth = core.bit_depth(video.get("pix_fmt", ""), video.get("bits_per_raw_sample"))
-    return int(video["height"]), duration, depth
+    has_sub = any(s.get("codec_type") == "subtitle" for s in streams)
+    return int(video["height"]), duration, depth, has_sub
 
 
 # ── Filesystem helpers ────────────────────────────────────────────────
 
+def _is_video(f: Path) -> bool:
+    if f.name.startswith(".") or not f.is_file():
+        return False
+    if f.suffix.lower() in (".tmp", ".processing"):
+        return False
+    return f.suffix.lower() in VIDEO_EXTS
+
+
 def scan(root: Path):
     """Video files directly in *root* — never subfolders, so trip folders and any
     staging folder you keep by hand are left alone."""
+    return (f for f in sorted(root.iterdir()) if _is_video(f))
+
+
+SUB_EXTS = {".srt", ".ass", ".ssa", ".vtt", ".sub"}
+
+
+def scan_subs(root: Path):
+    """Subtitle files directly in *root* — same root-only, dotfile-skipping convention as
+    scan(), so a subtitle only needs to be dropped where videos already are."""
     for f in sorted(root.iterdir()):
         if f.name.startswith(".") or not f.is_file():
             continue
-        if f.suffix.lower() in (".tmp", ".processing"):
-            continue
-        if f.suffix.lower() not in VIDEO_EXTS:
-            continue
-        yield f
+        if f.suffix.lower() in SUB_EXTS:
+            yield f
+
+
+def all_videos(root: Path) -> list[Path]:
+    """Every video file anywhere under *root* — root itself plus every trip folder, _review/
+    excluded — so a subtitle dropped in after its video has already been sorted can still
+    find it, wherever it currently lives."""
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        if REVIEW_DIR in dirnames:
+            dirnames.remove(REVIEW_DIR)
+        for name in filenames:
+            p = Path(dirpath) / name
+            if _is_video(p):
+                found.append(p)
+    return found
 
 
 def find_folder(base: Path, name: str) -> Path | None:
@@ -327,16 +367,19 @@ def seen_identities(log: dict) -> set[str]:
     return {core.parse_stem(Path(name).stem).identity() for name in log}
 
 
-def already_optimised(video: Path, height: int, depth: int, seen: set[str]) -> bool:
+def already_optimised(video: Path, height: int, depth: int, has_sub: bool,
+                      seen: set[str]) -> bool:
     """True when this file has been through the pipeline before and needn't be re-encoded.
 
     This is what makes the round trip cheap when you stage a file in a folder by hand and
     later move it back to the root to be sorted: the name already carries the tags the
     encode would produce, and the log has seen this video, so only the sort step is left.
+    has_sub is measured from the real subtitle streams, so a file whose tag and actual
+    content agree (with or without a subtitle) isn't mistaken for needing more work.
     """
     parsed = core.parse_stem(video.stem)
     tagged = any(core.RESOLUTION_TOKEN_RE.match(t) for t in parsed.tags)
-    matches = core.apply_tags(video.stem, height, depth) == video.stem
+    matches = core.apply_tags(video.stem, height, depth, has_sub) == video.stem
     return tagged and matches and parsed.identity() in seen
 
 
@@ -398,7 +441,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
     if probed is None:
         warn(f"Skipping (ffprobe could not read it): {name}")
         return {"file": name, "status": "skipped", "reason": "unreadable"}
-    src_height, src_duration, src_depth = probed
+    src_height, src_duration, src_depth, src_has_sub = probed
 
     # 10-bit tracks the source by default, so HDR and 10-bit grades aren't flattened to
     # 8-bit — but a backend without a 10-bit encoder quietly stays 8-bit rather than
@@ -419,9 +462,11 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
 
     # Compared against what *this* invocation would produce, not against the file's own
     # content — so `-B 8` re-encodes a file already tagged 10bit instead of calling it done.
-    skip_encode = not args.force and already_optimised(video, src_height, target_depth, seen)
+    skip_encode = not args.force and already_optimised(
+        video, src_height, target_depth, src_has_sub, seen,
+    )
 
-    tagged_stem = core.apply_tags(video.stem, src_height, target_depth)
+    tagged_stem = core.apply_tags(video.stem, src_height, target_depth, src_has_sub)
     trip, dest_folder = plan_destination(root, tagged_stem)
 
     # Pre-flight: reject a clear downgrade before spending an hour encoding it.
@@ -479,7 +524,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
         info(f"{name}  [dim]already optimised — sorting only[/]")
         return _finish(video, final, root, log, plan, args,
                        orig_size, comp_size, src_height, out_height, out_duration,
-                       src_depth)
+                       src_depth, src_has_sub)
 
     # ── Encode ────────────────────────────────────────────────────
     if not wait_stable(video):
@@ -561,15 +606,17 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
     reprobed = probe(final)
     out_height, out_duration = reprobed[:2] if reprobed else (src_height, src_duration)
     out_depth = reprobed[2] if reprobed else src_depth
+    out_has_sub = reprobed[3] if reprobed else src_has_sub
 
     return _finish(video, final, root, log, plan, args,
                    orig_size, comp_size, src_height, out_height, out_duration,
-                   out_depth)
+                   out_depth, out_has_sub)
 
 
 def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, args,
             orig_size: int, comp_size: int, src_height: int,
-            out_height: int, out_duration: float, out_depth: int = 8) -> dict:
+            out_height: int, out_duration: float, out_depth: int = 8,
+            has_sub: bool = False) -> dict:
     """Retag to the measured resolution, resolve duplicates, and sort.
 
     Shared by the encode path and the already-optimised path so a file that comes back to
@@ -577,7 +624,7 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
     """
     name = video.name
 
-    retagged = core.apply_tags(final.stem, out_height, out_depth)
+    retagged = core.apply_tags(final.stem, out_height, out_depth, has_sub)
     if retagged != final.stem:
         renamed = unique_path(final.with_name(f"{retagged}{final.suffix}"))
         final.rename(renamed)
@@ -589,6 +636,7 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
         "source_height": src_height,
         "duration": out_duration,
         "bit_depth": out_depth,
+        "has_sub": has_sub,
         "backend": plan.backend.name,
         "original_size": orig_size,
         "compressed_size": comp_size,
@@ -644,6 +692,90 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
 
     return {"file": name, "status": "sorted", "trip": trip,
             "original_size": orig_size, "compressed_size": comp_size}
+
+
+# ── Subtitle merging ─────────────────────────────────────────────────
+
+def rekey_log(root: Path, log: dict, old_name: str, new_name: str, updates: dict) -> None:
+    """Move a log entry to a new key when a file is renamed in place, merging in *updates*.
+
+    No-ops if there's no existing entry — never fabricate one for a file optimiselib never
+    processed, e.g. a video that was never run through the pipeline at all.
+    """
+    with _log_lock:
+        entry = log.pop(old_name, None)
+        if entry is None:
+            return
+        entry.update(updates)
+        log[new_name] = entry
+        save_log(root, log)
+
+
+def merge_subtitles(root: Path, log: dict, args) -> list[dict]:
+    """Match waiting subtitle files to videos anywhere in the library and merge unambiguous
+    1:1 pairs with addsub.
+
+    Runs every poll after the encode/sort pass, so a subtitle dropped next to a brand-new
+    video is picked up the moment that video is filed, and one dropped in for a video that's
+    already sorted into a trip folder is picked up wherever it now lives.
+    """
+    subs = list(scan_subs(root))
+    if not subs:
+        return []
+
+    videos = all_videos(root)
+    matches, skipped = core.match_subtitles([v.stem for v in videos], [s.name for s in subs])
+
+    for sub_name, reason in skipped.items():
+        warn(f"{sub_name}: ambiguous subtitle match ({reason}) — leaving both alone")
+
+    if not matches:
+        return []
+
+    video_by_stem = {v.stem: v for v in videos}
+    sub_by_name = {s.name: s for s in subs}
+    return [
+        _merge_one(root, video_by_stem[video_stem], sub_by_name[sub_name], log, args)
+        for sub_name, video_stem in matches.items()
+    ]
+
+
+def _merge_one(root: Path, video: Path, sub: Path, log: dict, args) -> dict:
+    if args.dry_run:
+        probed = probe(video)
+        if probed is not None:
+            height, _duration, depth, _has_sub = probed
+            preview = core.apply_tags(video.stem, height, depth, True) + video.suffix
+        else:
+            preview = "(unreadable — merge would still be attempted)"
+        info(f"{sub.name} → {video.name}\n    merge    would run addsub, then rename to {preview}")
+        return {"file": sub.name, "status": "dry-run"}
+
+    result = subprocess.run(["addsub", str(video), str(sub)])
+    if result.returncode != 0:
+        warn(f"addsub failed merging {sub.name} into {video.name}")
+        return {"file": sub.name, "status": "failed"}
+
+    probed = probe(video)
+    if probed is None:
+        warn(f"{video.name}: merged subtitle but ffprobe can't read the result")
+        return {"file": sub.name, "status": "failed"}
+    height, _duration, depth, has_sub = probed
+
+    retagged = core.apply_tags(video.stem, height, depth, has_sub)
+    final = video
+    if retagged != video.stem:
+        renamed = unique_path(video.with_name(f"{retagged}{video.suffix}"))
+        video.rename(renamed)
+        final = renamed
+
+    updates = {"has_sub": has_sub}
+    if video.name in log and "dest" in log[video.name]:
+        updates["dest"] = str(final.relative_to(root))
+    rekey_log(root, log, video.name, final.name, updates)
+
+    ok(f"{sub.name} → merged into {final.name}")
+    return {"file": final.name, "status": "sub-merged"}
 
 
 # ── Reporting ─────────────────────────────────────────────────────────
@@ -749,6 +881,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Preset for sources above 720p (default: hw-1080)")
     ap.add_argument("-q", "--preset-720", default="hw-720",
                     help="Preset for sources at 720p or below (default: hw-720)")
+    ap.add_argument("-S", "--no-subs", action="store_true",
+                    help="Don't scan for or merge matching subtitle files")
     return ap
 
 
@@ -773,6 +907,10 @@ def main() -> None:
     handbrake_present = shutil.which("HandBrakeCLI") is not None
     if not args.dry_run and not handbrake_present:
         require_tool("HandBrakeCLI", "https://handbrake.fr/downloads2.php")
+
+    # addsub is an optional dependency: missing it just disables subtitle merging rather than
+    # killing what may otherwise be a long-running continuous watcher.
+    addsub_present = shutil.which("addsub") is not None
 
     window = None
     if args.hours:
@@ -800,6 +938,12 @@ def main() -> None:
     if args.quality is not None:
         banner.add_row("Quality", f"{args.quality}  [dim](override)[/]")
     banner.add_row("Presets", f"{args.preset_1080} / {args.preset_720}")
+    if args.no_subs:
+        banner.add_row("Sub merge", "disabled (--no-subs)")
+    elif addsub_present:
+        banner.add_row("Sub merge", "enabled")
+    else:
+        banner.add_row("Sub merge", "[yellow]addsub not found — disabled[/]")
     banner.add_row("Mode", "one-shot" if args.once else f"poll every {args.interval}s")
     if window:
         banner.add_row("Hours", args.hours)
@@ -840,23 +984,25 @@ def main() -> None:
             ]
             seen = seen_identities(log)
 
-            if not videos:
-                if args.once:
-                    if first_scan:
-                        info("Nothing new to process.")
-                    break
-                first_scan = False
-                time.sleep(args.interval)
-                continue
+            if videos:
+                console.print(f"[bold]Found {len(videos)} file(s)[/]\n")
+                results = [process(v, root, log, plan, args, seen) for v in videos]
+                show_summary(results)
+            elif args.once and first_scan:
+                info("Nothing new to process.")
 
-            console.print(f"[bold]Found {len(videos)} file(s)[/]\n")
-            results = [process(v, root, log, plan, args, seen) for v in videos]
-            show_summary(results)
+            # Runs every poll, including ones with no new video — that's exactly the case
+            # where a subtitle was dropped in for a video that's already been sorted away.
+            if addsub_present and not args.no_subs:
+                sub_results = merge_subtitles(root, log, args)
+                if sub_results:
+                    show_summary(sub_results)
 
             if args.once or args.dry_run:
                 break
 
-            console.print(f"\n[dim]Watching (every {args.interval}s)… Ctrl+C to stop[/]")
+            if videos:
+                console.print(f"\n[dim]Watching (every {args.interval}s)… Ctrl+C to stop[/]")
             time.sleep(args.interval)
             first_scan = False
 
