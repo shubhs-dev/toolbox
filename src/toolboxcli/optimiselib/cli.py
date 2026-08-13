@@ -315,6 +315,10 @@ def should_process(video: Path, log: dict) -> bool:
         return False   # nothing changed since we last warned about it
     if status == "failed" and entry.get("failures", 1) >= MAX_FAILURES:
         return False   # give up rather than retry a broken file forever
+    if status == "skipped" and entry.get("reason") == "destination exists":
+        # Stays in the root until you move or rename something, and re-encoding it on
+        # every poll in the meantime would burn the GPU indefinitely. -F retries it.
+        return False
     return True
 
 
@@ -323,16 +327,16 @@ def seen_identities(log: dict) -> set[str]:
     return {core.parse_stem(Path(name).stem).identity() for name in log}
 
 
-def already_optimised(video: Path, height: int, seen: set[str]) -> bool:
+def already_optimised(video: Path, height: int, depth: int, seen: set[str]) -> bool:
     """True when this file has been through the pipeline before and needn't be re-encoded.
 
     This is what makes the round trip cheap when you stage a file in a folder by hand and
-    later move it back to the root to be sorted: the name already carries the tag the
+    later move it back to the root to be sorted: the name already carries the tags the
     encode would produce, and the log has seen this video, so only the sort step is left.
     """
     parsed = core.parse_stem(video.stem)
     tagged = any(core.RESOLUTION_TOKEN_RE.match(t) for t in parsed.tags)
-    matches = core.apply_resolution_tag(video.stem, height) == video.stem
+    matches = core.apply_tags(video.stem, height, depth) == video.stem
     return tagged and matches and parsed.identity() in seen
 
 
@@ -396,8 +400,28 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
         return {"file": name, "status": "skipped", "reason": "unreadable"}
     src_height, src_duration, src_depth = probed
 
-    skip_encode = not args.force and already_optimised(video, src_height, seen)
-    tagged_stem = core.apply_resolution_tag(video.stem, src_height)
+    # 10-bit tracks the source by default, so HDR and 10-bit grades aren't flattened to
+    # 8-bit — but a backend without a 10-bit encoder quietly stays 8-bit rather than
+    # jumping to different hardware, so say when that happens. Decided before anything
+    # else, because both the filename and the "is this already done?" test depend on the
+    # depth this run would produce.
+    if plan is None:
+        ten_bit = src_depth > 8          # no encoder to consult; display only
+    else:
+        ten_bit = plan.wants_10bit(src_depth)
+        if ten_bit and not plan.has_10bit():
+            warn(
+                f"{name}: {src_depth}-bit source but {plan.backend.name} has no 10-bit "
+                f"encoder here — encoding 8-bit"
+            )
+            ten_bit = False
+    target_depth = 10 if ten_bit else 8
+
+    # Compared against what *this* invocation would produce, not against the file's own
+    # content — so `-B 8` re-encodes a file already tagged 10bit instead of calling it done.
+    skip_encode = not args.force and already_optimised(video, src_height, target_depth, seen)
+
+    tagged_stem = core.apply_tags(video.stem, src_height, target_depth)
     trip, dest_folder = plan_destination(root, tagged_stem)
 
     # Pre-flight: reject a clear downgrade before spending an hour encoding it.
@@ -418,17 +442,6 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
         return {"file": name, "status": "review", "reason": "downgrade"}
 
     preset_stem = core.select_preset(src_height, args.preset_1080, args.preset_720)
-
-    # 10-bit tracks the source by default, so HDR and 10-bit grades aren't flattened to
-    # 8-bit — but a backend without a 10-bit encoder quietly stays 8-bit rather than
-    # jumping to different hardware, so say when that happens.
-    ten_bit = plan is not None and plan.wants_10bit(src_depth)
-    if ten_bit and not plan.has_10bit():
-        warn(
-            f"{name}: {src_depth}-bit source but {plan.backend.name} has no 10-bit "
-            f"encoder here — encoding 8-bit"
-        )
-        ten_bit = False
 
     if args.dry_run:
         if not trip:
@@ -564,7 +577,7 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
     """
     name = video.name
 
-    retagged = core.apply_resolution_tag(final.stem, out_height)
+    retagged = core.apply_tags(final.stem, out_height, out_depth)
     if retagged != final.stem:
         renamed = unique_path(final.with_name(f"{retagged}{final.suffix}"))
         final.rename(renamed)

@@ -529,9 +529,11 @@ For every video that appears **directly in the library root**:
    upscales. Every audio track is kept and encoded to stereo AAC 160k. The result is kept only
    when it's smaller than the original; the original goes to the Recycle Bin, never deleted
    outright.
-2. **Tag** — `People - Title - Trip` → `People - Title - Trip [1080p].mp4`. Tags you added
-   yourself survive, and the resolution is replaced rather than duplicated, so
-   `[Restored 720p]` becomes `[Restored 1080p]` after an external upscale.
+2. **Tag** — `People - Title - Trip` → `People - Title - Trip [1080p].mp4`, plus `10bit` when
+   the file is 10-bit (`[1080p 10bit]`; 8-bit carries no token, since it's the norm). Tags you
+   added yourself survive, and the managed tokens are replaced rather than duplicated, so
+   `[Restored 720p]` becomes `[Restored 1080p]` after an external upscale. The tag always
+   describes the finished file — if a transcode is discarded for being larger, it reverts.
 3. **Deduplicate** — a higher-resolution or more complete copy replaces the one already in the
    library (the old one goes to the Recycle Bin). Anything ambiguous — higher res but shorter,
    longer but lower res — is parked in `_review/` rather than decided unattended.

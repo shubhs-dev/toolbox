@@ -160,10 +160,14 @@ Progress *factories* themselves) were extracted from it.
   (every file would sort into a folder named `[1080p]`). `optimiselib` splits on `" - "` and
   takes the last **field** instead, so multi-word trip names work. Both original scripts remain
   the right tools when run by hand — don't "unify" them.
-- `optimiselib` owns the resolution token in a filename's trailing `[...]` group: it *replaces*
-  any `^\d{3,4}[pi]$` token rather than appending a second one, while every other token in the
-  group survives verbatim in its original order. That's what lets an externally upscaled
-  `[Restored 720p]` file retag itself to `[Restored 1080p]` on the way back through. It also
+- `optimiselib` owns the resolution *and* bit-depth tokens in a filename's trailing `[...]`
+  group (`core.apply_tags`): it *replaces* a matching `^\d{3,4}[pi]$` or `^(8|10|12)bit$` token
+  rather than appending a second one, while every other token survives verbatim in its original
+  order — `[Restored HDR 720p]` becomes `[Restored HDR 1080p 10bit]`. That's what lets an
+  externally upscaled file retag itself on the way back through. 8-bit deliberately carries no
+  token: it's the norm, and tagging every file would be noise. The tag always describes the
+  *finished* file, re-derived from a probe after the encode — so when a transcode is discarded
+  for being larger, the tag reverts to the original's real depth rather than the intent. It also
   treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
   that guard those files sort into a folder called `Sub`.
 - `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
@@ -179,7 +183,9 @@ Progress *factories* themselves) were extracted from it.
   `nvenc_h265_10bit`, `qsv_h265_10bit`, `vt_h265_10bit`, `x265_10bit`), selected on
   `-B/--bit-depth auto` when the *source* is above 8-bit. Deliberately not upconverting 8-bit
   sources: feeding 8-bit through a 10-bit encoder yields a Main 10 file with no more real
-  information in it. 12-bit sources encode as 10-bit — only `x265_12bit` goes higher and no
+  information in it. `already_optimised()` compares against the depth *this invocation* would
+  produce, not the file's own content, so `-B 8` re-encodes a file already tagged `10bit`
+  instead of treating it as done. 12-bit sources encode as 10-bit — only `x265_12bit` goes higher and no
   hardware encoder does. When the chosen backend has no 10-bit variant in this build it stays
   8-bit and warns, rather than switching to different hardware.
 - **No `--encoder-profile` is emitted for 10-bit.** The presets pin `VideoProfile: "main"`,

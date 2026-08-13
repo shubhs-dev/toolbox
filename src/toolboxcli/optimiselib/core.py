@@ -19,6 +19,10 @@ RESOLUTION_RUNGS = (2160, 1440, 1080, 720, 576, 480, 360)
 
 # Tokens optimiselib owns in the bracket group and will replace rather than duplicate.
 RESOLUTION_TOKEN_RE = re.compile(r"^\d{3,4}[pi]$", re.IGNORECASE)
+# "10bit" matches jellyname's BIT_DEPTH_TAGS spelling, so the two scripts agree.
+BIT_DEPTH_TOKEN_RE = re.compile(r"^(?:8|10|12)bit$", re.IGNORECASE)
+
+_OWNED_TOKEN_RES = (RESOLUTION_TOKEN_RE, BIT_DEPTH_TOKEN_RE)
 
 # The trailing "[...]" group of a stem.
 BRACKET_RE = re.compile(r"^(?P<base>.*?)\s*\[(?P<tags>[^\]]*)\]\s*$")
@@ -95,17 +99,30 @@ def parse_stem(stem: str) -> ParsedStem:
     )
 
 
-def apply_resolution_tag(stem: str, height: int) -> str:
-    """Return *stem* with its resolution token set to match *height*.
+def apply_tags(stem: str, height: int, depth: int = 8) -> str:
+    """Return *stem* with its resolution and bit-depth tokens set to match the file.
 
-    Tokens optimiselib doesn't own survive verbatim in their original order, with the
-    resolution appended after them — so "[Restored 720p]" becomes "[Restored 1080p]"
-    rather than growing a second resolution.
+    Both tokens are *owned*: an existing one is replaced rather than duplicated, so
+    "[Restored 720p]" becomes "[Restored 1080p]" and a file re-encoded down to 8-bit loses
+    a stale "10bit". Tokens optimiselib doesn't own survive verbatim in their original
+    order, with the managed ones appended after them.
+
+    8-bit carries no token — it's the norm, and tagging every file "8bit" would be noise.
     """
     parsed = parse_stem(stem)
+    kept = [
+        t for t in parsed.tags
+        if not any(pattern.match(t) for pattern in _OWNED_TOKEN_RES)
+    ]
+
+    managed = []
     label = resolution_label(height)
-    kept = [t for t in parsed.tags if not RESOLUTION_TOKEN_RE.match(t)]
-    parsed.tags = kept + ([label] if label else [])
+    if label:
+        managed.append(label)
+    if depth > 8:
+        managed.append(f"{depth}bit")
+
+    parsed.tags = kept + managed
     return parsed.render()
 
 
