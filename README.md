@@ -46,7 +46,7 @@ materials — just open it in a browser, no install needed.
 | `HandBrakeCLI` | `compressvid`, `optimiselib` |
 | `magick` (ImageMagick 7) | `convertimg` |
 | `7z` (7-Zip) | `cybermod` |
-| `addsub` (on PATH) | `autosub` |
+| `addsub` (on PATH) | `autosub`, `optimiselib` (optional — enables subtitle merging) |
 
 ### macOS
 
@@ -543,6 +543,17 @@ For every video that appears **directly in the library root**:
 Subfolders are never scanned, so trip folders and any folder you use to stage files by hand are
 left completely alone.
 
+**Subtitles** — on every poll, optimiselib also looks for subtitle files sitting in the root
+and matches each one to a video by the first `' - '`-separated field of its name (e.g. `People`
+in `People - Title - Trip`). Only an unambiguous 1:1 match is merged — a subtitle matching more
+than one video, or a video claimed by more than one subtitle, is left alone and retried next
+poll rather than guessed at. A match is merged in with `addsub` and tagged `[... Sub]` in the
+bracket group instead of getting `addsub -u`'s `" - Sub"` filename suffix. This works whether
+the subtitle is already there when the video is first processed, or dropped in later for a
+video that's already been optimised and filed into a trip folder — the video is found wherever
+it currently lives. Requires the `addsub` command; if it's missing, subtitle merging is silently
+disabled rather than blocking the rest of the pipeline. Disable it with `-S/--no-subs`.
+
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `-t, --interval` | `30` | Seconds between scans |
@@ -559,6 +570,7 @@ left completely alone.
 | `-N, --no-nice` | off | Don't de-prioritise the encoder process |
 | `-p, --preset-1080` | `hw-1080` | Preset for sources above 720p |
 | `-q, --preset-720` | `hw-720` | Preset for sources at 720p or below |
+| `-S, --no-subs` | off | Don't scan for or merge matching subtitle files |
 
 **Encoder** — the bundled presets specify AMD's `vce_h265`, but the encoder is chosen at
 runtime: if the preset's own encoder is available it's used untouched, otherwise HandBrake's

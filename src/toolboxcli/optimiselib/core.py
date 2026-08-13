@@ -21,8 +21,11 @@ RESOLUTION_RUNGS = (2160, 1440, 1080, 720, 576, 480, 360)
 RESOLUTION_TOKEN_RE = re.compile(r"^\d{3,4}[pi]$", re.IGNORECASE)
 # "10bit" matches jellyname's BIT_DEPTH_TAGS spelling, so the two scripts agree.
 BIT_DEPTH_TOKEN_RE = re.compile(r"^(?:8|10|12)bit$", re.IGNORECASE)
+# The bracket-group *tag* meaning "this file carries a merged subtitle track" — distinct
+# from SUB_FIELD below, which is a trailing " - Sub" base-name *field* left by `addsub -u`.
+SUB_TOKEN_RE = re.compile(r"^sub$", re.IGNORECASE)
 
-_OWNED_TOKEN_RES = (RESOLUTION_TOKEN_RE, BIT_DEPTH_TOKEN_RE)
+_OWNED_TOKEN_RES = (RESOLUTION_TOKEN_RE, BIT_DEPTH_TOKEN_RE, SUB_TOKEN_RE)
 
 # The trailing "[...]" group of a stem.
 BRACKET_RE = re.compile(r"^(?P<base>.*?)\s*\[(?P<tags>[^\]]*)\]\s*$")
@@ -99,15 +102,17 @@ def parse_stem(stem: str) -> ParsedStem:
     )
 
 
-def apply_tags(stem: str, height: int, depth: int = 8) -> str:
-    """Return *stem* with its resolution and bit-depth tokens set to match the file.
+def apply_tags(stem: str, height: int, depth: int = 8, has_sub: bool = False) -> str:
+    """Return *stem* with its resolution, bit-depth and subtitle tokens set to match the file.
 
-    Both tokens are *owned*: an existing one is replaced rather than duplicated, so
+    All three tokens are *owned*: an existing one is replaced rather than duplicated, so
     "[Restored 720p]" becomes "[Restored 1080p]" and a file re-encoded down to 8-bit loses
     a stale "10bit". Tokens optimiselib doesn't own survive verbatim in their original
     order, with the managed ones appended after them.
 
     8-bit carries no token — it's the norm, and tagging every file "8bit" would be noise.
+    Likewise no subtitle carries no "Sub" token, so a file with no subtitle merged is
+    untouched by this parameter's default.
     """
     parsed = parse_stem(stem)
     kept = [
@@ -121,9 +126,60 @@ def apply_tags(stem: str, height: int, depth: int = 8) -> str:
         managed.append(label)
     if depth > 8:
         managed.append(f"{depth}bit")
+    if has_sub:
+        managed.append("Sub")
 
     parsed.tags = kept + managed
     return parsed.render()
+
+
+# ── Subtitle matching ────────────────────────────────────────────────
+
+def first_field(stem: str) -> str:
+    """The first " - "-separated field of *stem*, ignoring any bracket tag group."""
+    fields = parse_stem(stem).fields
+    return fields[0] if fields else ""
+
+
+def match_subtitles(video_stems: list[str], sub_names: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """Match subtitles to videos by first-field code substring, 1:1 only.
+
+    Returns (matches, skipped): matches maps sub_name -> video_stem for every pair safe to
+    merge unattended; skipped maps sub_name -> a reason for every subtitle left alone. Never
+    guesses — mirrors resolve_duplicate's AMBIGUOUS philosophy: a subtitle matching more than
+    one video, or a video claimed by more than one subtitle, is left for a human (or a later
+    poll, once the filenames are disambiguated) rather than picked at random.
+    """
+    candidates: dict[str, list[str]] = {}
+    for sub in sub_names:
+        sub_lower = sub.lower()
+        candidates[sub] = [
+            vs for vs in video_stems
+            if first_field(vs) and first_field(vs).lower() in sub_lower
+        ]
+
+    claims: dict[str, list[str]] = {}
+    for sub, vs_list in candidates.items():
+        if len(vs_list) == 1:
+            claims.setdefault(vs_list[0], []).append(sub)
+
+    matches: dict[str, str] = {}
+    skipped: dict[str, str] = {}
+    for sub, vs_list in candidates.items():
+        if not vs_list:
+            skipped[sub] = "no matching video"
+            continue
+        if len(vs_list) > 1:
+            skipped[sub] = f"matches {len(vs_list)} videos"
+            continue
+        video_stem = vs_list[0]
+        claimants = claims[video_stem]
+        if len(claimants) > 1:
+            skipped[sub] = f"video also claimed by {len(claimants) - 1} other subtitle(s)"
+            continue
+        matches[sub] = video_stem
+
+    return matches, skipped
 
 
 # ── Preset selection ──────────────────────────────────────────────────
