@@ -212,6 +212,12 @@ def _classify_token(token: str, tags: MediaTags) -> bool | None:
     Returns True if it was a recognized tag, False if it's plain text (title
     material), or None if it was bracket/paren-wrapped content that matched no
     dictionary and should be silently dropped (fansub groups, hashes, etc).
+
+    A wrapped token that fails as a single unit — e.g. jellyname's own
+    multi-tag "[BluRay x265 10bit AAC]" group — is retried word-by-word
+    before being given up on, so re-running jellyname over its own output
+    (or any other bracketed multi-tag group) recovers every tag inside
+    instead of discarding the whole group as unrecognized noise.
     """
     is_wrapped = _is_wrapped(token)
     inner = _unwrap(token)
@@ -223,6 +229,11 @@ def _classify_token(token: str, tags: MediaTags) -> bool | None:
             return True
 
     if is_wrapped:
+        words = inner.split()
+        if len(words) > 1:
+            results = [_classify_token(word, tags) for word in words]
+            if any(results):
+                return True
         return None
 
     if "-" in token:
