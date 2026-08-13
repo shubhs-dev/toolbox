@@ -175,6 +175,22 @@ Progress *factories* themselves) were extracted from it.
   (0–100, higher better) and must be remapped; passing the presets' CQ 25 straight through
   would silently produce near-worst quality. As with `encoders.py`, an *auto*-selected backend
   that fails mid-encode retries once on CPU; an explicitly requested one does not.
+- Each backend carries a 10-bit encoder alongside its 8-bit one (`vce_h265_10bit`,
+  `nvenc_h265_10bit`, `qsv_h265_10bit`, `vt_h265_10bit`, `x265_10bit`), selected on
+  `-B/--bit-depth auto` when the *source* is above 8-bit. Deliberately not upconverting 8-bit
+  sources: feeding 8-bit through a 10-bit encoder yields a Main 10 file with no more real
+  information in it. 12-bit sources encode as 10-bit — only `x265_12bit` goes higher and no
+  hardware encoder does. When the chosen backend has no 10-bit variant in this build it stays
+  8-bit and warns, rather than switching to different hardware.
+- **No `--encoder-profile` is emitted for 10-bit.** The presets pin `VideoProfile: "main"`,
+  which is 8-bit-only and not even a valid value for the 10-bit encoders, but HandBrake
+  resolves the mismatch itself — verified: `-e x265_10bit` against a `main` preset still
+  produces `Main 10 / yuv420p10le`. Adding an explicit profile override would only be a second
+  thing to keep in sync.
+- Bit depth is read from ffprobe's `pix_fmt` (`bits_per_raw_sample` is often `N/A` for HEVC).
+  The parser requires the `le`/`be` endian suffix that only appears above 8 bits — without
+  that, 8-bit layouts whose *names* contain digits (`yuv410p`, `yuv411p`) get misread as high
+  bit depth. Semi-planar `p010`/`p012`/`p016` don't fit the rule and are special-cased.
 - The bundled presets keep **every** audio track (`AudioTrackSelectionBehavior: "all"`) and
   encode each one to stereo AAC at 160 kbps (`AudioEncoder: "av_aac"`,
   `AudioMixdown: "stereo"`, `AudioBitrate: 160`). Two separate decisions, easily conflated:

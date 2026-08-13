@@ -550,6 +550,7 @@ left completely alone.
 | `-F, --force` | off | Re-process files the log already marked done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |
+| `-B, --bit-depth` | `auto` | `auto` matches the source (10-bit stays 10-bit, 8-bit isn't inflated); `8`/`10` force it |
 | `-H, --hours` | none | Only start encodes inside e.g. `01:00-07:00` |
 | `-L, --max-load` | none | Skip a scan while the 1-min load average exceeds this (POSIX) |
 | `-d, --on-duplicate` | `auto` | `auto` (replace on a clear win, park anything ambiguous) \| `review` (park every duplicate) \| `ignore` (file both copies) |
@@ -564,6 +565,12 @@ x265 on the CPU). Only `-e` and `-q` are overridden on the command line, so pres
 never edited. VideoToolbox's quality scale is inverted relative to the others and is remapped
 accordingly. An auto-selected GPU that fails mid-encode is retried once on the CPU; an
 explicitly requested one is not.
+
+**Bit depth** — every backend has a 10-bit encoder too (`vce_h265_10bit`, `nvenc_h265_10bit`,
+`qsv_h265_10bit`, `vt_h265_10bit`, `x265_10bit`). On `auto` it follows the source: a 10-bit or
+HDR grade stays 10-bit instead of being flattened, while 8-bit sources are left at 8-bit
+(pushing them through a 10-bit encoder gains nothing real). 12-bit sources encode as 10-bit. If
+the chosen backend has no 10-bit encoder in your HandBrake build, it stays 8-bit and says so.
 
 **Running it as a service** — it's a plain foreground process, so `systemd`, `nohup` or a
 Windows scheduled task all work. It de-prioritises the encoder by default, and

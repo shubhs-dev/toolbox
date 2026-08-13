@@ -122,11 +122,45 @@ def select_preset(height: int, preset_1080: str, preset_720: str) -> str:
 
 # ── Encoder backends ──────────────────────────────────────────────────
 
+# Pixel formats name their depth as "<layout>p<depth><endian>" — yuv420p10le. The endian
+# suffix only appears above 8 bits, which is what keeps 8-bit layouts whose *name* contains
+# digits (yuv410p, yuv411p) from being misread as high bit depth.
+_PIX_FMT_DEPTH_RE = re.compile(r"p(\d{1,2})(?:le|be)$")
+# Semi-planar formats spell it differently and don't fit the rule above.
+_SEMIPLANAR_DEPTHS = {"p010": 10, "p012": 12, "p016": 16}
+
+
+def bit_depth(pix_fmt: str, bits_per_raw_sample: str | int | None = None) -> int:
+    """Source bit depth from ffprobe output. Defaults to 8 when it can't be determined."""
+    if bits_per_raw_sample:
+        try:
+            return int(bits_per_raw_sample)
+        except (TypeError, ValueError):
+            pass
+
+    fmt = (pix_fmt or "").lower()
+    for prefix, depth in _SEMIPLANAR_DEPTHS.items():
+        if fmt.startswith(prefix):
+            return depth
+
+    m = _PIX_FMT_DEPTH_RE.search(fmt)
+    return int(m.group(1)) if m else 8
+
+
 @dataclass(frozen=True)
 class Backend:
     name: str
     encoder: str
+    encoder_10bit: str = ""
     inverted_quality: bool = False  # True when the scale runs 0-100, higher = better
+
+    def encoder_for(self, want_10bit: bool, available: set[str]) -> str:
+        """The encoder to actually use. Falls back to this backend's 8-bit encoder when the
+        10-bit variant isn't in this HandBrake build — staying on the same hardware matters
+        more than the bit depth."""
+        if want_10bit and self.encoder_10bit and self.encoder_10bit in available:
+            return self.encoder_10bit
+        return self.encoder
 
     def quality_for(self, preset_cq: float) -> float | None:
         """The -q value to pass, or None when the preset's own value already applies.
@@ -142,14 +176,33 @@ class Backend:
 
 
 BACKENDS = {
-    "amd": Backend("amd", "vce_h265"),
-    "nvidia": Backend("nvidia", "nvenc_h265"),
-    "intel": Backend("intel", "qsv_h265"),
-    "apple": Backend("apple", "vt_h265", inverted_quality=True),
-    "cpu": Backend("cpu", "x265"),
+    "amd": Backend("amd", "vce_h265", "vce_h265_10bit"),
+    "nvidia": Backend("nvidia", "nvenc_h265", "nvenc_h265_10bit"),
+    "intel": Backend("intel", "qsv_h265", "qsv_h265_10bit"),
+    "apple": Backend("apple", "vt_h265", "vt_h265_10bit", inverted_quality=True),
+    "cpu": Backend("cpu", "x265", "x265_10bit"),
 }
 
 GPU_CHOICES = ("auto", "nvidia", "amd", "apple", "intel", "cpu")
+BIT_DEPTH_CHOICES = ("auto", "8", "10")
+
+# 12-bit sources are encoded as 10-bit: only x265_12bit can do more, no hardware encoder
+# can, and 12-bit sources are vanishingly rare in a library like this.
+MAX_ENCODE_DEPTH = 10
+
+
+def want_10bit(preference: str, source_depth: int) -> bool:
+    """Whether to reach for a 10-bit encoder.
+
+    On "auto" this tracks the source: a 10-bit source stays 10-bit rather than being
+    flattened, and an 8-bit source is *not* inflated — feeding 8-bit through a 10-bit
+    encoder produces a Main 10 file with no more real information in it.
+    """
+    if preference == "8":
+        return False
+    if preference == "10":
+        return True
+    return source_depth > 8
 
 # Intel QSV is included here although _common/encoders.py deliberately omits it: HandBrake
 # supports QSV first-class, and an Intel iGPU is a very common Jellyfin server setup.
@@ -179,7 +232,9 @@ def select_backend(preference: str, available: set[str],
         return backend, False
 
     for backend in BACKENDS.values():
-        if backend.encoder == preset_encoder and preset_encoder in available:
+        # Match the preset against either variant, so a preset authored with a 10-bit
+        # encoder still resolves to its own backend.
+        if preset_encoder in (backend.encoder, backend.encoder_10bit) and preset_encoder in available:
             return backend, True
 
     for name in platform_order(platform):
@@ -190,15 +245,24 @@ def select_backend(preference: str, available: set[str],
 
 
 def encoder_args(backend: Backend, preset_encoder: str, preset_cq: float,
-                 quality_override: float | None = None) -> list[str]:
-    """HandBrake CLI args that override the preset's encoder/quality — empty when the
-    preset already targets this backend, so an AMD box runs exactly as it does today."""
+                 quality_override: float | None = None,
+                 ten_bit: bool = False, available: set[str] | None = None) -> list[str]:
+    """HandBrake CLI args that override the preset's encoder/quality.
+
+    Empty when the preset already names the encoder we want, so an AMD box encoding an
+    8-bit source runs exactly as it does today. No --encoder-profile is emitted: HandBrake
+    resolves an incompatible preset profile itself (verified — a preset pinned to "main"
+    still yields Main 10 under a 10-bit encoder), and hard-coding one would only add a
+    second thing to keep in sync.
+    """
+    encoder = backend.encoder_for(ten_bit, available or set())
+
     args: list[str] = []
-    if backend.encoder != preset_encoder:
-        args += ["-e", backend.encoder]
+    if encoder != preset_encoder:
+        args += ["-e", encoder]
 
     quality = quality_override
-    if quality is None and backend.encoder != preset_encoder:
+    if quality is None and encoder != preset_encoder:
         quality = backend.quality_for(preset_cq)
     if quality is not None:
         args += ["-q", str(quality)]

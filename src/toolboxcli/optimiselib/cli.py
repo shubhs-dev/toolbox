@@ -100,8 +100,8 @@ def update_log(root: Path, log: dict, key: str, value: dict) -> None:
 
 # ── Probing ───────────────────────────────────────────────────────────
 
-def probe(path: Path) -> tuple[int, float] | None:
-    """Return (height, duration_seconds) for *path*, or None if ffprobe can't read it."""
+def probe(path: Path) -> tuple[int, float, int] | None:
+    """Return (height, duration_seconds, bit_depth), or None if ffprobe can't read it."""
     try:
         result = subprocess.run(
             [
@@ -133,7 +133,8 @@ def probe(path: Path) -> tuple[int, float] | None:
     except (TypeError, ValueError):
         duration = 0.0
 
-    return int(video["height"]), duration
+    depth = core.bit_depth(video.get("pix_fmt", ""), video.get("bits_per_raw_sample"))
+    return int(video["height"]), duration, depth
 
 
 # ── Filesystem helpers ────────────────────────────────────────────────
@@ -233,16 +234,30 @@ def load_ok(max_load: float | None) -> bool:
 class EncoderPlan:
     """Which backend to use, and the HandBrake args that select it per preset."""
 
-    def __init__(self, backend, auto_selected: bool, quality_override, presets: dict):
+    def __init__(self, backend, auto_selected: bool, quality_override, presets: dict,
+                 available: set, bit_depth_pref: str):
         self.backend = backend
         self.auto_selected = auto_selected
         self.quality_override = quality_override
         self._presets = presets   # preset stem -> (encoder, quality)
+        self.available = available
+        self.bit_depth_pref = bit_depth_pref
 
-    def args_for(self, preset_stem: str, force_cpu: bool = False) -> list[str]:
+    def wants_10bit(self, source_depth: int) -> bool:
+        return core.want_10bit(self.bit_depth_pref, source_depth)
+
+    def has_10bit(self, backend=None) -> bool:
+        backend = backend or self.backend
+        return bool(backend.encoder_10bit) and backend.encoder_10bit in self.available
+
+    def args_for(self, preset_stem: str, force_cpu: bool = False,
+                 ten_bit: bool = False) -> list[str]:
         encoder, cq = self._presets[preset_stem]
         backend = core.BACKENDS["cpu"] if force_cpu else self.backend
-        return core.encoder_args(backend, encoder, cq, self.quality_override)
+        return core.encoder_args(
+            backend, encoder, cq, self.quality_override,
+            ten_bit=ten_bit, available=self.available,
+        )
 
 
 def build_encoder_plan(args, preset_stems: list[str]) -> EncoderPlan:
@@ -275,7 +290,8 @@ def build_encoder_plan(args, preset_stems: list[str]) -> EncoderPlan:
             f"Available: {', '.join(sorted(available)) or 'none'}"
         )
 
-    return EncoderPlan(backend, auto_selected, args.quality, presets)
+    return EncoderPlan(backend, auto_selected, args.quality, presets,
+                       available, args.bit_depth)
 
 
 # ── Per-file pipeline ─────────────────────────────────────────────────
@@ -378,7 +394,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
     if probed is None:
         warn(f"Skipping (ffprobe could not read it): {name}")
         return {"file": name, "status": "skipped", "reason": "unreadable"}
-    src_height, src_duration = probed
+    src_height, src_duration, src_depth = probed
 
     skip_encode = not args.force and already_optimised(video, src_height, seen)
     tagged_stem = core.apply_resolution_tag(video.stem, src_height)
@@ -403,6 +419,17 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
 
     preset_stem = core.select_preset(src_height, args.preset_1080, args.preset_720)
 
+    # 10-bit tracks the source by default, so HDR and 10-bit grades aren't flattened to
+    # 8-bit — but a backend without a 10-bit encoder quietly stays 8-bit rather than
+    # jumping to different hardware, so say when that happens.
+    ten_bit = plan is not None and plan.wants_10bit(src_depth)
+    if ten_bit and not plan.has_10bit():
+        warn(
+            f"{name}: {src_depth}-bit source but {plan.backend.name} has no 10-bit "
+            f"encoder here — encoding 8-bit"
+        )
+        ten_bit = False
+
     if args.dry_run:
         if not trip:
             dest_desc = "(stays in root — no trip field)"
@@ -413,10 +440,15 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
         else:
             dest_desc = f"{trip}/  [yellow](would be created)[/]"
         extra = f"  [{verdict} vs {existing.name}]" if verdict else ""
+        depth_note = (
+            f", {src_depth}-bit source, encoder not checked"
+            if plan is None
+            else f", {src_depth}-bit → {'10' if ten_bit else '8'}-bit"
+        )
         action = (
             "already optimised — sort only"
             if skip_encode
-            else f"{preset_stem}  ({core.resolution_label(src_height)} source)"
+            else f"{preset_stem}  ({core.resolution_label(src_height)} source{depth_note})"
         )
         info(
             f"{name}\n"
@@ -433,7 +465,8 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
         out_height, out_duration = src_height, src_duration
         info(f"{name}  [dim]already optimised — sorting only[/]")
         return _finish(video, final, root, log, plan, args,
-                       orig_size, comp_size, src_height, out_height, out_duration)
+                       orig_size, comp_size, src_height, out_height, out_duration,
+                       src_depth)
 
     # ── Encode ────────────────────────────────────────────────────
     if not wait_stable(video):
@@ -458,7 +491,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
         )
         succeeded = transcode(
             src_processing, tmp, preset_file, preset_label, progress, task,
-            extra_args=plan.args_for(preset_stem),
+            extra_args=plan.args_for(preset_stem, ten_bit=ten_bit),
             low_priority=not args.no_nice,
         )
         # An auto-selected backend that fails gets one CPU retry; an explicitly requested
@@ -469,7 +502,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
                 tmp.unlink()
             succeeded = transcode(
                 src_processing, tmp, preset_file, preset_label, progress, task,
-                extra_args=plan.args_for(preset_stem, force_cpu=True),
+                extra_args=plan.args_for(preset_stem, force_cpu=True, ten_bit=ten_bit),
                 low_priority=not args.no_nice,
             )
 
@@ -513,15 +546,17 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
 
     # ── Re-probe, since the encode decides the real resolution ────
     reprobed = probe(final)
-    out_height, out_duration = reprobed if reprobed else (src_height, src_duration)
+    out_height, out_duration = reprobed[:2] if reprobed else (src_height, src_duration)
+    out_depth = reprobed[2] if reprobed else src_depth
 
     return _finish(video, final, root, log, plan, args,
-                   orig_size, comp_size, src_height, out_height, out_duration)
+                   orig_size, comp_size, src_height, out_height, out_duration,
+                   out_depth)
 
 
 def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, args,
             orig_size: int, comp_size: int, src_height: int,
-            out_height: int, out_duration: float) -> dict:
+            out_height: int, out_duration: float, out_depth: int = 8) -> dict:
     """Retag to the measured resolution, resolve duplicates, and sort.
 
     Shared by the encode path and the already-optimised path so a file that comes back to
@@ -540,6 +575,7 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
         "resolution": core.resolution_label(out_height),
         "source_height": src_height,
         "duration": out_duration,
+        "bit_depth": out_depth,
         "backend": plan.backend.name,
         "original_size": orig_size,
         "compressed_size": comp_size,
@@ -612,9 +648,15 @@ def show_report(root: Path, log: dict) -> None:
         )
         tbl.add_column("File", style="cyan", no_wrap=True)
         tbl.add_column("Resolution", justify="center")
+        tbl.add_column("Depth", justify="center")
         tbl.add_column("Location")
         for fname, entry in sorted(below.items()):
-            tbl.add_row(fname, entry.get("resolution", "?"), entry.get("dest", "—"))
+            depth = entry.get("bit_depth")
+            tbl.add_row(
+                fname, entry.get("resolution", "?"),
+                f"{depth}-bit" if depth else "—",
+                entry.get("dest", "—"),
+            )
         console.print(tbl)
     else:
         info("Nothing below 1080p on record.")
@@ -678,6 +720,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Encoder backend (default: auto; env OPTIMISELIB_GPU)")
     ap.add_argument("-Q", "--quality", type=float, default=None,
                     help="Override the preset's quality value")
+    ap.add_argument("-B", "--bit-depth", default="auto", choices=core.BIT_DEPTH_CHOICES,
+                    help="auto matches the source (10-bit stays 10-bit, 8-bit is not "
+                         "inflated); 8 or 10 forces it. Default: auto")
     ap.add_argument("-H", "--hours", default=None,
                     help="Only start encodes inside this window, e.g. 01:00-07:00")
     ap.add_argument("-L", "--max-load", type=float, default=None,
@@ -709,8 +754,11 @@ def main() -> None:
 
     require_tool("ffprobe", "part of ffmpeg")
     # A dry run never encodes, so it doesn't need HandBrake — that's what makes it usable
-    # for checking naming and sorting on a machine that isn't the server.
-    if not args.dry_run:
+    # for checking naming and sorting on a machine that isn't the server. When HandBrake
+    # *is* present the plan is still built, so the dry run reports the encoder and bit
+    # depth it would really use rather than guessing.
+    handbrake_present = shutil.which("HandBrakeCLI") is not None
+    if not args.dry_run and not handbrake_present:
         require_tool("HandBrakeCLI", "https://handbrake.fr/downloads2.php")
 
     window = None
@@ -720,9 +768,9 @@ def main() -> None:
         except ValueError as exc:
             die(f"Bad --hours value: {exc}")
 
-    plan = None if args.dry_run else build_encoder_plan(
+    plan = build_encoder_plan(
         args, [args.preset_1080, args.preset_720],
-    )
+    ) if handbrake_present else None
 
     banner = Table.grid(padding=(0, 2))
     banner.add_column(style="bold")
@@ -730,6 +778,12 @@ def main() -> None:
     banner.add_row("Library", str(root))
     if plan is not None:
         banner.add_row("Encoder", f"{plan.backend.name}  [dim]({plan.backend.encoder})[/]")
+        if plan.has_10bit():
+            depth = ("matches source" if args.bit_depth == "auto"
+                     else f"forced {args.bit_depth}-bit")
+            banner.add_row("Bit depth", f"{depth}  [dim]({plan.backend.encoder_10bit})[/]")
+        else:
+            banner.add_row("Bit depth", "[yellow]8-bit only — no 10-bit encoder here[/]")
     if args.quality is not None:
         banner.add_row("Quality", f"{args.quality}  [dim](override)[/]")
     banner.add_row("Presets", f"{args.preset_1080} / {args.preset_720}")
