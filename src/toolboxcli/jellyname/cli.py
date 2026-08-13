@@ -20,12 +20,12 @@ tokens (release-group names, hashes, fansub tags) are still dropped.
 Multi-episode files are supported (S01E01-E02). Characters illegal in
 Jellyfin paths (< > : " / \\ | ? *) are removed.
 
-When a filename doesn't specify resolution, video codec, bit-depth, HDR, or
-audio codec, jellyname falls back to reading the actual stream via ffprobe
-and fills in only what's missing — tags already present in the filename are
-never overridden. Source/edition (BluRay, PROPER, IMAX, ...) describe release
-provenance rather than stream properties, so they're never probed. ffprobe is
-only required when a file actually needs this fallback.
+jellyname always reads the actual stream via ffprobe and fills in whichever
+resolution, video codec, bit-depth, HDR, or audio-codec tags the filename
+left out — tags already present in the filename are never overridden.
+Source/edition (BluRay, PROPER, IMAX, ...) describe release provenance
+rather than stream properties, so they're never probed. ffprobe (part of
+ffmpeg) must be installed to run jellyname.
 
 If no directory is given, the current working directory is used.
 
@@ -45,7 +45,7 @@ from typing import Callable
 from toolboxcli._common import ffprobe as ffprobe_common
 from toolboxcli._common.console import console, die, info, ok, warn
 from toolboxcli._common.tooling import require_tool
-from toolboxcli.jellyname.core import VIDEO_EXTS, MediaTags, apply_probed_tags, needs_probe, probed_tags, process_file
+from toolboxcli.jellyname.core import VIDEO_EXTS, MediaTags, apply_probed_tags, probed_tags, process_file
 
 
 def do_rename(src_file: Path, target_dir: Path, new_filename: str, src_dir: Path, dry_run: bool) -> str:
@@ -80,17 +80,15 @@ def do_rename(src_file: Path, target_dir: Path, new_filename: str, src_dir: Path
 def make_tag_augmenter() -> Callable[[Path, MediaTags], None]:
     """ffprobe-backed fallback for tag categories the filename left out.
 
-    Only shells out when `needs_probe` says the filename is missing something
-    ffprobe could supply, and `require_tool` is checked lazily on first actual
-    use — so jellyname still works without ffprobe installed as long as every
-    file is already fully tagged by name.
+    Always probes — a fully-tagged filename still can't rule out bit-depth or
+    HDR the release group left unstated. `require_tool` is checked lazily on
+    first actual use so the error, if ffprobe is missing, surfaces once you'd
+    actually need it rather than at import time.
     """
     checked_tool = False
 
     def augment_tags(filepath: Path, tags: MediaTags) -> None:
         nonlocal checked_tool
-        if not needs_probe(tags):
-            return
         if not checked_tool:
             require_tool("ffprobe", "part of ffmpeg")
             checked_tool = True

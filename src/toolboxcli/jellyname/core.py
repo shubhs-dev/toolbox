@@ -121,13 +121,12 @@ class MediaTags:
 
 # ---- ffprobe fallback: source/edition (BluRay, PROPER, ...) describe release
 # provenance, not stream properties, so ffprobe can never supply them — only
-# the four fields below are ever filled this way.
-#
-# bit_depth and hdr follow the filename parser's own convention of leaving the
-# unremarkable case untagged (8bit, SDR carry no token), so their absence
-# after a fill doesn't mean "not yet probed" the way it does for the other
-# three fields. needs_probe() below only gates on the three that always get a
-# concrete value once probed.
+# the four fields below (plus audio codec) are ever filled this way. Probing
+# always runs, even when the filename already specifies every field it can —
+# bit_depth/HDR follow the filename parser's own convention of leaving the
+# unremarkable case untagged (8bit, SDR carry no token), so a filename that's
+# "fully tagged" in every other respect still can't be trusted to mean "no
+# HDR/10bit to report" without actually checking the stream.
 _PROBE_RESOLUTIONS = {2160: "2160", 1080: "1080", 720: "720", 480: "480"}
 _PROBE_VIDEO_CODECS = {"h264": "AVC", "hevc": "HEVC"}
 _INTERLACED_FIELD_ORDERS = {"tt", "bb", "tb", "bt"}
@@ -175,15 +174,6 @@ def probed_tags(payload: dict) -> dict[str, str]:
             result["audio"] = AUDIO_TAGS[codec_name]
 
     return result
-
-
-def needs_probe(tags: MediaTags) -> bool:
-    """Whether cli.py should bother shelling out to ffprobe for this file.
-
-    Gated on resolution/video_codec/audio only — see the fallback-section note
-    above for why bit_depth/hdr are excluded.
-    """
-    return not (tags.resolution and tags.video_codec and tags.audio)
 
 
 def apply_probed_tags(tags: MediaTags, probed: dict[str, str]) -> None:
