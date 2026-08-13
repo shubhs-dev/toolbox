@@ -3,16 +3,23 @@
     {
       "AlignAVStart": false,
       "AudioCopyMask": [
-        "copy:aac"
+        "copy:aac",
+        "copy:ac3",
+        "copy:eac3",
+        "copy:dts",
+        "copy:dtshd",
+        "copy:mp3",
+        "copy:flac",
+        "copy:opus"
       ],
-      "AudioEncoderFallback": "none",
+      "AudioEncoderFallback": "av_aac",
       "AudioLanguageList": [],
       "AudioList": [
         {
-          "AudioBitrate": 160,
+          "AudioBitrate": 0,
           "AudioCompressionLevel": 0,
-          "AudioEncoder": "av_aac",
-          "AudioMixdown": "stereo",
+          "AudioEncoder": "copy",
+          "AudioMixdown": "none",
           "AudioNormalizeMixLevel": false,
           "AudioSamplerate": "auto",
           "AudioTrackQualityEnable": false,
@@ -21,8 +28,8 @@
           "AudioTrackDRCSlider": 0
         }
       ],
-      "AudioSecondaryEncoderMode": true,
-      "AudioTrackSelectionBehavior": "first",
+      "AudioSecondaryEncoderMode": false,
+      "AudioTrackSelectionBehavior": "all",
       "AudioTrackNamePassthru": true,
       "AudioAutomaticNamingBehavior": "unnamed",
       "ChapterMarkers": true,

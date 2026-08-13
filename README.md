@@ -22,6 +22,7 @@ in Python and installed as a single pipx package.
 | `jellyname` | Rename and organize media files into a Jellyfin-compatible folder structure |
 | `kavitaname` | Rename chapter CBZ/CBR files for Kavita server compatibility |
 | `mergemanga` | Merge individual One Piece chapter CBZ files into volume CBZ files with metadata |
+| `optimiselib` | Watch a library root: compress new videos to 1080p, tag the resolution and sort by trip |
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
 | `toolbox` | List all scripts in this repo with a brief description |
 
@@ -41,8 +42,8 @@ materials — just open it in a browser, no install needed.
 | Tool | Required by |
 |------|-------------|
 | `ffmpeg` | `addsub`, `concatvid`, `cutvid`, `downscalevid`, `flipvid` |
-| `ffprobe` (ships with ffmpeg) | `concatvid`, `downscalevid` |
-| `HandBrakeCLI` | `compressvid` |
+| `ffprobe` (ships with ffmpeg) | `concatvid`, `downscalevid`, `optimiselib` |
+| `HandBrakeCLI` | `compressvid`, `optimiselib` |
 | `magick` (ImageMagick 7) | `convertimg` |
 | `7z` (7-Zip) | `cybermod` |
 | `addsub` (on PATH) | `autosub` |
@@ -500,6 +501,68 @@ mergemanga --dry-run
 
 Chapter files must be named `Chapter N.cbz` (e.g., `Chapter 1.cbz`, `Chapter 42.cbz`). Includes
 a built-in volume map covering volumes 1–115 with official English titles.
+
+---
+
+### optimiselib
+
+Watch a library root, optimise new videos to 1080p, tag them with their resolution and sort
+them into trip folders. Built to run continuously on a media server — it's `compressvid` and
+`sortmedia` welded into one unattended pipeline.
+
+```bash
+optimiselib /srv/library              # watch, poll every 30s
+optimiselib -O                        # process what's there, then exit
+optimiselib -n                        # dry run: show what would happen
+optimiselib -r                        # report sub-1080p files and the review queue
+optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
+```
+
+For every video that appears **directly in the library root**:
+
+1. **Transcode** — the `hw-720` preset for ≤720p sources, `hw-1080` otherwise. Neither preset
+   upscales. The result is kept only when it's smaller than the original; the original goes to
+   the Recycle Bin, never deleted outright.
+2. **Tag** — `People - Title - Trip` → `People - Title - Trip [1080p].mp4`. Tags you added
+   yourself survive, and the resolution is replaced rather than duplicated, so
+   `[Restored 720p]` becomes `[Restored 1080p]` after an external upscale.
+3. **Deduplicate** — a higher-resolution or more complete copy replaces the one already in the
+   library (the old one goes to the Recycle Bin). Anything ambiguous — higher res but shorter,
+   longer but lower res — is parked in `_review/` rather than decided unattended.
+4. **Sort** — moved into the folder named by the **Trip** field, the last `' - '`-separated part
+   of the name. A name without all three fields is tagged, left in root and reported.
+
+Subfolders are never scanned, so trip folders and any folder you use to stage files by hand are
+left completely alone.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `-t, --interval` | `30` | Seconds between scans |
+| `-O, --once` | off | Process existing files and exit |
+| `-n, --dry-run` | off | Show planned rename, destination and duplicate verdict; change nothing |
+| `-r, --report` | off | List files below 1080p and the review queue, then exit |
+| `-F, --force` | off | Re-process files the log already marked done |
+| `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
+| `-Q, --quality` | preset's | Override the preset's quality value |
+| `-H, --hours` | none | Only start encodes inside e.g. `01:00-07:00` |
+| `-L, --max-load` | none | Skip a scan while the 1-min load average exceeds this (POSIX) |
+| `-d, --on-duplicate` | `auto` | `auto` (replace on a clear win, park anything ambiguous) \| `review` (park every duplicate) \| `ignore` (file both copies) |
+| `-N, --no-nice` | off | Don't de-prioritise the encoder process |
+| `-p, --preset-1080` | `hw-1080` | Preset for sources above 720p |
+| `-q, --preset-720` | `hw-720` | Preset for sources at 720p or below |
+
+**Encoder** — the bundled presets specify AMD's `vce_h265`, but the encoder is chosen at
+runtime: if the preset's own encoder is available it's used untouched, otherwise HandBrake's
+detected encoders are checked in a per-platform order (NVENC / VCE / QSV / VideoToolbox, then
+x265 on the CPU). Only `-e` and `-q` are overridden on the command line, so preset files are
+never edited. VideoToolbox's quality scale is inverted relative to the others and is remapped
+accordingly. An auto-selected GPU that fails mid-encode is retried once on the CPU; an
+explicitly requested one is not.
+
+**Running it as a service** — it's a plain foreground process, so `systemd`, `nohup` or a
+Windows scheduled task all work. It de-prioritises the encoder by default, and
+`-H`/`-L` keep it out of the way of live playback. State lives in `.optimiselib.json` at the
+library root, and a run killed mid-encode restores the source file on restart.
 
 ---
 

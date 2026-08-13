@@ -23,14 +23,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
-import subprocess
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from importlib.resources import files as _resource_files
 from pathlib import Path
 
 from rich.panel import Panel
@@ -38,6 +34,13 @@ from rich.table import Table
 from rich import box
 
 from toolboxcli._common.console import console, die
+from toolboxcli._common.handbrake import (
+    list_presets,
+    load_preset,
+    set_presets_dir,
+    transcode,
+    wait_stable,
+)
 from toolboxcli._common.humanize import human_size as fmt_size
 from toolboxcli._common.progress import bar as progress_bar
 from toolboxcli._common.trash import move_to_trash
@@ -47,74 +50,7 @@ VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
     ".m4v", ".mpg", ".mpeg", ".ts", ".vob", ".3gp", ".mts",
 }
-DEFAULT_PRESETS_DIR = _resource_files("toolboxcli.compressvid") / "data" / "handbrake-presets"
-PRESETS_DIR = DEFAULT_PRESETS_DIR
-HANDBRAKE = "HandBrakeCLI"
 LOG_NAME = ".compressvid.json"
-STABLE_SECS = 2        # pause between file-size polls
-STABLE_TIMEOUT = 300   # max seconds to wait for a file to stop growing
-
-# Regex to pull percentage from HandBrakeCLI stderr progress lines
-# e.g.  "Encoding: task 1 of 1, 45.23 % (128.34 fps, avg ...)"
-HB_PCT_RE = re.compile(r"(\d+\.\d+)\s*%")
-
-
-# ── Utilities ─────────────────────────────────────────────────────────
-
-def wait_stable(path, timeout=STABLE_TIMEOUT):
-    """Block until *path*'s size stops changing (file fully written)."""
-    prev = -1
-    elapsed = 0
-    while elapsed < timeout:
-        try:
-            cur = path.stat().st_size
-        except OSError:
-            return False
-        if cur == prev and cur > 0:
-            return True
-        prev = cur
-        time.sleep(STABLE_SECS)
-        elapsed += STABLE_SECS
-    return False
-
-
-# ── Preset helpers ────────────────────────────────────────────────────
-
-def list_presets():
-    """Display every JSON preset in a rich table."""
-    if not PRESETS_DIR.is_dir():
-        console.print(f"[red]Presets directory not found:[/] {PRESETS_DIR}")
-        return
-
-    tbl = Table(
-        title="Available Presets", box=box.ROUNDED,
-        title_style="bold cyan",
-    )
-    tbl.add_column("Preset name (use with -p)", style="green")
-    tbl.add_column("HandBrake label")
-
-    for f in sorted(PRESETS_DIR.glob("*.json")):
-        try:
-            with f.open() as fp:
-                d = json.load(fp)
-            label = d["PresetList"][0]["PresetName"]
-        except (json.JSONDecodeError, KeyError, IndexError):
-            label = "[dim](unreadable)[/]"
-        tbl.add_row(f.stem if hasattr(f, "stem") else f.name.rsplit(".", 1)[0], label)
-
-    console.print(tbl)
-
-
-def load_preset(name):
-    """Return (preset_file_path, preset_display_name) for a given stem."""
-    f = PRESETS_DIR / f"{name}.json"
-    if not f.is_file():
-        console.print(f"[red bold]ERROR:[/] Preset file not found: {f}\n")
-        list_presets()
-        sys.exit(1)
-    with f.open() as fp:
-        d = json.load(fp)
-    return str(f), d["PresetList"][0]["PresetName"]
 
 
 # ── Processing log (thread-safe) ─────────────────────────────────────
@@ -144,69 +80,6 @@ def update_log(output_dir, log, key, value):
 
 
 # ── Core logic ────────────────────────────────────────────────────────
-
-def _stream_reader(stream, progress, task_id):
-    """Read *stream* in a background thread, parse HandBrake % lines."""
-    buf = b""
-    while True:
-        chunk = stream.read(4096)
-        if not chunk:
-            break
-        buf += chunk
-        # Split on \r or \n — HandBrake uses \r to overwrite progress
-        parts = re.split(rb"[\r\n]+", buf)
-        # Last element is incomplete — keep it for the next read
-        buf = parts[-1]
-        for part in parts[:-1]:
-            line = part.decode("utf-8", errors="replace")
-            m = HB_PCT_RE.search(line)
-            if m and progress is not None and task_id is not None:
-                progress.update(task_id, completed=float(m.group(1)))
-
-
-def transcode(src, dst, preset_file, preset_label, progress=None, task_id=None):
-    """Run HandBrakeCLI, stream-parse its progress, return True on success."""
-    cmd = [
-        HANDBRAKE,
-        "--preset-import-file", preset_file,
-        "--preset", preset_label,
-        "-i", str(src),
-        "-o", str(dst),
-    ]
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except FileNotFoundError:
-        die(
-            f"'{HANDBRAKE}' not found on PATH. "
-            "Install HandBrake CLI: https://handbrake.fr/downloads2.php"
-        )
-
-    # Read both stdout and stderr in parallel threads — HandBrake may write
-    # progress to either depending on version / platform.
-    out_t = threading.Thread(
-        target=_stream_reader, args=(proc.stdout, progress, task_id),
-        daemon=True,
-    )
-    err_t = threading.Thread(
-        target=_stream_reader, args=(proc.stderr, progress, task_id),
-        daemon=True,
-    )
-    out_t.start()
-    err_t.start()
-
-    proc.wait()
-    out_t.join(timeout=5)
-    err_t.join(timeout=5)
-
-    if progress is not None and task_id is not None:
-        progress.update(task_id, completed=100)
-
-    return proc.returncode == 0
-
 
 def process_video(video, output_dir, preset_file, preset_label, log,
                   progress, task_id, copy_original=False):
@@ -595,13 +468,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main():
-    global PRESETS_DIR
-
     ap = build_parser()
     args = ap.parse_args()
 
     if args.presets_dir:
-        PRESETS_DIR = Path(args.presets_dir)
+        set_presets_dir(args.presets_dir)
 
     # ── List presets ──────────────────────────────────────────────
     if args.list_presets:

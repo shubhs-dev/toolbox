@@ -32,6 +32,7 @@ flipvid = "toolboxcli.flipvid.cli:main"
 jellyname = "toolboxcli.jellyname.cli:main"
 kavitaname = "toolboxcli.kavitaname.cli:main"
 mergemanga = "toolboxcli.mergemanga.cli:main"
+optimiselib = "toolboxcli.optimiselib.cli:main"
 sortmedia = "toolboxcli.sortmedia.cli:main"
 toolbox = "toolboxcli.toolbox.cli:main"
 
