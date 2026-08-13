@@ -129,6 +129,14 @@ def tokenize(norm: str) -> list[str]:
     return [t for t in _TOKEN_RE.findall(norm) if t != "-"]
 
 
+def _is_wrapped(token: str) -> bool:
+    return len(token) >= 2 and token[0] in "[(" and token[-1] in "])"
+
+
+def _unwrap(token: str) -> str:
+    return token[1:-1] if _is_wrapped(token) else token
+
+
 def _classify_token(token: str, tags: MediaTags) -> bool | None:
     """Classify a single token into `tags`.
 
@@ -136,8 +144,8 @@ def _classify_token(token: str, tags: MediaTags) -> bool | None:
     material), or None if it was bracket/paren-wrapped content that matched no
     dictionary and should be silently dropped (fansub groups, hashes, etc).
     """
-    is_wrapped = len(token) >= 2 and token[0] in "[(" and token[-1] in "])"
-    inner = token[1:-1] if is_wrapped else token
+    is_wrapped = _is_wrapped(token)
+    inner = _unwrap(token)
     lowered = inner.lower()
 
     for category, table in _TAG_CATEGORIES:
@@ -210,7 +218,7 @@ def find_year_anchor(tokens: list[str]) -> int | None:
     """Returns the index of the best year token, preferring the rightmost
     candidate that leaves a non-empty title. Returns None if no year token
     qualifies (including "the only candidate would empty the title")."""
-    candidates = [i for i, tok in enumerate(tokens) if YEAR_RE.match(tok)]
+    candidates = [i for i, tok in enumerate(tokens) if YEAR_RE.match(_unwrap(tok))]
     for i in reversed(candidates):
         if i > 0:
             return i
@@ -239,7 +247,7 @@ def parse_movie(stem: str) -> tuple[str, str, MediaTags]:
 
     year_idx = find_year_anchor(tokens)
     if year_idx is not None:
-        year = tokens[year_idx]
+        year = _unwrap(tokens[year_idx])
         title = _classify_leading(tokens[:year_idx], tags)
         for tok in tokens[year_idx + 1:]:
             _classify_token(tok, tags)
