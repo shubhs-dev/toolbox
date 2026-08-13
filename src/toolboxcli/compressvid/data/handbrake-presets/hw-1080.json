@@ -5,7 +5,7 @@
       "AudioCopyMask": [
         "copy:aac"
       ],
-      "AudioEncoderFallback": "none",
+      "AudioEncoderFallback": "av_aac",
       "AudioLanguageList": [],
       "AudioList": [
         {
@@ -21,8 +21,8 @@
           "AudioTrackDRCSlider": 0
         }
       ],
-      "AudioSecondaryEncoderMode": true,
-      "AudioTrackSelectionBehavior": "first",
+      "AudioSecondaryEncoderMode": false,
+      "AudioTrackSelectionBehavior": "all",
       "AudioTrackNamePassthru": true,
       "AudioAutomaticNamingBehavior": "unnamed",
       "ChapterMarkers": true,

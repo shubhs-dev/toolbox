@@ -58,6 +58,7 @@ src/toolboxcli/
 ├── jellyname/{cli.py, core.py}
 ├── kavitaname/cli.py
 ├── mergemanga/{cli.py, data/volume_map.json}
+├── optimiselib/{cli.py, core.py}
 ├── sortmedia/cli.py
 └── toolbox/cli.py
 ```
@@ -95,6 +96,12 @@ Every script should reach for these instead of reimplementing the same logic:
   determinate work respectively.
 - **`tooling.py`** — `require_tool(name, install_hint=None)`. Check an external CLI binary is
   on `PATH` before shelling out to it; dies with a clear message if missing.
+- **`handbrake.py`** — `wait_stable(path)`, `load_preset(name)`, `read_preset_settings(name)`,
+  `list_presets()`, `transcode(...)`, `available_encoders()`, `presets_dir()`/`set_presets_dir()`.
+  Everything HandBrake-related that `compressvid` and `optimiselib` share, including the
+  stderr-scraping progress parser. `transcode()` takes `extra_args` (CLI flags that override
+  preset fields) and `low_priority` (de-prioritises the child process). Preset stems still
+  resolve against `compressvid`'s bundled `data/handbrake-presets/` via `importlib.resources`.
 - **`encoders.py`** — `select_encoder(codec, preference)`, `cpu_encoder(codec)`,
   `gpu_preference(env_var)`, `Encoder`, `BACKENDS`, `GPU_CHOICES`. GPU/CPU encoder selection
   for every script that re-encodes video (`downscalevid`, `concatvid`). See the encoder-probing
@@ -146,6 +153,67 @@ Progress *factories* themselves) were extracted from it.
   so when any part carries extra streams *and* a re-encode is needed, every part is normalized
   to keep stream layouts identical. A group where some parts have audio and others don't is
   skipped outright — reconciling it would mean synthesizing silent tracks.
+- `optimiselib` deliberately does **not** compose `compressvid` + `sortmedia`, even though it
+  does what they do: `compressvid` takes one preset per run and writes to a `compressed/`
+  subfolder, while `optimiselib` needs a per-file preset and an in-place result; and
+  `sortmedia`'s last-whitespace-token rule breaks outright once a ` [1080p]` suffix exists
+  (every file would sort into a folder named `[1080p]`). `optimiselib` splits on `" - "` and
+  takes the last **field** instead, so multi-word trip names work. Both original scripts remain
+  the right tools when run by hand — don't "unify" them.
+- `optimiselib` owns the resolution *and* bit-depth tokens in a filename's trailing `[...]`
+  group (`core.apply_tags`): it *replaces* a matching `^\d{3,4}[pi]$` or `^(8|10|12)bit$` token
+  rather than appending a second one, while every other token survives verbatim in its original
+  order — `[Restored HDR 720p]` becomes `[Restored HDR 1080p 10bit]`. That's what lets an
+  externally upscaled file retag itself on the way back through. 8-bit deliberately carries no
+  token: it's the norm, and tagging every file would be noise. The tag always describes the
+  *finished* file, re-derived from a probe after the encode — so when a transcode is discarded
+  for being larger, the tag reverts to the original's real depth rather than the intent. It also
+  treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
+  that guard those files sort into a folder called `Sub`.
+- `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
+  `-e`/`-q` on the command line so the bundled presets are never edited: if the preset's own
+  encoder is available it's used with **no** override at all. Unlike `ffmpeg -encoders`, which
+  is why `_common/encoders.py` probes with a throwaway encode, `HandBrakeCLI --help` omits
+  hardware encoders it can't actually use — so parsing it is a real availability signal and no
+  probe encode is needed. VideoToolbox is the one backend whose quality scale is inverted
+  (0–100, higher better) and must be remapped; passing the presets' CQ 25 straight through
+  would silently produce near-worst quality. As with `encoders.py`, an *auto*-selected backend
+  that fails mid-encode retries once on CPU; an explicitly requested one does not.
+- Each backend carries a 10-bit encoder alongside its 8-bit one (`vce_h265_10bit`,
+  `nvenc_h265_10bit`, `qsv_h265_10bit`, `vt_h265_10bit`, `x265_10bit`), selected on
+  `-B/--bit-depth auto` when the *source* is above 8-bit. Deliberately not upconverting 8-bit
+  sources: feeding 8-bit through a 10-bit encoder yields a Main 10 file with no more real
+  information in it. `already_optimised()` compares against the depth *this invocation* would
+  produce, not the file's own content, so `-B 8` re-encodes a file already tagged `10bit`
+  instead of treating it as done. 12-bit sources encode as 10-bit — only `x265_12bit` goes higher and no
+  hardware encoder does. When the chosen backend has no 10-bit variant in this build it stays
+  8-bit and warns, rather than switching to different hardware.
+- **No `--encoder-profile` is emitted for 10-bit.** The presets pin `VideoProfile: "main"`,
+  which is 8-bit-only and not even a valid value for the 10-bit encoders, but HandBrake
+  resolves the mismatch itself — verified: `-e x265_10bit` against a `main` preset still
+  produces `Main 10 / yuv420p10le`. Adding an explicit profile override would only be a second
+  thing to keep in sync.
+- Bit depth is read from ffprobe's `pix_fmt` (`bits_per_raw_sample` is often `N/A` for HEVC).
+  The parser requires the `le`/`be` endian suffix that only appears above 8 bits — without
+  that, 8-bit layouts whose *names* contain digits (`yuv410p`, `yuv411p`) get misread as high
+  bit depth. Semi-planar `p010`/`p012`/`p016` don't fit the rule and are special-cased.
+- The bundled presets keep **every** audio track (`AudioTrackSelectionBehavior: "all"`) and
+  encode each one to stereo AAC at 160 kbps (`AudioEncoder: "av_aac"`,
+  `AudioMixdown: "stereo"`, `AudioBitrate: 160`). Two separate decisions, easily conflated:
+  *track selection* was previously `"first"`, silently discarding second-language and
+  commentary tracks — don't reintroduce that. *Encoding* is deliberate: passthrough was
+  measured at ~28% larger on a PCM+DTS+AAC source, since a DTS track copies through at
+  1411 kbps. Surround is downmixed rather than re-encoded as 5.1 because ffmpeg's `av_aac` is
+  weak at multichannel — asked for 384 kbps on a 5.1 track it capped at ~250, and HandBrake's
+  own default gave it just 125.
+- **`AudioBitrate: 0` does not mean "auto"** in a HandBrake preset — it yields roughly 30 kbps
+  AAC on real (incompressible) content, which is catastrophic for PCM camcorder audio hitting
+  the fallback path. Always set an explicit bitrate. This is easy to get wrong because sine-wave
+  test signals compress so well that the bug looks like a plausible bitrate; verify audio
+  changes with `anoisesrc` and `ffprobe`, never with `sine`.
+- `AudioCopyMask` and `AudioEncoderFallback` only take effect when `AudioEncoder` is a `copy:*`
+  passthrough. With `av_aac` they are inert — keep `AudioCopyMask` minimal so it doesn't read
+  as though passthrough is happening.
 - `autosub` shells out to the installed `addsub` command (`subprocess.run(["addsub", "-u", ...])`)
   rather than importing `toolboxcli.addsub`'s internals — keeps each script independently
   invocable, matching the original design where every script is a standalone executable.
