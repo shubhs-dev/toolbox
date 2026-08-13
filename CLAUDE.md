@@ -58,6 +58,7 @@ src/toolboxcli/
 ├── jellyname/{cli.py, core.py}
 ├── kavitaname/cli.py
 ├── mergemanga/{cli.py, data/volume_map.json}
+├── optimiselib/{cli.py, core.py}
 ├── sortmedia/cli.py
 └── toolbox/cli.py
 ```
@@ -95,6 +96,12 @@ Every script should reach for these instead of reimplementing the same logic:
   determinate work respectively.
 - **`tooling.py`** — `require_tool(name, install_hint=None)`. Check an external CLI binary is
   on `PATH` before shelling out to it; dies with a clear message if missing.
+- **`handbrake.py`** — `wait_stable(path)`, `load_preset(name)`, `read_preset_settings(name)`,
+  `list_presets()`, `transcode(...)`, `available_encoders()`, `presets_dir()`/`set_presets_dir()`.
+  Everything HandBrake-related that `compressvid` and `optimiselib` share, including the
+  stderr-scraping progress parser. `transcode()` takes `extra_args` (CLI flags that override
+  preset fields) and `low_priority` (de-prioritises the child process). Preset stems still
+  resolve against `compressvid`'s bundled `data/handbrake-presets/` via `importlib.resources`.
 - **`encoders.py`** — `select_encoder(codec, preference)`, `cpu_encoder(codec)`,
   `gpu_preference(env_var)`, `Encoder`, `BACKENDS`, `GPU_CHOICES`. GPU/CPU encoder selection
   for every script that re-encodes video (`downscalevid`, `concatvid`). See the encoder-probing
@@ -146,6 +153,34 @@ Progress *factories* themselves) were extracted from it.
   so when any part carries extra streams *and* a re-encode is needed, every part is normalized
   to keep stream layouts identical. A group where some parts have audio and others don't is
   skipped outright — reconciling it would mean synthesizing silent tracks.
+- `optimiselib` deliberately does **not** compose `compressvid` + `sortmedia`, even though it
+  does what they do: `compressvid` takes one preset per run and writes to a `compressed/`
+  subfolder, while `optimiselib` needs a per-file preset and an in-place result; and
+  `sortmedia`'s last-whitespace-token rule breaks outright once a ` [1080p]` suffix exists
+  (every file would sort into a folder named `[1080p]`). `optimiselib` splits on `" - "` and
+  takes the last **field** instead, so multi-word trip names work. Both original scripts remain
+  the right tools when run by hand — don't "unify" them.
+- `optimiselib` owns the resolution token in a filename's trailing `[...]` group: it *replaces*
+  any `^\d{3,4}[pi]$` token rather than appending a second one, while every other token in the
+  group survives verbatim in its original order. That's what lets an externally upscaled
+  `[Restored 720p]` file retag itself to `[Restored 1080p]` on the way back through. It also
+  treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
+  that guard those files sort into a folder called `Sub`.
+- `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
+  `-e`/`-q` on the command line so the bundled presets are never edited: if the preset's own
+  encoder is available it's used with **no** override at all. Unlike `ffmpeg -encoders`, which
+  is why `_common/encoders.py` probes with a throwaway encode, `HandBrakeCLI --help` omits
+  hardware encoders it can't actually use — so parsing it is a real availability signal and no
+  probe encode is needed. VideoToolbox is the one backend whose quality scale is inverted
+  (0–100, higher better) and must be remapped; passing the presets' CQ 25 straight through
+  would silently produce near-worst quality. As with `encoders.py`, an *auto*-selected backend
+  that fails mid-encode retries once on CPU; an explicitly requested one does not.
+- The bundled presets pass **all** audio tracks through (`AudioTrackSelectionBehavior: "all"`,
+  `AudioEncoder: "copy"`, `AudioEncoderFallback: "av_aac"`). They previously kept only the
+  first track and re-encoded it to 160k stereo AAC. The library isn't only home videos, so
+  don't reintroduce a single-track or forced-stereo default. Verified on HandBrake 1.11.2 by
+  encoding a 3-track source (AAC/AC3 5.1/MP3) and confirming with `ffprobe` that all three
+  survived at their source codec, bitrate and channel count.
 - `autosub` shells out to the installed `addsub` command (`subprocess.run(["addsub", "-u", ...])`)
   rather than importing `toolboxcli.addsub`'s internals — keeps each script independently
   invocable, matching the original design where every script is a standalone executable.
