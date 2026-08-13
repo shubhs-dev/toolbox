@@ -195,31 +195,6 @@ def select_preset(height: int, preset_1080: str, preset_720: str) -> str:
 
 # ── Encoder backends ──────────────────────────────────────────────────
 
-# Pixel formats name their depth as "<layout>p<depth><endian>" — yuv420p10le. The endian
-# suffix only appears above 8 bits, which is what keeps 8-bit layouts whose *name* contains
-# digits (yuv410p, yuv411p) from being misread as high bit depth.
-_PIX_FMT_DEPTH_RE = re.compile(r"p(\d{1,2})(?:le|be)$")
-# Semi-planar formats spell it differently and don't fit the rule above.
-_SEMIPLANAR_DEPTHS = {"p010": 10, "p012": 12, "p016": 16}
-
-
-def bit_depth(pix_fmt: str, bits_per_raw_sample: str | int | None = None) -> int:
-    """Source bit depth from ffprobe output. Defaults to 8 when it can't be determined."""
-    if bits_per_raw_sample:
-        try:
-            return int(bits_per_raw_sample)
-        except (TypeError, ValueError):
-            pass
-
-    fmt = (pix_fmt or "").lower()
-    for prefix, depth in _SEMIPLANAR_DEPTHS.items():
-        if fmt.startswith(prefix):
-            return depth
-
-    m = _PIX_FMT_DEPTH_RE.search(fmt)
-    return int(m.group(1)) if m else 8
-
-
 @dataclass(frozen=True)
 class Backend:
     name: str

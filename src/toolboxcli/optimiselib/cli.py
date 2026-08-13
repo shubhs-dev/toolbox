@@ -58,6 +58,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 
+from toolboxcli._common import ffprobe as ffprobe_common
 from toolboxcli._common.console import console, die, info, ok, warn
 from toolboxcli._common.handbrake import (
     available_encoders,
@@ -114,23 +115,8 @@ def probe(path: Path) -> tuple[int, float, int, bool] | None:
     """Return (height, duration_seconds, bit_depth, has_subtitle), or None if ffprobe can't
     read it. Subtitle presence is measured from the real streams rather than trusted from the
     filename, the same way resolution and bit depth are."""
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-show_streams", "-show_format",
-                "-of", "json", str(path),
-            ],
-            capture_output=True, text=True, timeout=120,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
+    payload = ffprobe_common.probe(path)
+    if payload is None:
         return None
 
     streams = payload.get("streams", [])
@@ -143,7 +129,7 @@ def probe(path: Path) -> tuple[int, float, int, bool] | None:
     except (TypeError, ValueError):
         duration = 0.0
 
-    depth = core.bit_depth(video.get("pix_fmt", ""), video.get("bits_per_raw_sample"))
+    depth = ffprobe_common.bit_depth(video.get("pix_fmt", ""), video.get("bits_per_raw_sample"))
     has_sub = any(s.get("codec_type") == "subtitle" for s in streams)
     return int(video["height"]), duration, depth, has_sub
 
