@@ -38,7 +38,6 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import threading
 import time
 from datetime import datetime
@@ -48,6 +47,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 
+from toolboxcli._common import ffprobe as ffprobe_common
 from toolboxcli._common.console import console, die, info, ok, warn
 from toolboxcli._common.handbrake import (
     available_encoders,
@@ -102,23 +102,8 @@ def update_log(root: Path, log: dict, key: str, value: dict) -> None:
 
 def probe(path: Path) -> tuple[int, float, int] | None:
     """Return (height, duration_seconds, bit_depth), or None if ffprobe can't read it."""
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-show_streams", "-show_format",
-                "-of", "json", str(path),
-            ],
-            capture_output=True, text=True, timeout=120,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
+    payload = ffprobe_common.probe(path)
+    if payload is None:
         return None
 
     video = next(
@@ -133,7 +118,7 @@ def probe(path: Path) -> tuple[int, float, int] | None:
     except (TypeError, ValueError):
         duration = 0.0
 
-    depth = core.bit_depth(video.get("pix_fmt", ""), video.get("bits_per_raw_sample"))
+    depth = ffprobe_common.bit_depth(video.get("pix_fmt", ""), video.get("bits_per_raw_sample"))
     return int(video["height"]), duration, depth
 
 

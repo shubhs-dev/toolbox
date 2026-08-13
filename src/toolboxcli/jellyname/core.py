@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from toolboxcli._common.console import warn
+from toolboxcli._common.ffprobe import bit_depth as _probe_bit_depth
 
 VIDEO_EXTS = {"mkv", "mp4", "avi", "mov", "m4v", "ts", "webm"}
 
@@ -117,6 +119,83 @@ class MediaTags:
         return f" [{' '.join(parts)}]" if parts else ""
 
 
+# ---- ffprobe fallback: source/edition (BluRay, PROPER, ...) describe release
+# provenance, not stream properties, so ffprobe can never supply them — only
+# the four fields below are ever filled this way.
+#
+# bit_depth and hdr follow the filename parser's own convention of leaving the
+# unremarkable case untagged (8bit, SDR carry no token), so their absence
+# after a fill doesn't mean "not yet probed" the way it does for the other
+# three fields. needs_probe() below only gates on the three that always get a
+# concrete value once probed.
+_PROBE_RESOLUTIONS = {2160: "2160", 1080: "1080", 720: "720", 480: "480"}
+_PROBE_VIDEO_CODECS = {"h264": "AVC", "hevc": "HEVC"}
+_INTERLACED_FIELD_ORDERS = {"tt", "bb", "tb", "bt"}
+
+
+def probed_tags(payload: dict) -> dict[str, str]:
+    """Pure mapping from an already-fetched ffprobe JSON payload to whichever
+    MediaTags fields can be confidently derived from stream data."""
+    streams = payload.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+
+    result: dict[str, str] = {}
+
+    if video is not None:
+        height = video.get("height")
+        if isinstance(height, int) and height > 0:
+            interlaced = video.get("field_order") in _INTERLACED_FIELD_ORDERS
+            nearest = min(_PROBE_RESOLUTIONS, key=lambda h: abs(h - height))
+            result["resolution"] = f"{_PROBE_RESOLUTIONS[nearest]}{'i' if interlaced else 'p'}"
+
+        codec_name = (video.get("codec_name") or "").lower()
+        if codec_name in _PROBE_VIDEO_CODECS:
+            result["video_codec"] = _PROBE_VIDEO_CODECS[codec_name]
+
+        depth = _probe_bit_depth(video.get("pix_fmt", ""), video.get("bits_per_raw_sample"))
+        if depth > 8:
+            result["bit_depth"] = f"{depth}bit"
+
+        is_dolby_vision = any(
+            "dovi" in (sd.get("side_data_type") or "").lower()
+            for sd in video.get("side_data_list") or []
+        )
+        transfer = (video.get("color_transfer") or "").lower()
+        if is_dolby_vision:
+            result["hdr"] = "Dolby Vision"
+        elif transfer == "smpte2084":
+            result["hdr"] = "HDR10"
+        elif transfer == "arib-std-b67":
+            result["hdr"] = "HDR"
+
+    if audio is not None:
+        codec_name = (audio.get("codec_name") or "").lower()
+        if codec_name in AUDIO_TAGS:
+            result["audio"] = AUDIO_TAGS[codec_name]
+
+    return result
+
+
+def needs_probe(tags: MediaTags) -> bool:
+    """Whether cli.py should bother shelling out to ffprobe for this file.
+
+    Gated on resolution/video_codec/audio only — see the fallback-section note
+    above for why bit_depth/hdr are excluded.
+    """
+    return not (tags.resolution and tags.video_codec and tags.audio)
+
+
+def apply_probed_tags(tags: MediaTags, probed: dict[str, str]) -> None:
+    """Fills only the MediaTags fields still empty; a tag already present from
+    the filename is never overwritten."""
+    for field_name in ("resolution", "video_codec", "bit_depth", "hdr"):
+        if not getattr(tags, field_name) and probed.get(field_name):
+            setattr(tags, field_name, probed[field_name])
+    if not tags.audio and probed.get("audio"):
+        tags.audio.append(probed["audio"])
+
+
 TV_EP_RE = re.compile(r"^[Ss](\d{1,2})[Ee](\d{1,2})(?:-?[Ee](\d{1,2}))?$")
 TV_NXN_RE = re.compile(r"^(\d{1,2})[xX](\d{1,2})$")
 YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
@@ -129,6 +208,14 @@ def tokenize(norm: str) -> list[str]:
     return [t for t in _TOKEN_RE.findall(norm) if t != "-"]
 
 
+def _is_wrapped(token: str) -> bool:
+    return len(token) >= 2 and token[0] in "[(" and token[-1] in "])"
+
+
+def _unwrap(token: str) -> str:
+    return token[1:-1] if _is_wrapped(token) else token
+
+
 def _classify_token(token: str, tags: MediaTags) -> bool | None:
     """Classify a single token into `tags`.
 
@@ -136,8 +223,8 @@ def _classify_token(token: str, tags: MediaTags) -> bool | None:
     material), or None if it was bracket/paren-wrapped content that matched no
     dictionary and should be silently dropped (fansub groups, hashes, etc).
     """
-    is_wrapped = len(token) >= 2 and token[0] in "[(" and token[-1] in "])"
-    inner = token[1:-1] if is_wrapped else token
+    is_wrapped = _is_wrapped(token)
+    inner = _unwrap(token)
     lowered = inner.lower()
 
     for category, table in _TAG_CATEGORIES:
@@ -210,7 +297,7 @@ def find_year_anchor(tokens: list[str]) -> int | None:
     """Returns the index of the best year token, preferring the rightmost
     candidate that leaves a non-empty title. Returns None if no year token
     qualifies (including "the only candidate would empty the title")."""
-    candidates = [i for i, tok in enumerate(tokens) if YEAR_RE.match(tok)]
+    candidates = [i for i, tok in enumerate(tokens) if YEAR_RE.match(_unwrap(tok))]
     for i in reversed(candidates):
         if i > 0:
             return i
@@ -239,7 +326,7 @@ def parse_movie(stem: str) -> tuple[str, str, MediaTags]:
 
     year_idx = find_year_anchor(tokens)
     if year_idx is not None:
-        year = tokens[year_idx]
+        year = _unwrap(tokens[year_idx])
         title = _classify_leading(tokens[:year_idx], tags)
         for tok in tokens[year_idx + 1:]:
             _classify_token(tok, tags)
@@ -250,8 +337,19 @@ def parse_movie(stem: str) -> tuple[str, str, MediaTags]:
     return title, year, tags
 
 
-def process_file(filepath: Path, src_dir: Path) -> tuple[Path, str] | None:
-    """Returns (target_dir, new_filename), or None if the file should be skipped."""
+def process_file(
+    filepath: Path,
+    src_dir: Path,
+    augment_tags: Callable[[Path, MediaTags], None] | None = None,
+) -> tuple[Path, str] | None:
+    """Returns (target_dir, new_filename), or None if the file should be skipped.
+
+    `augment_tags`, if given, is called with (filepath, tags) once the filename
+    has been parsed but before the tag group is rendered — its job is to fill
+    in tags the filename didn't specify (e.g. from ffprobe). It's injected
+    rather than called directly so this module stays free of filesystem/subprocess I/O;
+    cli.py owns the actual probing.
+    """
     filename = filepath.name
     ext = filepath.suffix.lstrip(".").lower()
     stem = filepath.stem
@@ -262,6 +360,8 @@ def process_file(filepath: Path, src_dir: Path) -> tuple[Path, str] | None:
         if not show_name:
             warn(f"Could not determine show name from: {filename}")
             return None
+        if augment_tags is not None:
+            augment_tags(filepath, tags)
         ep_tag = f"S{season}E{episode}" + (f"-E{episode_end}" if episode_end else "")
         ep_title_part = f" {episode_title}" if episode_title else ""
         ver_suffix = f" - {tags.resolution}" if tags.resolution else ""
@@ -273,6 +373,8 @@ def process_file(filepath: Path, src_dir: Path) -> tuple[Path, str] | None:
     if not title:
         warn(f"Could not determine movie title from: {filename}")
         return None
+    if augment_tags is not None:
+        augment_tags(filepath, tags)
     folder_name = f"{title} ({year})" if year else title
     ver_suffix = f" - {tags.resolution}" if tags.resolution else ""
     new_filename = f"{folder_name}{tags.bracket()}{ver_suffix}.{ext}"
