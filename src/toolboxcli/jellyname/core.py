@@ -120,9 +120,14 @@ class MediaTags:
 
 
 # ---- ffprobe fallback: source/edition (BluRay, PROPER, ...) describe release
-# provenance, not stream properties, so ffprobe can never supply them — only
-# the four fields below (plus audio codec) are ever filled this way. Probing
-# always runs, even when the filename already specifies every field it can —
+# provenance, not stream *properties* — decoded video/audio characteristics
+# can never say "this was an IMAX release" — so they're derived differently
+# from the four fields below (plus audio codec): those come straight from the
+# stream, source/edition instead come from the container's own embedded
+# title tag, when present (common for scene releases and disc rips, and
+# untouched by a plain filesystem rename — see _title_source_edition below),
+# run through the same tokenizer/classifier filenames get. Probing always
+# runs, even when the filename already specifies every field it can —
 # bit_depth/HDR follow the filename parser's own convention of leaving the
 # unremarkable case untagged (8bit, SDR carry no token), so a filename that's
 # "fully tagged" in every other respect still can't be trusted to mean "no
@@ -132,14 +137,34 @@ _PROBE_VIDEO_CODECS = {"h264": "AVC", "hevc": "HEVC"}
 _INTERLACED_FIELD_ORDERS = {"tt", "bb", "tb", "bt"}
 
 
-def probed_tags(payload: dict) -> dict[str, str]:
+def _title_source_edition(payload: dict) -> tuple[list[str], list[str]]:
+    """Extracts source/edition tags (BluRay, PROPER, IMAX, ...) from the
+    container's embedded title tag, by running it through the same
+    tokenizer/classifier a filename gets. Looked up case-insensitively since
+    muxers disagree on "title" vs "TITLE". Every other category found in the
+    title is ignored — resolution/codec/bit-depth/HDR/audio always come from
+    the stream itself via probed_tags(), which is authoritative; a stale
+    embedded string should never compete with that.
+    """
+    tags_dict = payload.get("format", {}).get("tags") or {}
+    title = next((v for k, v in tags_dict.items() if k.lower() == "title"), "")
+    if not title or not isinstance(title, str):
+        return [], []
+    scratch = MediaTags()
+    for tok in tokenize(normalize_name(title)):
+        _classify_token(tok, scratch)
+    return scratch.source, scratch.edition
+
+
+def probed_tags(payload: dict) -> dict[str, str | list[str]]:
     """Pure mapping from an already-fetched ffprobe JSON payload to whichever
-    MediaTags fields can be confidently derived from stream data."""
+    MediaTags fields can be confidently derived from stream data, plus
+    source/edition recovered from the embedded title tag if one is present."""
     streams = payload.get("streams", [])
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
 
-    result: dict[str, str] = {}
+    result: dict[str, str | list[str]] = {}
 
     if video is not None:
         height = video.get("height")
@@ -173,10 +198,16 @@ def probed_tags(payload: dict) -> dict[str, str]:
         if codec_name in AUDIO_TAGS:
             result["audio"] = AUDIO_TAGS[codec_name]
 
+    source, edition = _title_source_edition(payload)
+    if source:
+        result["source"] = source
+    if edition:
+        result["edition"] = edition
+
     return result
 
 
-def apply_probed_tags(tags: MediaTags, probed: dict[str, str]) -> None:
+def apply_probed_tags(tags: MediaTags, probed: dict[str, str | list[str]]) -> None:
     """Fills only the MediaTags fields still empty; a tag already present from
     the filename is never overwritten."""
     for field_name in ("resolution", "video_codec", "bit_depth", "hdr"):
@@ -184,6 +215,10 @@ def apply_probed_tags(tags: MediaTags, probed: dict[str, str]) -> None:
             setattr(tags, field_name, probed[field_name])
     if not tags.audio and probed.get("audio"):
         tags.audio.append(probed["audio"])
+    if not tags.source and probed.get("source"):
+        tags.source.extend(probed["source"])
+    if not tags.edition and probed.get("edition"):
+        tags.edition.extend(probed["edition"])
 
 
 TV_EP_RE = re.compile(r"^[Ss](\d{1,2})[Ee](\d{1,2})(?:-?[Ee](\d{1,2}))?$")

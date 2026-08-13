@@ -20,12 +20,16 @@ tokens (release-group names, hashes, fansub tags) are still dropped.
 Multi-episode files are supported (S01E01-E02). Characters illegal in
 Jellyfin paths (< > : " / \\ | ? *) are removed.
 
-jellyname always reads the actual stream via ffprobe and fills in whichever
+jellyname always reads the actual file via ffprobe and fills in whichever
 resolution, video codec, bit-depth, HDR, or audio-codec tags the filename
 left out — tags already present in the filename are never overridden.
 Source/edition (BluRay, PROPER, IMAX, ...) describe release provenance
-rather than stream properties, so they're never probed. ffprobe (part of
-ffmpeg) must be installed to run jellyname.
+rather than stream properties, so they're never derived from the decoded
+video/audio itself — but when the file's container has an embedded title
+tag (common for scene releases and disc rips, and untouched by renaming the
+file), it's parsed the same way a filename is and used to fill in any
+source/edition tags still missing. ffprobe (part of ffmpeg) must be
+installed to run jellyname.
 
 If no directory is given, the current working directory is used.
 
