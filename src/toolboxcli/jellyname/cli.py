@@ -20,6 +20,13 @@ tokens (release-group names, hashes, fansub tags) are still dropped.
 Multi-episode files are supported (S01E01-E02). Characters illegal in
 Jellyfin paths (< > : " / \\ | ? *) are removed.
 
+When a filename doesn't specify resolution, video codec, bit-depth, HDR, or
+audio codec, jellyname falls back to reading the actual stream via ffprobe
+and fills in only what's missing — tags already present in the filename are
+never overridden. Source/edition (BluRay, PROPER, IMAX, ...) describe release
+provenance rather than stream properties, so they're never probed. ffprobe is
+only required when a file actually needs this fallback.
+
 If no directory is given, the current working directory is used.
 
 Usage:
@@ -33,9 +40,12 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Callable
 
+from toolboxcli._common import ffprobe as ffprobe_common
 from toolboxcli._common.console import console, die, info, ok, warn
-from toolboxcli.jellyname.core import VIDEO_EXTS, process_file
+from toolboxcli._common.tooling import require_tool
+from toolboxcli.jellyname.core import VIDEO_EXTS, MediaTags, apply_probed_tags, needs_probe, probed_tags, process_file
 
 
 def do_rename(src_file: Path, target_dir: Path, new_filename: str, src_dir: Path, dry_run: bool) -> str:
@@ -65,6 +75,32 @@ def do_rename(src_file: Path, target_dir: Path, new_filename: str, src_dir: Path
     src_file.rename(target_path)
     ok(new_filename)
     return "renamed"
+
+
+def make_tag_augmenter() -> Callable[[Path, MediaTags], None]:
+    """ffprobe-backed fallback for tag categories the filename left out.
+
+    Only shells out when `needs_probe` says the filename is missing something
+    ffprobe could supply, and `require_tool` is checked lazily on first actual
+    use — so jellyname still works without ffprobe installed as long as every
+    file is already fully tagged by name.
+    """
+    checked_tool = False
+
+    def augment_tags(filepath: Path, tags: MediaTags) -> None:
+        nonlocal checked_tool
+        if not needs_probe(tags):
+            return
+        if not checked_tool:
+            require_tool("ffprobe", "part of ffmpeg")
+            checked_tool = True
+        payload = ffprobe_common.probe(filepath)
+        if payload is None:
+            warn(f"Could not read media info via ffprobe: {filepath.name}")
+            return
+        apply_probed_tags(tags, probed_tags(payload))
+
+    return augment_tags
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,9 +144,10 @@ def main() -> None:
 
     renamed = 0
     skipped = 0
+    augment_tags = make_tag_augmenter()
 
     for filepath in files:
-        parsed = process_file(filepath, src_dir)
+        parsed = process_file(filepath, src_dir, augment_tags)
         if parsed is None:
             skipped += 1
             continue
