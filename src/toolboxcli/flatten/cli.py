@@ -5,6 +5,9 @@ Scans all subdirectories under the current directory and moves every file
 up into the directory where the command was invoked. Empty subdirectories
 are removed after flattening.
 
+OS junk/metadata files (.DS_Store, ._* AppleDouble files, Thumbs.db,
+desktop.ini, .localized) are sent to the trash instead of being moved.
+
 When a filename conflict occurs (and --yes is not set), you are prompted
 with size, modification time, and path info for both files so you can
 decide whether to replace.
@@ -26,6 +29,13 @@ from pathlib import Path
 from toolboxcli._common.confirm import confirm
 from toolboxcli._common.console import console, info, ok, warn
 from toolboxcli._common.humanize import human_size
+from toolboxcli._common.trash import move_to_trash
+
+JUNK_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini", ".localized"}
+
+
+def is_junk(p: Path) -> bool:
+    return p.name in JUNK_NAMES or p.name.startswith("._")
 
 
 def file_info(p: Path) -> str:
@@ -54,10 +64,18 @@ def main() -> None:
 
     files = sorted(p for p in dest.rglob("*") if p.is_file() and p.parent != dest)
 
-    moved = replaced = skipped = 0
+    moved = replaced = skipped = junk_deleted = 0
     replace_all = args.yes
 
     for src in files:
+        if is_junk(src):
+            if args.dry_run:
+                info(f"[dry-run] Would delete junk: {src}")
+            else:
+                move_to_trash(src)
+                junk_deleted += 1
+            continue
+
         dest_file = dest / src.name
 
         if args.dry_run:
@@ -109,7 +127,7 @@ def main() -> None:
     if args.dry_run:
         info(f"Dry run complete. {len(files)} file(s) found in subdirectories.")
     else:
-        ok(f"Done. {moved} moved, {replaced} replaced, {skipped} skipped.")
+        ok(f"Done. {moved} moved, {replaced} replaced, {skipped} skipped, {junk_deleted} junk file(s) deleted.")
         remaining = sum(1 for d in dest.rglob("*") if d.is_dir())
         if remaining:
             warn(f"{remaining} non-empty subdirectory(ies) remain.")
