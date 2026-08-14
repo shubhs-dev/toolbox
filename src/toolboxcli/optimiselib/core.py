@@ -216,11 +216,13 @@ class Backend:
         VideoToolbox is the one backend whose quality scale differs: 0-100 with higher
         meaning better, so a CQ of 25 would mean near-worst quality while the encode still
         appears to succeed. Everything else shares the 0-51 lower-is-better scale the
-        preset was authored against.
+        preset was authored against. VideoToolbox quality is fixed rather than mapped from
+        the preset's CQ — 58 was picked by eye against the presets' output, not derived
+        from the 0-51 scale.
         """
         if not self.inverted_quality:
             return None
-        return round((1 - preset_cq / 51) * 100)
+        return 58
 
 
 BACKENDS = {
