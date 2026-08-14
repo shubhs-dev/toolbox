@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -26,6 +27,17 @@ from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
 
 ASS_EXTS = {"ass", "ssa"}
+
+
+def _run_ffmpeg(cmd: list[str]) -> int:
+    """Run ffmpeg, streaming its stderr through with libdvdread's harmless DVD-probe
+    noise dropped (it writes straight to stderr on every input, DVD or not, and
+    ignores ffmpeg's own -loglevel)."""
+    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True, bufsize=1)
+    for line in proc.stderr:
+        if not line.lstrip().startswith("libdvdread:"):
+            sys.stderr.write(line)
+    return proc.wait()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -136,9 +148,9 @@ def main() -> None:
                 str(output),
             ]
 
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            die(f"ffmpeg failed with exit code {result.returncode}")
+        returncode = _run_ffmpeg(cmd)
+        if returncode != 0:
+            die(f"ffmpeg failed with exit code {returncode}")
 
         console.print()
         if inplace:
