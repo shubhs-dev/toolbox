@@ -6,7 +6,9 @@ up into the directory where the command was invoked. Empty subdirectories
 are removed after flattening.
 
 OS junk/metadata files (.DS_Store, ._* AppleDouble files, Thumbs.db,
-desktop.ini, .localized) are sent to the trash instead of being moved.
+desktop.ini, .localized) are sent to the trash instead of being moved,
+falling back to a permanent delete if no trash mechanism is available
+(e.g. a network volume with no .Trashes support).
 
 When a filename conflict occurs (and --yes is not set), you are prompted
 with size, modification time, and path info for both files so you can
@@ -64,7 +66,7 @@ def main() -> None:
 
     files = sorted(p for p in dest.rglob("*") if p.is_file() and p.parent != dest)
 
-    moved = replaced = skipped = junk_deleted = 0
+    moved = replaced = skipped = junk_deleted = failed = 0
     replace_all = args.yes
 
     for src in files:
@@ -72,8 +74,20 @@ def main() -> None:
             if args.dry_run:
                 info(f"[dry-run] Would delete junk: {src}")
             else:
-                move_to_trash(src)
-                junk_deleted += 1
+                try:
+                    move_to_trash(src)
+                    junk_deleted += 1
+                except (OSError, RuntimeError) as exc:
+                    # Junk files are disposable OS noise, not user data — if trash
+                    # isn't available (e.g. a network volume with no .Trashes),
+                    # deleting outright is safe rather than leaving them behind.
+                    try:
+                        src.unlink()
+                        junk_deleted += 1
+                        warn(f"Trash unavailable for {src.name} ({exc}) — deleted permanently instead")
+                    except OSError as exc2:
+                        warn(f"Could not delete junk {src}: {exc2}")
+                        failed += 1
             continue
 
         dest_file = dest / src.name
@@ -86,13 +100,21 @@ def main() -> None:
             continue
 
         if not dest_file.exists():
-            shutil.move(str(src), str(dest_file))
-            moved += 1
+            try:
+                shutil.move(str(src), str(dest_file))
+                moved += 1
+            except OSError as exc:
+                warn(f"Could not move {src}: {exc}")
+                failed += 1
             continue
 
         if replace_all:
-            shutil.move(str(src), str(dest_file))
-            replaced += 1
+            try:
+                shutil.move(str(src), str(dest_file))
+                replaced += 1
+            except OSError as exc:
+                warn(f"Could not move {src}: {exc}")
+                failed += 1
             continue
 
         console.print()
@@ -107,8 +129,12 @@ def main() -> None:
             replace_all = True
             reply = "y"
         if reply == "y":
-            shutil.move(str(src), str(dest_file))
-            replaced += 1
+            try:
+                shutil.move(str(src), str(dest_file))
+                replaced += 1
+            except OSError as exc:
+                warn(f"Could not move {src}: {exc}")
+                failed += 1
         else:
             skipped += 1
 
@@ -127,7 +153,11 @@ def main() -> None:
     if args.dry_run:
         info(f"Dry run complete. {len(files)} file(s) found in subdirectories.")
     else:
-        ok(f"Done. {moved} moved, {replaced} replaced, {skipped} skipped, {junk_deleted} junk file(s) deleted.")
+        ok(
+            f"Done. {moved} moved, {replaced} replaced, {skipped} skipped, "
+            f"{junk_deleted} junk file(s) deleted"
+            + (f", {failed} failed" if failed else "") + "."
+        )
         remaining = sum(1 for d in dest.rglob("*") if d.is_dir())
         if remaining:
             warn(f"{remaining} non-empty subdirectory(ies) remain.")

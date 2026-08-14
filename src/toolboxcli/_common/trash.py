@@ -46,8 +46,13 @@ def move_to_trash(path: str | Path) -> None:
         )
 
     if system == "Darwin":
-        script = f'tell app "Finder" to delete POSIX file "{p.resolve()}"'
-        subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+        posix_path = str(p.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+        script = f'tell app "Finder" to delete POSIX file "{posix_path}"'
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"could not trash {p}: osascript failed: {result.stderr.strip()}"
+            )
         return
 
     raise RuntimeError(f"no trash mechanism available for {p} on platform {system!r}")
