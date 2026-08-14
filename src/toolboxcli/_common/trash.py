@@ -47,10 +47,28 @@ def move_to_trash(path: str | Path) -> None:
 
     if system == "Darwin":
         script = f'tell app "Finder" to delete POSIX file "{p.resolve()}"'
-        subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
-        return
+        try:
+            subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+            return
+        except subprocess.CalledProcessError:
+            # Finder can't trash some files in place — hidden dotfiles and files on
+            # network volumes without .Trashes support both fail here. Fall back to
+            # moving the file into the local user Trash instead.
+            _trash_macos_home(p)
+            return
 
     raise RuntimeError(f"no trash mechanism available for {p} on platform {system!r}")
+
+
+def _trash_macos_home(p: Path) -> None:
+    trash_dir = Path.home() / ".Trash"
+    trash_dir.mkdir(exist_ok=True)
+    dest = trash_dir / p.name
+    counter = 1
+    while dest.exists():
+        dest = trash_dir / f"{p.name}.{counter}"
+        counter += 1
+    shutil.move(str(p), str(dest))
 
 
 def _trash_windows(p: Path) -> None:
