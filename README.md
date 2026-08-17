@@ -20,7 +20,7 @@ in Python and installed as a single pipx package.
 | `flatten` | Move all files from subdirectories up into the current directory |
 | `flipvid` | Flip a video horizontally or vertically using ffmpeg |
 | `jellyname` | Rename and organize media files into a Jellyfin-compatible folder structure |
-| `kavitaname` | Rename chapter CBZ/CBR files for Kavita server compatibility |
+| `kavitaname` | Rename manga/manhwa/book files for Kavita server compatibility |
 | `mergemanga` | Merge individual One Piece chapter CBZ files into volume CBZ files with metadata |
 | `optimiselib` | Watch a library root: compress new videos to 1080p, tag the resolution and sort by trip |
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
@@ -463,29 +463,64 @@ removed.
 
 ### kavitaname
 
-Rename chapter CBZ/CBR files for Kavita server compatibility.
+Rename manga/manhwa/book files for Kavita server compatibility.
 
 ```bash
-kavitaname manga "One Piece"
-kavitaname manhwa
-kavitaname --dry-run manga "Berserk"
+kavitaname manga                                    # current folder is the series
+kavitaname -s "One Piece" -m volumes.json manga
+kavitaname -n manhwa ~/manga/Solo\ Leveling         # preview only
+kavitaname -r manga ~/manga                         # every subfolder, one run
+kavitaname book ~/novels/Overlord
 ```
 
 | Argument/Flag | Description |
 |----------------|-------------|
-| `type` | Content type: `manga` or `manhwa` |
-| `series-name` | Series name override (default: current folder name) |
+| `type` | Content type: `manga`, `manhwa`, or `book` |
+| `directory` | Series folder to process (default: current directory) |
+| `-s, --series` | Series name override |
+| `-S, --series-from` | Where to take the series name from: `folder` (default), `comicinfo`, `filename` |
+| `-m, --volume-map` | Chapter-to-volume map file (JSON or pipe-delimited) |
+| `-r, --recursive` | Treat each immediate subfolder as its own series |
+| `-C, --no-comicinfo` | Don't read `ComicInfo.xml` from inside archives |
 | `-n, --dry-run` | Preview renames without making any changes |
 
-Scans the current folder for `Chapter N.cbz`/`.cbr` (and `Prologue N`) files. For manga,
-optionally prompts for a pipe-delimited volume-map file (same format as
-[`mergemanga`'s bundled data](src/toolboxcli/mergemanga/data/volume_map.json)) — press Enter to
-skip.
+Filenames do **not** have to already look like `Chapter 12.cbz` — scanlator releases are
+parsed directly, with release groups, hashes and `(Digital)`-style tags dropped:
+
+| Input | Output |
+|-------|--------|
+| `[Hidoi]_Amaenaideyo_MS_vol01_chp02.rar` | `Amaenaideyo MS c002 (v01).rar` |
+| `Series - Vol. 04 Ch. 054.5.cbz` | `Series c054.5 (v04).cbz` |
+| `Series 018.5 (2019) (Digital).cbz` | `Series c018.5.cbz` |
+| `Series_v11_c90-98.zip` | `Series c090-098 (v11).zip` |
+| `Series - Side Story.cbz` | `Specials/Series SP01 - Side Story.cbz` |
 
 Output format:
-- Manga (with map): `{Series} c{ch:03d} (v{vol:02d}).cbz` → e.g. `One Piece c001 (v01).cbz`
-- Manga (no map) / Manhwa: `{Series} c{ch:03d}.cbz` → e.g. `Solo Leveling c001.cbz`
+- Chapter + volume: `{Series} c{ch:03d} (v{vol:02d}).cbz` → e.g. `One Piece c001 (v01).cbz`
+- Chapter only: `{Series} c{ch:03d}.cbz` → e.g. `Solo Leveling c001.cbz`
+- Whole volume: `{Series} v{vol:02d}.cbz`
 - Prologue: `{Series} c000.N.cbz`
+- Special: `Specials/{Series} SP{NN} - {Title}.cbz`
+
+Specials are detected the way Kavita detects them: an existing `SP##` marker always wins, and
+a keyword (Omake, Extra, Side Story, One-Shot, TPB, …) only counts when the filename carries
+no volume or chapter number — so `v20 c171-180 Omake` stays a chapter. A trailing keyword on a
+numbered file is kept as a descriptor (`One Piece v01 - Omake.cbz`) rather than dropped, so it
+can't collide with the real volume archive.
+
+For `.cbz`/`.zip` archives, `ComicInfo.xml` inside the archive is read as a fallback and fills
+in only what the filename left out (Series, Volume, Number, Title, and a `Format` that marks
+the file special). Values parsed from the filename are never overridden. `.cbr`/`.rar` are RAR
+archives and are skipped for this — no extra dependency — but their filenames are still parsed.
+
+The volume map (`-m`) accepts two auto-detected formats: JSON, as in
+[`mergemanga`'s bundled data](src/toolboxcli/mergemanga/data/volume_map.json)
+(`[{"volume": 1, "start": 1, "end": 8}, …]`), and the legacy pipe-delimited form
+(`vol|first_chapter|last_chapter|Title`, with `#` comments). It only ever fills a gap — a
+volume stated in the filename or in `ComicInfo.xml` wins. Chapters absent from the map are
+named without volume info rather than skipped.
+
+Cover images (`cover.jpg`, `folder.png`, `!cover.*`) and OS junk files are left alone.
 
 ---
 

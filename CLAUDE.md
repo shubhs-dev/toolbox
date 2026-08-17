@@ -217,14 +217,46 @@ Progress *factories* themselves) were extracted from it.
 - `autosub` shells out to the installed `addsub` command (`subprocess.run(["addsub", "-u", ...])`)
   rather than importing `toolboxcli.addsub`'s internals — keeps each script independently
   invocable, matching the original design where every script is a standalone executable.
-- `kavitaname`'s filename-parsing regexes were ported directly from the original Bash
-  (`perl`/`sed`/`grep -oE` patterns) — when touching them, verify against real filename
-  fixtures rather than reasoning about the regex in isolation, since this is fragile/fiddly
-  logic. Two known, deliberate deviations from the original Bash behavior: chapter-number
-  parsing is case-insensitive for the `Chapter`/`Prologue` prefix (the original was
-  case-sensitive despite case-insensitive file *discovery*, silently skipping mixed-case
-  files); and it uses plain `int()` parsing instead of replicating a bash `printf '%d'`
-  octal-misparse bug that affected zero-padded chapter numbers like `Chapter 010`.
+- `kavitaname/core.py` uses the same tokenize-then-classify structure as `jellyname/core.py`,
+  but its vocabulary is ported from Kavita's own scanner
+  (`Kavita.Services/Scanner/Parser.cs`) rather than from release-group conventions. The
+  invariant that matters is a *round trip*: it's not enough to parse messy input well, the
+  filename it **emits** must be what Kavita reads back. Verify both directions against real
+  fixtures — parse correctness and re-parse through Kavita's `MangaVolumeRegex`/
+  `MangaChapterRegex` — rather than reasoning about the regexes in isolation.
+- The output vocabulary is deliberately much narrower than the input vocabulary: only
+  `c{ch:03d}`, `(v{vol:02d})`, `v{vol:02d}` and `SP{NN}` are ever produced, because those are
+  the forms verified to survive Kavita's re-parse. Don't widen it to "preserve" an input
+  spelling.
+- Specials follow Kavita exactly: `SP\d+` in the filename is the **only** real trigger
+  (`Parser.IsSpecial` → `HasSpecialMarker`), so emitting an explicit SP marker is the entire
+  point of that path. A keyword like "Omake" only promotes a file to special when *neither* a
+  volume nor a chapter was parsed — the guard is `BasicParser.cs`'s
+  `IsDefaultChapter && IsLooseLeafVolume && isSpecial`, and it's load-bearing:
+  `v20 c171-180 Omake` is a chapter. A trailing keyword on a numbered file becomes
+  `ChapterInfo.descriptor` and is kept in the output; dropping it would rename
+  `One Piece v01 Omake` onto `One Piece v01` and collide with the real volume archive.
+- The duplicate-marker guard (`drop_duplicate_markers`) is ported from Kavita's
+  `RemoveDuplicateVolumeIfExists`/`RemoveDuplicateChapterIfExists`: a *second* volume/chapter
+  marker describes the file's contents, not the file, so everything from it onward is
+  truncated. Ranges written `v1-v2`/`c1-c4` are explicitly exempt — they're one value.
+- `kavitaname` keeps standalone `-` tokens when tokenizing (unlike `jellyname`, which drops
+  them): a dash is part of the series name often enough to matter — `86 - Eighty Six`,
+  `Goblin Slayer Side Story - Year One`. No anchor pattern matches a bare dash, so it's free.
+- The bare-trailing-number fallback (`Hinowa ga CRUSH! 018`) never fires on the first token,
+  which is what stops a series that simply *starts* with a number from being eaten. It also
+  tracks consumed token indices so a `Vol. 10` pair can't have its `10` re-read as a chapter.
+- `ComicInfo.xml` is read with the stdlib `zipfile`, the same "CBZ is already a zip" reasoning
+  that let `mergemanga` drop its `7z` dependency — so `.cbr`/`.7z` are deliberately *not*
+  read (that would mean a new dependency) while their filenames still parse normally. It fills
+  only fields the filename left blank, mirroring `jellyname`'s `apply_probed_tags` contract,
+  and like `jellyname`'s ffprobe call it lives in `cli.py` and is injected into `core.py` as a
+  callable so `core.py` stays I/O-free.
+- `kavitaname`'s volume map accepts **both** JSON (`mergemanga`'s real schema) and the legacy
+  pipe-delimited form, auto-detected from content rather than extension. The previous version
+  documented pipe format as "same format as mergemanga's data file" while that file was JSON,
+  so following the docs silently produced zero mappings and skipped every chapter. Don't drop
+  either format.
 - `jellyname/core.py` uses a tokenize-then-classify parser rather than the substring-deleting
   regex chain the previous version used: the stem is split into whitespace/bracket-delimited
   tokens, a season/episode marker (`SxxExx`, optionally `SxxExx-Eyy`/`SxxExxEyy`) or release

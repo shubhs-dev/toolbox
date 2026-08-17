@@ -9,6 +9,7 @@ from typing import Callable
 
 from toolboxcli._common.console import warn
 from toolboxcli._common.ffprobe import bit_depth as _probe_bit_depth
+from toolboxcli._common.pathsafe import sanitize_for_path
 
 VIDEO_EXTS = {"mkv", "mp4", "avi", "mov", "m4v", "ts", "webm"}
 
@@ -224,7 +225,6 @@ def apply_probed_tags(tags: MediaTags, probed: dict[str, str | list[str]]) -> No
 TV_EP_RE = re.compile(r"^[Ss](\d{1,2})[Ee](\d{1,2})(?:-?[Ee](\d{1,2}))?$")
 TV_NXN_RE = re.compile(r"^(\d{1,2})[xX](\d{1,2})$")
 YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
-ILLEGAL_CHARS_RE = re.compile(r'[<>:"/\\|?*]')
 
 _TOKEN_RE = re.compile(r"\[[^\]]+\]|\([^)]+\)|\S+")
 
@@ -279,12 +279,6 @@ def _classify_token(token: str, tags: MediaTags) -> bool | None:
                 return True
 
     return False
-
-
-def sanitize_for_path(name: str) -> str:
-    name = ILLEGAL_CHARS_RE.sub("", name)
-    name = re.sub(r" +", " ", name)
-    return name.strip(". ")
 
 
 def _classify_leading(tokens: list[str], tags: MediaTags) -> str:
