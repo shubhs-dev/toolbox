@@ -28,7 +28,7 @@ SCRIPTS = [
     ("flatten", "Move all files from subdirectories up into the current directory"),
     ("flipvid", "Flip a video horizontally or vertically using ffmpeg"),
     ("jellyname", "Rename and organize media files into a Jellyfin-compatible folder structure"),
-    ("kavitaname", "Rename chapter CBZ/CBR files for Kavita server compatibility"),
+    ("kavitaname", "Rename manga/manhwa/book files for Kavita server compatibility"),
     ("mergemanga", "Merge One Piece chapter CBZ files into volume CBZ files with metadata"),
     ("optimiselib", "Watch a library root: compress new videos to 1080p, tag the resolution and sort by trip"),
     ("sortmedia", "Move video files into folders based on the camelCase type tag in each filename"),
