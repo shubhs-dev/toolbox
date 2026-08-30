@@ -555,6 +555,8 @@ optimiselib /srv/library              # watch, poll every 30s
 optimiselib -O                        # process what's there, then exit
 optimiselib -n                        # dry run: show what would happen
 optimiselib -r                        # report sub-1080p files and the review queue
+optimiselib -l                        # list every video in the library, alphabetically
+optimiselib -l library.txt            # write that list to library.txt instead
 optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
 ```
 
@@ -589,12 +591,19 @@ video that's already been optimised and filed into a trip folder — the video i
 it currently lives. Requires the `addsub` command; if it's missing, subtitle merging is silently
 disabled rather than blocking the rest of the pipeline. Disable it with `-S/--no-subs`.
 
+**Listing** — `-l/--list` prints every video in the library in alphabetical order (case-insensitive)
+and exits. Unlike the pipeline itself this covers the *whole* library, trip folders included; only
+`_review/` and non-video files are left out. Filenames only, one per line — pass a filename
+(`-l library.txt`) to write it out instead of printing it, and you'll be asked before an existing
+file is overwritten.
+
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `-t, --interval` | `30` | Seconds between scans |
 | `-O, --once` | off | Process existing files and exit |
 | `-n, --dry-run` | off | Show planned rename, destination and duplicate verdict; change nothing |
 | `-r, --report` | off | List files below 1080p and the review queue, then exit |
+| `-l, --list` | off | List every video in the library alphabetically, then exit; with a `FILE` argument, write the list there instead of printing it |
 | `-F, --force` | off | Re-process files the log already marked done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |
