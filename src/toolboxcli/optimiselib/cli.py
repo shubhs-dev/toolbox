@@ -38,6 +38,8 @@ Usage:
     optimiselib -O                        # process what's there, then exit
     optimiselib -n                        # dry run: show what would happen
     optimiselib -r                        # report sub-1080p files and the review queue
+    optimiselib -l                        # list every video in the library, alphabetically
+    optimiselib -l library.txt            # write that list to library.txt instead
     optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
     optimiselib -S                        # don't scan for or merge subtitle files
 """
@@ -59,6 +61,7 @@ from rich.table import Table
 from rich import box
 
 from toolboxcli._common import ffprobe as ffprobe_common
+from toolboxcli._common.confirm import confirm
 from toolboxcli._common.console import console, die, info, ok, warn
 from toolboxcli._common.handbrake import (
     available_encoders,
@@ -809,6 +812,34 @@ def show_report(root: Path, log: dict) -> None:
         console.print(tbl)
 
 
+def list_library(root: Path, dest: str | None) -> None:
+    """Print every video in the library in alphabetical order, or write it to *dest*.
+
+    The whole library, not just the root — trip folders included, `_review/` excluded, same
+    view of "in the library" that subtitle matching already uses. Names only: the point is a
+    list you can read or diff, not a directory tree.
+    """
+    names = sorted((v.name for v in all_videos(root)), key=str.lower)
+
+    if dest is None:
+        for name in names:
+            # markup=False: a [1080p] tag would otherwise be parsed as rich markup.
+            console.print(name, markup=False, highlight=False, soft_wrap=True)
+        console.print()
+        info(f"{len(names)} file{'' if len(names) == 1 else 's'} in {root}")
+        return
+
+    out = Path(dest).expanduser()
+    if out.exists() and confirm(f"{out} exists — overwrite?", default="n") != "y":
+        info("Cancelled")
+        return
+    try:
+        out.write_text("\n".join(names) + ("\n" if names else ""), encoding="utf-8")
+    except OSError as e:
+        die(f"Couldn't write {out}: {e}")
+    ok(f"{len(names)} file{'' if len(names) == 1 else 's'} → {out}")
+
+
 def show_summary(results: list[dict]) -> None:
     if not results:
         return
@@ -845,6 +876,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Show the planned rename, destination and duplicate verdict; change nothing")
     ap.add_argument("-r", "--report", action="store_true",
                     help="List files below 1080p and the review queue, then exit")
+    ap.add_argument("-l", "--list", nargs="?", const="", default=None, metavar="FILE",
+                    dest="list_files",
+                    help="List every video in the library alphabetically and exit; with a "
+                         "FILE, write the list there instead of printing it")
     ap.add_argument("-F", "--force", action="store_true",
                     help="Re-process files the log has already marked done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
@@ -880,6 +915,10 @@ def main() -> None:
         die(f"Not a directory: {root}")
 
     log = load_log(root)
+
+    if args.list_files is not None:
+        list_library(root, args.list_files or None)
+        return
 
     if args.report:
         show_report(root, log)
