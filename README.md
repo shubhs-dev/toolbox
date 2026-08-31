@@ -557,6 +557,7 @@ optimiselib -n                        # dry run: show what would happen
 optimiselib -r                        # report sub-1080p files and the review queue
 optimiselib -l                        # list every video in the library, alphabetically
 optimiselib -l library.txt            # write that list to library.txt instead
+optimiselib -s                        # merge waiting subtitles only, then exit
 optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
 ```
 
@@ -589,7 +590,10 @@ bracket group instead of getting `addsub -u`'s `" - Sub"` filename suffix. This 
 the subtitle is already there when the video is first processed, or dropped in later for a
 video that's already been optimised and filed into a trip folder — the video is found wherever
 it currently lives. Requires the `addsub` command; if it's missing, subtitle merging is silently
-disabled rather than blocking the rest of the pipeline. Disable it with `-S/--no-subs`.
+disabled rather than blocking the rest of the pipeline. Disable it with `-S/--no-subs`, or run
+*only* this step with `-s/--subs-only` — one merging pass, then exit, encoding and sorting
+nothing. It needs just `addsub` and `ffprobe`, and is dispatched before the HandBrake check and
+the encoder probe, so it stays quick and works on a machine that can't encode at all.
 
 **Listing** — `-l/--list` prints every video in the library in alphabetical order (case-insensitive)
 and exits. Unlike the pipeline itself this covers the *whole* library, trip folders included; only
@@ -615,6 +619,7 @@ file is overwritten.
 | `-p, --preset-1080` | `hw-1080` | Preset for sources above 720p |
 | `-q, --preset-720` | `hw-720` | Preset for sources at 720p or below |
 | `-S, --no-subs` | off | Don't scan for or merge matching subtitle files |
+| `-s, --subs-only` | off | Merge waiting subtitle files and exit; encode and sort nothing |
 
 **Encoder** — the bundled presets specify AMD's `vce_h265`, but the encoder is chosen at
 runtime: if the preset's own encoder is available it's used untouched, otherwise HandBrake's
