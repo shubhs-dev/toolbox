@@ -16,7 +16,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import errno
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -84,6 +86,46 @@ def _sub_codec(out_ext: str, sub_ext: str) -> str:
     return "copy"
 
 
+def _scratch_file(video: Path) -> Path:
+    """An empty scratch file for the in-place merge, beside *video* when that's possible.
+
+    ffmpeg's output has to land back on top of the original, and Path.replace can't rename
+    across filesystems: with the scratch file in the system temp dir, a library on a NAS or
+    an external drive raised EXDEV *after* a successful merge and the finished file was then
+    discarded by the cleanup. Writing beside the video keeps that last step an atomic
+    same-filesystem rename, and stops the whole file crossing the wire twice.
+
+    The leading dot hides it from optimiselib's scan while ffmpeg is still writing it. A
+    parent directory that can't be written to falls back to the system temp dir, where
+    _replace()'s cross-device path takes over.
+    """
+    suffix = video.suffix or ".tmp"
+    try:
+        # Truncated: the stem is only there to make a stray scratch file identifiable, and
+        # prefix + stem + random + suffix has to stay under the filesystem's name limit.
+        fd, name = tempfile.mkstemp(prefix=f".{video.stem[:60]}.", suffix=suffix,
+                                    dir=video.parent)
+    except OSError:
+        fd, name = tempfile.mkstemp(prefix="addsub.", suffix=suffix)
+    os.close(fd)
+    return Path(name)
+
+
+def _replace(src: Path, dst: Path) -> None:
+    """Move *src* onto *dst*, copying instead when the two are on different filesystems.
+
+    _scratch_file() makes that rare, but not impossible — the scratch file falls back to the
+    system temp dir when the video's own folder is read-only.
+    """
+    try:
+        src.replace(dst)
+    except OSError as exc:
+        # Windows reports the same condition as ERROR_NOT_SAME_DEVICE rather than EXDEV.
+        if exc.errno != errno.EXDEV and getattr(exc, "winerror", None) != 17:
+            raise
+        shutil.move(str(src), str(dst))
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -109,10 +151,7 @@ def main() -> None:
         output = video.parent / f"{video.stem} - Sub{video.suffix}"
         inplace = False
     else:
-        video_ext = video.suffix.lstrip(".")
-        fd, tmpname = tempfile.mkstemp(suffix=f".{video_ext}")
-        os.close(fd)
-        tmpfile = Path(tmpname)
+        tmpfile = _scratch_file(video)
         output = tmpfile
         inplace = True
 
@@ -154,7 +193,7 @@ def main() -> None:
 
         console.print()
         if inplace:
-            tmpfile.replace(video)
+            _replace(tmpfile, video)
             tmpfile = None
             console.print(f"addsub: done → {video} (updated in place)")
         else:
