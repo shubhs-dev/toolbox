@@ -42,6 +42,7 @@ Usage:
     optimiselib -l library.txt            # write that list to library.txt instead
     optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
     optimiselib -S                        # don't scan for or merge subtitle files
+    optimiselib -s                        # merge waiting subtitles only, then exit
 """
 
 from __future__ import annotations
@@ -767,6 +768,25 @@ def _merge_one(root: Path, video: Path, sub: Path, log: dict, args) -> dict:
     return {"file": final.name, "status": "sub-merged"}
 
 
+def merge_only(root: Path, log: dict, args) -> None:
+    """One subtitle-merging pass, then exit — the tail of a normal poll on its own.
+
+    Needs only addsub and ffprobe, so it's dispatched ahead of the HandBrake check and the
+    encoder probe: merging a subtitle into an already-sorted video shouldn't require a
+    machine that can encode, nor wait on a probe it will never use.
+    """
+    require_tool("ffprobe", "part of ffmpeg")
+    require_tool("addsub", "ships with this toolbox")
+
+    if not list(scan_subs(root)):
+        info(f"No subtitle files waiting in {root}")
+        return
+
+    results = merge_subtitles(root, log, args)
+    if results:
+        show_summary(results)
+
+
 # ── Reporting ─────────────────────────────────────────────────────────
 
 def show_report(root: Path, log: dict) -> None:
@@ -904,6 +924,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Preset for sources at 720p or below (default: hw-720)")
     ap.add_argument("-S", "--no-subs", action="store_true",
                     help="Don't scan for or merge matching subtitle files")
+    ap.add_argument("-s", "--subs-only", action="store_true",
+                    help="Merge waiting subtitle files and exit; encode and sort nothing")
     return ap
 
 
@@ -922,6 +944,12 @@ def main() -> None:
 
     if args.report:
         show_report(root, log)
+        return
+
+    if args.subs_only:
+        if args.no_subs:
+            die("--subs-only and --no-subs contradict each other")
+        merge_only(root, log, args)
         return
 
     require_tool("ffprobe", "part of ffmpeg")
