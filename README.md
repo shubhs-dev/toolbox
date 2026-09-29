@@ -259,6 +259,8 @@ Batch-convert all images in the current folder to a target format using **ImageM
 ```bash
 convertimg webp
 convertimg -q 90 jpg
+convertimg -f png jpg          # only PNGs → JPG
+convertimg -f png -f webp jpg  # PNGs and WebPs → JPG
 convertimg -k png
 convertimg -n avif
 ```
@@ -266,7 +268,9 @@ convertimg -n avif
 | Flag | Description |
 |------|-------------|
 | `<format>` | Target format extension (e.g. `jpg`, `png`, `webp`, `avif`, `tiff`) |
+| `-f, --from EXT` | Only convert images with this extension; repeatable (default: all image types) |
 | `-q, --quality N` | Compression quality 1-100 (default: `85`; only for lossy formats) |
+| `-b, --background COLOR` | Fill colour for transparent areas when the target has no alpha, e.g. `jpg` (default: `white`) |
 | `-k, --keep` | Keep original files (default: trash them after successful conversion) |
 | `-n, --dry-run` | Show what would be converted without doing anything |
 
