@@ -35,6 +35,7 @@ mergemanga = "toolboxcli.mergemanga.cli:main"
 optimiselib = "toolboxcli.optimiselib.cli:main"
 sortmedia = "toolboxcli.sortmedia.cli:main"
 toolbox = "toolboxcli.toolbox.cli:main"
+video-download = "toolboxcli.videodownload.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

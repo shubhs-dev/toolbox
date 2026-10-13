@@ -13,7 +13,7 @@ Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
 `pipx install -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
 `check-deps`, `compressvid`, `concatvid`, `convertimg`, `cutvid`, `cybermod`,
 `downscalevid`, `finddupes`, `flatten`, `flipvid`, `jellyname`, `kavitaname`,
-`mergemanga`, `sortmedia`, `toolbox` —
+`mergemanga`, `sortmedia`, `toolbox`, `video-download` —
 identically on both platforms. `inventory.html` is a standalone static HTML dashboard,
 unrelated to the Python package.
 
@@ -29,7 +29,7 @@ python -m toolboxcli.<script>.cli --help
 # Smoke-test everything after a change
 for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cybermod \
            downscalevid finddupes flatten flipvid jellyname kavitaname mergemanga \
-           sortmedia toolbox; do
+           sortmedia toolbox video-download; do
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 ```
@@ -60,7 +60,8 @@ src/toolboxcli/
 ├── mergemanga/{cli.py, data/volume_map.json}
 ├── optimiselib/{cli.py, core.py}
 ├── sortmedia/cli.py
-└── toolbox/cli.py
+├── toolbox/cli.py
+└── videodownload/cli.py
 ```
 
 Each script is a `<name>/cli.py` with a `main()` function wired up in `pyproject.toml`'s
@@ -120,7 +121,7 @@ Progress *factories* themselves) were extracted from it.
 - Every flag has both a short and a long form (e.g. `-y, --yes`); `-h/--help` is always
   argparse's default. Positional arguments don't need a short/long pair.
 - External CLI tools the script shells out to (`ffmpeg`, `ffprobe`, `HandBrakeCLI`, `magick`,
-  `7z`, `addsub`) are checked with `_common.tooling.require_tool()` before use, not assumed
+  `7z`, `addsub`, `yt-dlp`, `aria2c`) are checked with `_common.tooling.require_tool()` before use, not assumed
   present.
 - `mergemanga` deliberately does **not** use `7z` — CBZ files are zip archives, so it uses the
   stdlib `zipfile` module directly (`ZIP_STORED` to match the original's "no compression"

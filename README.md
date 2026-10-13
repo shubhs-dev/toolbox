@@ -25,6 +25,7 @@ in Python and installed as a single pipx package.
 | `optimiselib` | Watch a library root: compress new videos to 1080p, tag the resolution and sort by trip |
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
 | `toolbox` | List all scripts in this repo with a brief description |
+| `video-download` | Download every video listed in `./urls.txt` with yt-dlp + aria2c, optionally in parallel |
 
 `inventory.html` is a standalone, dependency-free HTML dashboard for tracking Death Stranding
 materials — just open it in a browser, no install needed.
@@ -46,6 +47,7 @@ materials — just open it in a browser, no install needed.
 | `HandBrakeCLI` | `compressvid`, `optimiselib` |
 | `magick` (ImageMagick 7) | `convertimg` |
 | `7z` (7-Zip) | `cybermod` |
+| `yt-dlp`, `aria2c` | `video-download` |
 | `addsub` (on PATH) | `autosub`, `optimiselib` (optional — enables subtitle merging) |
 
 ### macOS
@@ -671,6 +673,37 @@ List all scripts in this repo with a brief description of each.
 ```bash
 toolbox
 ```
+
+---
+
+### video-download
+
+Download every video listed in `urls.txt` (in the current folder) using **yt-dlp**, with
+**aria2c** as the downloader.
+
+```bash
+video-download              # download one at a time
+video-download -j 3         # run up to 3 downloads in parallel
+```
+
+| Flag | Description |
+|------|-------------|
+| `-j, --jobs N` | Number of downloads to run in parallel (default: `1`) |
+
+`urls.txt` holds one download per line: a URL, then optionally a space and the output file
+name. The name may contain spaces and takes no extension — yt-dlp adds the right one. Without
+a name, the video's title is used. Blank lines and lines starting with `#` are ignored.
+
+```text
+https://example.com/watch?v=abc Trip to the Lakes - Day 1
+https://example.com/watch?v=def
+```
+
+Each line runs `yt-dlp --external-downloader aria2c --external-downloader-args "-x 16 -k 1M"
+-o "<name or %(title)s>.%(ext)s" <url>`. With `-j 1` you see yt-dlp's own output; with more,
+each running download gets one status line, and a failed download's last lines of output are
+printed when it finishes. The command exits non-zero if any download failed, listing which.
+Every aria2c opens 16 connections, so `-j 4` means up to 64 at once.
 
 ---
 
