@@ -90,6 +90,16 @@ Every script should reach for these instead of reimplementing the same logic:
 - **`trash.py`** — `move_to_trash(path)`. The one cross-platform "send to Recycle Bin/Trash"
   implementation (send2trash first, then OS-specific fallback). Never delete a user's file
   outright when a trash mechanism is available.
+- **`output.py`** — `is_same_file(a, b)`, `check_output_path(input, output, force)`,
+  `atomic_output(output, force)`. For scripts that turn one input into one new output file:
+  refuse to write over the input however its path is spelled (comparing `Path` objects misses
+  absolute vs relative, symlinks and case-insensitive filesystems — `ffmpeg -y` then truncates
+  the input), refuse an existing output without `-f/--force`, and write through a temp file
+  that only replaces the destination (old one to the Trash) once the tool has succeeded.
+- **`streams.py`** — `keep_all_streams_args(streams, out_ext)`, `main_video_streams(streams)`.
+  Explicit `-map` args that keep every video/audio/subtitle track (plus attachments for MKV),
+  converting or dropping subtitles the output container can't hold. Without explicit maps
+  ffmpeg keeps one track of each type and silently drops the rest.
 - **`confirm.py`** — `confirm(prompt, choices="yn", default=None)`. Single-keypress prompt, no
   Enter required; falls back to `input()` when stdin isn't a tty.
 - **`humanize.py`** — `human_size(n)`. Byte-size formatting.

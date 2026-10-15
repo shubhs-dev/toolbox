@@ -288,6 +288,7 @@ cutvid -s 90 -d 120 movie.mp4 clip.mp4           # 2-minute clip starting at 1:3
 cutvid -s 00:01:30 movie.mkv                     # trim start, keep to end
 cutvid -e 00:05:00 movie.mkv                     # keep from beginning to 5:00
 cutvid -s 1:30 -e 5:00 -r movie.mkv clip.mkv     # re-encode for frame accuracy
+cutvid -s 1:30 -e 5:00 -f movie.mkv clip.mkv     # replace an existing clip.mkv
 ```
 
 | Flag | Description |
@@ -296,10 +297,24 @@ cutvid -s 1:30 -e 5:00 -r movie.mkv clip.mkv     # re-encode for frame accuracy
 | `-e, --end TIME` | End time (default: end of file). Accepts `HH:MM:SS`, `MM:SS`, or seconds |
 | `-d, --duration DUR` | Duration of the cut instead of end time |
 | `-r, --reencode` | Re-encode output (slower, frame-accurate). Default: stream-copy |
+| `-f, --force` | Replace the output file if it exists (the old one is moved to the Trash) |
 
-Stream-copy mode (default) is near-instant but cuts on keyframes, so the actual start may be
-slightly before the requested time. Use `-r`/`--reencode` for frame-accurate cuts. Output
-filename is auto-derived as `<stem>.cut.<start>-<end>.<ext>` if not given.
+Times accept `HH:MM:SS`, `MM:SS` or plain seconds, each with optional decimals; anything else is
+rejected up front, as is a start past the end of the video. Every video, audio and subtitle
+track is kept, along with chapters and (for MKV output) attachments such as subtitle fonts.
+Cutting into a different container converts text subtitles to one it supports; image
+subtitles MP4 can't hold are dropped with a warning.
+
+Stream-copy mode (default) is near-instant but can only start on a keyframe. MKV output
+starts at the last keyframe at or before the requested time, and cutvid warns you how much
+earlier that is. MP4/MOV output keeps the same lead-in but hides it with an edit list, so it
+plays from the exact requested time. Use `-r`/`--reencode` for a frame-accurate start in any
+container.
+
+The output is written to a temp file and only moved into place once ffmpeg succeeds. It can
+never be the input file (however the path is spelled), and an existing file is only replaced
+with `-f`. Output filename is auto-derived as `<stem>.cut.<start>-<end>.<ext>` if not given,
+e.g. `movie.cut.1m30s-5m00s.mkv`.
 
 ---
 
@@ -312,6 +327,7 @@ flipvid -x movie.mp4                 # flip horizontally (mirror)
 flipvid -y movie.mp4                 # flip vertically (upside down)
 flipvid -x -y movie.mp4 out.mp4      # flip both axes
 flipvid -x -q 20 movie.mp4           # custom encode quality
+flipvid -x -f movie.mp4 out.mp4      # replace an existing out.mp4
 ```
 
 | Flag | Description |
@@ -319,10 +335,13 @@ flipvid -x -q 20 movie.mp4           # custom encode quality
 | `-x, --horizontal` | Flip horizontally (mirror left-right) |
 | `-y, --vertical` | Flip vertically (upside down) |
 | `-q, --quality CRF` | x264 CRF quality, lower is better (default: `18`) |
+| `-f, --force` | Replace the output file if it exists (the old one is moved to the Trash) |
 
 Flipping re-encodes the video stream (filters can't stream-copy); audio is always
-stream-copied unchanged. Output filename is auto-derived as `<stem>.flip.<h|v|hv>.<ext>` if
-not given.
+stream-copied unchanged. Every audio and subtitle track is kept, along with chapters and (for
+MKV output) attachments. The output is written to a temp file and only moved into place once
+ffmpeg succeeds; it can never be the input file, and an existing file is only replaced with
+`-f`. Output filename is auto-derived as `<stem>.flip.<h|v|hv>.<ext>` if not given.
 
 ---
 
