@@ -289,18 +289,30 @@ cutvid -s 00:01:30 movie.mkv                     # trim start, keep to end
 cutvid -e 00:05:00 movie.mkv                     # keep from beginning to 5:00
 cutvid -s 1:30 -e 5:00 -r movie.mkv clip.mkv     # re-encode for frame accuracy
 cutvid -s 1:30 -e 5:00 -f movie.mkv clip.mkv     # replace an existing clip.mkv
+cutvid -s 1m30s -e 1.05.00 movie.mkv             # unit suffixes and dotted HH.MM.SS work too
 ```
 
 | Flag | Description |
 |------|-------------|
-| `-s, --start TIME` | Start time (default: beginning). Accepts `HH:MM:SS`, `MM:SS`, or seconds |
-| `-e, --end TIME` | End time (default: end of file). Accepts `HH:MM:SS`, `MM:SS`, or seconds |
-| `-d, --duration DUR` | Duration of the cut instead of end time |
+| `-s, --start TIME` | Start time (default: beginning). Accepts seconds, `MM:SS`, `HH:MM:SS`, `HH.MM.SS` or `1h02m03s` |
+| `-e, --end TIME` | End time (default: end of file). Accepts seconds, `MM:SS`, `HH:MM:SS`, `HH.MM.SS` or `1h02m03s` |
+| `-d, --duration DUR` | Duration of the cut instead of end time (same formats as `--start`) |
 | `-r, --reencode` | Re-encode output (slower, frame-accurate). Default: stream-copy |
 | `-f, --force` | Replace the output file if it exists (the old one is moved to the Trash) |
 
-Times accept `HH:MM:SS`, `MM:SS` or plain seconds, each with optional decimals; anything else is
-rejected up front, as is a start past the end of the video. Every video, audio and subtitle
+Times accept:
+
+| Format | Example | Meaning |
+|--------|---------|---------|
+| `SS` | `90`, `90.25` | seconds |
+| `MM:SS` | `1:30`, `1:30.5` | minutes and seconds |
+| `HH:MM:SS` | `1:02:03`, `1:02:03.5` | hours, minutes and seconds |
+| `HH.MM.SS` | `1.02.03` | same, with dots — only with all three fields, since a single dot is a decimal point (`1.30` is 1.3 seconds) |
+| unit suffixes | `45s`, `1m30s`, `2h`, `1h02m03.5s` | any combination of `h`/`m`/`s`; a trailing bare number is the next unit down (`1h30` = 1h30m, `1m30` = 1m30s) |
+
+The suffix form is the same style as the auto-derived output filename, so a time can be copied
+straight out of one. Anything else is rejected up front, as is a start past the end of the
+video. Every video, audio and subtitle
 track is kept, along with chapters and (for MKV output) attachments such as subtitle fonts.
 Cutting into a different container converts text subtitles to one it supports; image
 subtitles MP4 can't hold are dropped with a warning.

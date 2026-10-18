@@ -12,9 +12,16 @@ Usage:
     cutvid -e 00:05:00 movie.mkv
     cutvid -s 1:30 -e 5:00 -r movie.mkv clip.mkv
     cutvid -s 1:30 -e 5:00 -f movie.mkv clip.mkv
+    cutvid -s 1m30s -e 1.05.00 movie.mkv
 
-Times accept HH:MM:SS, MM:SS or plain seconds, each with optional decimals
-(1:02:03.5, 90.25).
+Times (for -s, -e and -d) accept any of:
+    90          seconds            (decimals allowed: 90.25)
+    1:30        minutes:seconds    (1:30.5)
+    1:02:03     hours:minutes:seconds  (1:02:03.5)
+    1.02.03     hours.minutes.seconds — dots work as separators only with all
+                three fields, since a single dot is a decimal point (1.30 is 1.3s)
+    1m30s       unit suffixes, any of h/m/s (2h, 45s, 1h02m03.5s); a trailing
+                bare number is the next unit down (1h30 = 1h30m, 1m30 = 1m30s)
 
 Every video, audio and subtitle track is kept, along with chapters and (for MKV
 output) attachments such as subtitle fonts. When cutting into a different container,
@@ -52,8 +59,17 @@ from toolboxcli._common.output import atomic_output, check_output_path
 from toolboxcli._common.streams import MP4_EXTS, keep_all_streams_args, main_video_streams
 from toolboxcli._common.tooling import require_tool
 
-# [[HH:]MM:]SS[.frac] — digits only, so negative or suffixed values ("1m30s") are rejected.
-_TIME_RE = re.compile(r"^(?:(?:([0-9]+):)?([0-9]+):)?([0-9]+(?:\.[0-9]+)?)$")
+# [[HH:]MM:]SS[.frac] — digits only, so negative values are rejected.
+_COLON_RE = re.compile(r"^(?:(?:([0-9]+):)?([0-9]+):)?([0-9]+(?:\.[0-9]+)?)$")
+# HH.MM.SS. A single dot is always a decimal point ("90.25" is seconds), so dots only
+# separate fields when all three are given — MM.SS can't be told apart from SS.frac, and
+# with dots as separators there's no room for a fraction either.
+_DOTS_RE = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
+# 1h02m03.5s, 1m30s, 45s, 2h, and the shorthands 1h30 (minutes) / 1m30 (seconds) — the same
+# style as the output filename tag, so a time can be copied straight out of one.
+_UNITS_RE = re.compile(
+    r"^(?:([0-9]+)h)?\s*(?:([0-9]+)m)?\s*(?:([0-9]+(?:\.[0-9]+)?)(s?))?$", re.IGNORECASE
+)
 
 # Stream-copy starting this much earlier than requested is worth mentioning (~1 frame).
 _KEYFRAME_NOTE_THRESHOLD = 0.05
@@ -61,17 +77,37 @@ _KEYFRAME_NOTE_THRESHOLD = 0.05
 _KEYFRAME_SEARCH_WINDOW = 120.0
 
 
-def parse_time(value: str, flag: str) -> float:
-    m = _TIME_RE.match(value.strip())
-    if not m:
-        die(f"{flag}: invalid time '{value}' (use HH:MM:SS, MM:SS or seconds, e.g. 1:30 or 90)")
-    hours, minutes, seconds = m.groups()
-    secs = float(seconds)
-    if minutes is not None and secs >= 60:
-        die(f"{flag}: seconds must be below 60 in '{value}'")
-    if hours is not None and int(minutes) >= 60:
-        die(f"{flag}: minutes must be below 60 in '{value}'")
+def _to_seconds(value: str) -> float:
+    """Parse a time into seconds. Raises ValueError with a user-facing reason."""
+    if m := _COLON_RE.match(value):
+        hours, minutes, seconds = m.groups()
+    elif m := _DOTS_RE.match(value):
+        hours, minutes, seconds = m.groups()
+    elif (m := _UNITS_RE.match(value)) and any(m.groups()):
+        hours, minutes, seconds, s_unit = m.groups()
+        # A bare trailing number takes the unit below the last one given: 1m30 already
+        # reads as 30 seconds, but 1h30 means 30 minutes.
+        if seconds is not None and not s_unit and minutes is None:
+            if "." in seconds:
+                raise ValueError("only seconds can have decimals")
+            minutes, seconds = seconds, None
+    else:
+        raise ValueError("unrecognized format")
+
+    secs = float(seconds or 0)
+    if (hours is not None or minutes is not None) and seconds is not None and secs >= 60:
+        raise ValueError("seconds must be below 60")
+    if hours is not None and minutes is not None and int(minutes) >= 60:
+        raise ValueError("minutes must be below 60")
     return int(hours or 0) * 3600 + int(minutes or 0) * 60 + secs
+
+
+def parse_time(value: str, flag: str) -> float:
+    try:
+        return _to_seconds(value.strip())
+    except ValueError as exc:
+        die(f"{flag}: invalid time '{value}' — {exc} (use seconds, MM:SS, HH:MM:SS, "
+            "HH.MM.SS or 1h02m03s, e.g. 90, 1:30, 1.02.03 or 1m30s)")
 
 
 def _split_ms(sec: float) -> tuple[int, int, int, int]:
@@ -169,11 +205,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("video_file", help="Input video file")
     parser.add_argument("output_file", nargs="?", default=None, help="Output file (default: auto-derived)")
     parser.add_argument("-s", "--start", metavar="TIME", default="",
-                        help="Start time (default: beginning). Accepts HH:MM:SS, MM:SS, or seconds")
+                        help="Start time (default: beginning). Accepts seconds, MM:SS, HH:MM:SS, HH.MM.SS or 1h02m03s")
     parser.add_argument("-e", "--end", metavar="TIME", default="",
-                        help="End time (default: end of file). Accepts HH:MM:SS, MM:SS, or seconds")
+                        help="End time (default: end of file). Accepts seconds, MM:SS, HH:MM:SS, HH.MM.SS or 1h02m03s")
     parser.add_argument("-d", "--duration", metavar="DUR", default="",
-                        help="Duration of the cut instead of end time")
+                        help="Duration of the cut instead of end time (same formats as --start)")
     parser.add_argument("-r", "--reencode", action="store_true",
                         help="Re-encode output (slower, frame-accurate). Default: stream-copy")
     parser.add_argument("-f", "--force", action="store_true",
