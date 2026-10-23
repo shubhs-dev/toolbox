@@ -7,6 +7,7 @@ Requires:
 Usage:
     video-download              # download one at a time
     video-download -j 3         # run up to 3 downloads in parallel
+    video-download -y           # also download lines added mid-run without asking
 
 urls.txt is read from the current folder, one download per line: a URL, then
 optionally a space and the output file name. The name may contain spaces and
@@ -20,6 +21,15 @@ Each line runs:
     yt-dlp --external-downloader aria2c --external-downloader-args "-x 16 -k 1M"
            -o "<name or %(title)s>.%(ext)s" <url>
 
+urls.txt is kept up to date as the run goes: once a download completes
+successfully its line is removed from the file. The line is found again by its
+URL at that moment, so editing the file mid-run (adding lines, deleting ones you
+no longer want) is safe — a line you delete before its download starts is
+skipped. Failed or interrupted downloads keep their line for the next run.
+
+Before finishing, urls.txt is read again; if lines were added during the run,
+you're asked whether to download those too (-y answers yes).
+
 With -j 1, yt-dlp's own output is shown as-is. With more, each running
 download gets one status line showing its latest output, and a failed
 download's last lines of output are printed when it finishes. Every aria2c
@@ -29,16 +39,19 @@ opens 16 connections, so -j 4 means up to 64 at once.
 from __future__ import annotations
 
 import argparse
+import codecs
+import os
 import subprocess
 import sys
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.markup import escape
 
+from toolboxcli._common.confirm import confirm
 from toolboxcli._common.console import console, die, error, info, ok, warn
 from toolboxcli._common.progress import spinner
 from toolboxcli._common.tooling import require_tool
@@ -51,7 +64,6 @@ STATUS_WIDTH = 70
 
 @dataclass(frozen=True)
 class Download:
-    line_no: int
     url: str
     name: str | None  # None → let yt-dlp name it after the video title
 
@@ -60,19 +72,83 @@ class Download:
         return self.name or self.url
 
 
-def parse_urls_file(path: Path) -> list[Download]:
-    """Parse `<url>[ <name with spaces>]` lines. utf-8-sig tolerates a Notepad BOM."""
-    downloads = []
-    for line_no, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        # A URL never contains whitespace, so everything after the first run of
-        # whitespace is the name — spaces inside the name are kept verbatim.
-        parts = line.split(maxsplit=1)
-        name = parts[1].strip() if len(parts) > 1 else None
-        downloads.append(Download(line_no, parts[0], name or None))
-    return downloads
+def parse_line(raw: str) -> Download | None:
+    """Parse one `<url>[ <name with spaces>]` line; None for blanks and comments."""
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        return None
+    # A URL never contains whitespace, so everything after the first run of
+    # whitespace is the name — spaces inside the name are kept verbatim.
+    parts = line.split(maxsplit=1)
+    name = parts[1].strip() if len(parts) > 1 else None
+    return Download(parts[0], name or None)
+
+
+class UrlsFile:
+    """urls.txt, re-read on every access since the user may edit it mid-run.
+
+    Lines are always located by URL rather than by line number, so additions and
+    deletions made while downloads are running don't throw the bookkeeping off.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()  # parallel workers finish concurrently
+
+    def _read(self) -> tuple[bool, list[str]]:
+        """(had a BOM, lines with their own line endings). Missing file → no lines."""
+        try:
+            raw = self.path.read_bytes()
+        except FileNotFoundError:
+            return False, []
+        # utf-8-sig tolerates a Notepad BOM; it's remembered so a rewrite keeps it.
+        return raw.startswith(codecs.BOM_UTF8), raw.decode("utf-8-sig").splitlines(keepends=True)
+
+    def downloads(self) -> list[Download]:
+        with self._lock:
+            _, lines = self._read()
+        return [dl for dl in map(parse_line, lines) if dl is not None]
+
+    def _find(self, lines: list[str], dl: Download) -> int | None:
+        """Index of dl's line: an exact URL + name match first, else the first line with its URL."""
+        fallback = None
+        for i, line in enumerate(lines):
+            entry = parse_line(line)
+            if entry is None or entry.url != dl.url:
+                continue
+            if entry == dl:
+                return i
+            if fallback is None:
+                fallback = i
+        return fallback
+
+    def contains(self, dl: Download) -> bool:
+        with self._lock:
+            _, lines = self._read()
+            return self._find(lines, dl) is not None
+
+    def remove(self, dl: Download) -> bool:
+        """Drop dl's line. False if it's already gone (deleted by hand) or the write failed."""
+        with self._lock:
+            bom, lines = self._read()
+            index = self._find(lines, dl)
+            if index is None:
+                return False
+            del lines[index]
+            data = "".join(lines).encode("utf-8")
+            if bom:
+                data = codecs.BOM_UTF8 + data
+            # Write a sibling temp file and swap it in, so a crash mid-write can
+            # never leave a truncated urls.txt behind.
+            tmp = self.path.with_name(f".{self.path.name}.tmp")
+            try:
+                tmp.write_bytes(data)
+                os.replace(tmp, self.path)
+            except OSError as exc:
+                tmp.unlink(missing_ok=True)
+                warn(f"couldn't remove {escape(dl.url)} from {self.path.name}: {exc}")
+                return False
+            return True
 
 
 def output_template(name: str | None) -> str:
@@ -93,32 +169,54 @@ def build_command(dl: Download) -> list[str]:
     ]
 
 
-def run_sequential(downloads: list[Download]) -> list[Download]:
-    failed = []
+@dataclass
+class Results:
+    succeeded: int = 0
+    skipped: int = 0
+    failed: list[Download] = field(default_factory=list)
+
+
+def record_success(urls: UrlsFile, dl: Download, results: Results) -> None:
+    """Called only once yt-dlp has exited 0, i.e. the file is complete on disk."""
+    results.succeeded += 1
+    if urls.remove(dl):
+        ok(f"Downloaded {escape(dl.label)} — removed from {urls.path.name}")
+    else:
+        ok(f"Downloaded {escape(dl.label)}")
+
+
+def run_sequential(downloads: list[Download], urls: UrlsFile, results: Results) -> None:
     total = len(downloads)
     for i, dl in enumerate(downloads, start=1):
+        if not urls.contains(dl):
+            info(f"[{i}/{total}] {escape(dl.label)} — no longer in {urls.path.name}, skipping")
+            results.skipped += 1
+            continue
         info(f"[{i}/{total}] {escape(dl.label)}")
         result = subprocess.run(build_command(dl))
         if result.returncode == 0:
-            ok(f"Downloaded {escape(dl.label)}")
+            record_success(urls, dl, results)
         else:
-            error(f"yt-dlp exited with code {result.returncode} for line {dl.line_no}: {escape(dl.url)}")
-            failed.append(dl)
-    return failed
+            error(f"yt-dlp exited with code {result.returncode} for {escape(dl.url)}")
+            results.failed.append(dl)
 
 
 def _shorten(text: str, width: int = STATUS_WIDTH) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
-def run_parallel(downloads: list[Download], workers: int) -> list[Download]:
-    failed = []
+SKIPPED = object()  # worker sentinel: the line was deleted from urls.txt before it started
+
+
+def run_parallel(downloads: list[Download], workers: int, urls: UrlsFile, results: Results) -> None:
     running: set[subprocess.Popen] = set()
     lock = threading.Lock()
 
     with spinner() as progress:
 
-        def worker(dl: Download) -> tuple[int, list[str]]:
+        def worker(dl: Download) -> tuple[int, list[str]] | object:
+            if not urls.contains(dl):
+                return SKIPPED
             label = escape(_shorten(dl.label, 40))
             task = progress.add_task(label, total=None)
             tail: deque[str] = deque(maxlen=FAIL_TAIL_LINES)
@@ -154,18 +252,23 @@ def run_parallel(downloads: list[Download], workers: int) -> list[Download]:
             for future in as_completed(futures):
                 dl = futures[future]
                 try:
-                    returncode, tail = future.result()
+                    outcome = future.result()
                 except Exception as exc:  # e.g. OSError launching yt-dlp
-                    returncode, tail = -1, [str(exc)]
-                if returncode == 0:
-                    ok(f"Downloaded {escape(dl.label)}")
+                    outcome = (-1, [str(exc)])
+                if outcome is SKIPPED:
+                    results.skipped += 1
+                    info(f"{escape(dl.label)} — no longer in {urls.path.name}, skipping")
                     continue
-                failed.append(dl)
+                returncode, tail = outcome
+                if returncode == 0:
+                    record_success(urls, dl, results)
+                    continue
+                results.failed.append(dl)
                 # Printed through the shared stdout console rather than error(),
                 # which writes to stderr and would tear the live progress display.
                 console.print(
                     f"[red][ERROR][/red] yt-dlp exited with code {returncode} "
-                    f"for line {dl.line_no}: {escape(dl.url)}"
+                    f"for {escape(dl.url)}"
                 )
                 for line in tail:
                     console.print(f"    [dim]{escape(line)}[/dim]")
@@ -179,8 +282,6 @@ def run_parallel(downloads: list[Download], workers: int) -> list[Download]:
                     proc.terminate()
             raise
         pool.shutdown(wait=True)
-
-    return failed
 
 
 def positive_int(value: str) -> int:
@@ -201,6 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-j", "--jobs", metavar="N", type=positive_int, default=1,
                         help="Number of downloads to run in parallel (default: 1)")
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="Download lines added to urls.txt during the run without asking")
     return parser
 
 
@@ -211,7 +314,8 @@ def main() -> None:
     if not urls_path.is_file():
         die(f"no {URLS_FILE} found in {Path.cwd()}")
 
-    downloads = parse_urls_file(urls_path)
+    urls = UrlsFile(urls_path)
+    downloads = urls.downloads()
     if not downloads:
         warn(f"{URLS_FILE} has no URLs in it — nothing to do")
         return
@@ -219,25 +323,41 @@ def main() -> None:
     require_tool("yt-dlp")
     require_tool("aria2c")
 
-    workers = min(args.jobs, len(downloads))
-    info(f"{len(downloads)} download(s) from {URLS_FILE}, {workers} at a time")
+    results = Results()
+    # Everything tried this run, so a failed line still sitting in urls.txt isn't
+    # mistaken for a newly added one (and retried in a loop) at the end-of-run check.
+    attempted: set[Download] = set()
 
-    try:
-        if workers == 1:
-            failed = run_sequential(downloads)
-        else:
-            failed = run_parallel(downloads, workers)
-    except KeyboardInterrupt:
-        die("interrupted", code=130)
+    while downloads:
+        attempted.update(downloads)
+        workers = min(args.jobs, len(downloads))
+        info(f"{len(downloads)} download(s) from {URLS_FILE}, {workers} at a time")
 
-    succeeded = len(downloads) - len(failed)
-    if not failed:
-        ok(f"All {succeeded} download(s) finished")
+        try:
+            if workers == 1:
+                run_sequential(downloads, urls, results)
+            else:
+                run_parallel(downloads, workers, urls, results)
+        except KeyboardInterrupt:
+            die("interrupted", code=130)
+
+        downloads = [dl for dl in urls.downloads() if dl not in attempted]
+        if not downloads:
+            break
+        info(f"{len(downloads)} new line(s) were added to {URLS_FILE} during the run")
+        if not args.yes and confirm("Download them too?", default="y") != "y":
+            break
+
+    summary = f"{results.succeeded} succeeded"
+    if results.skipped:
+        summary += f", {results.skipped} skipped (removed from {URLS_FILE})"
+    if not results.failed:
+        ok(f"All done: {summary}")
         return
 
-    warn(f"{succeeded} succeeded, {len(failed)} failed:")
-    for dl in failed:
-        console.print(f"    line {dl.line_no}: {escape(dl.url)}")
+    warn(f"{summary}, {len(results.failed)} failed (still in {URLS_FILE}):")
+    for dl in results.failed:
+        console.print(f"    {escape(dl.url)}")
     sys.exit(1)
 
 
