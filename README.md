@@ -26,6 +26,7 @@ in Python and installed as a single pipx package.
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
 | `toolbox` | List all scripts in this repo with a brief description |
 | `video-download` | Download every video listed in `./urls.txt` with yt-dlp + aria2c, optionally in parallel |
+| `wallready` | Prepare a folder of images for wallpaper use: JPG, downscaled and centre-cropped to 4K |
 
 `inventory.html` is a standalone, dependency-free HTML dashboard for tracking Death Stranding
 materials — just open it in a browser, no install needed.
@@ -45,7 +46,7 @@ materials — just open it in a browser, no install needed.
 | `ffmpeg` | `addsub`, `concatvid`, `cutvid`, `downscalevid`, `flipvid` |
 | `ffprobe` (ships with ffmpeg) | `concatvid`, `downscalevid`, `optimiselib` |
 | `HandBrakeCLI` | `compressvid`, `optimiselib` |
-| `magick` (ImageMagick 7) | `convertimg` |
+| `magick` (ImageMagick 7) | `convertimg`, `wallready` |
 | `7z` (7-Zip) | `cybermod` |
 | `yt-dlp`, `aria2c` | `video-download` |
 | `addsub` (on PATH) | `autosub`, `optimiselib` (optional — enables subtitle merging) |
@@ -748,6 +749,63 @@ Each line runs `yt-dlp --external-downloader aria2c --external-downloader-args "
 each running download gets one status line, and a failed download's last lines of output are
 printed when it finishes. The command exits non-zero if any download failed, listing which (they stay in `urls.txt`).
 Every aria2c opens 16 connections, so `-j 4` means up to 64 at once.
+
+---
+
+### wallready
+
+Prepare every image in a folder for use as a wallpaper, using **ImageMagick**.
+
+**Requires:** `magick` (ImageMagick 7)
+
+```bash
+wallready                      # prepare the current folder for 4K
+wallready ~/Pictures/walls     # ...or another folder
+wallready -n                   # dry run — show the plan, change nothing
+wallready -s 1440p             # target 2560x1440 instead of 4K
+wallready -s 3440x1440         # or any WIDTHxHEIGHT
+wallready -q 95 -S             # higher JPEG quality, strip metadata
+wallready -k                   # move originals into originals/ instead of trashing
+```
+
+| Flag | Description |
+|------|-------------|
+| `[directory]` | Folder of images to prepare (default: the current directory) |
+| `-s, --size SIZE` | Target size: a preset (`8k`, `5k`, `4k`, `2160p`, `1440p`, `1080p`, `ultrawide`) or `WIDTHxHEIGHT` (default: `4k`) |
+| `-q, --quality N` | JPEG quality 1-100 (default: `92`) |
+| `-b, --background COLOR` | Fill colour for transparent areas, which JPEG can't store (default: `white`) |
+| `-k, --keep` | Move originals into `originals/` instead of the Trash |
+| `-S, --strip` | Strip metadata (EXIF, colour profiles) from the finished wallpapers |
+| `-f, --force` | Replace an existing `.jpg` of the same name (it goes to the Trash) |
+| `-n, --dry-run` | Show what would happen without changing anything |
+
+Every image becomes a JPG at the target size — 3840x2160 by default:
+
+| Source | What happens |
+|--------|--------------|
+| Bigger than the target | Scaled down until it just *covers* the target, then centre-cropped to it |
+| Exactly the target size | Re-encoded to JPG, or left alone if it already is one |
+| Stored sideways under an EXIF tag | Re-encoded even at the target size, so the rotation is baked in |
+| Portrait (landscape target) | Moved untouched into `portrait/` |
+| Smaller on either axis | Moved untouched into `too-small/` |
+
+"Covers, then crops" is the difference between a wallpaper and a zoomed-in slice of one: a
+6000x4000 photo is scaled to 3840x2560 and loses 16% off its height, rather than having a
+3840x2160 rectangle cut out of its middle at full resolution. A 16:9 source crops nothing, so
+it's a pure downscale. Nothing is ever upscaled — an image short of the target on either axis
+is set aside instead, since a stretched wallpaper is worse than no wallpaper, and a portrait
+photo is set aside separately because no crop of it fills a wide screen.
+
+EXIF orientation is applied *before* anything is measured or cropped (otherwise a portrait
+phone photo measures as landscape and gets cropped along the wrong axis), and a file that only
+reaches the target size *once rotated* is re-encoded rather than skipped, so viewers that
+ignore the orientation tag still see it the right way up, transparency is
+flattened onto `--background`, CMYK and wide-gamut sources are converted to sRGB, and animated
+GIF/WebP files contribute their first frame. Each original goes to the Trash once its wallpaper
+has been written successfully, `-k/--keep` moves it into `originals/` instead, and the encode
+lands via a temp file so an interrupted run can't leave a half-written JPG where the original
+used to be. Subfolders aren't scanned, so re-running on the same folder won't re-process
+what's already been set aside.
 
 ---
 

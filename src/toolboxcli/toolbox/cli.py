@@ -34,6 +34,7 @@ SCRIPTS = [
     ("sortmedia", "Move video files into folders based on the camelCase type tag in each filename"),
     ("toolbox", "List all custom scripts with a brief description (this script)"),
     ("video-download", "Download every video listed in ./urls.txt with yt-dlp + aria2c, optionally in parallel"),
+    ("wallready", "Prepare a folder of images for wallpaper use: JPG, downscaled and centre-cropped to 4K"),
 ]
 
 
