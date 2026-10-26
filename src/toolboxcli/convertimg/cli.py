@@ -25,24 +25,12 @@ import subprocess
 from pathlib import Path
 
 from toolboxcli._common.console import die, error, info, ok, warn
+from toolboxcli._common.images import IMAGE_EXTS, normalize_ext
 from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
 
-IMAGE_EXTS = {
-    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif",
-    "webp", "avif", "heic", "heif", "ico", "svg",
-}
-
-# Spellings of the same format, so "jpg" matches .jpeg files and vice versa.
-EXT_ALIASES = {"jpeg": "jpg", "tif": "tiff", "heif": "heic"}
-
 # Target formats that can't store an alpha channel.
 NO_ALPHA_FORMATS = {"jpg", "bmp"}
-
-
-def normalize_ext(ext: str) -> str:
-    ext = ext.lstrip(".").lower()
-    return EXT_ALIASES.get(ext, ext)
 
 
 def build_parser() -> argparse.ArgumentParser:
