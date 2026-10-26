@@ -1,12 +1,15 @@
-"""What wallready decides about a single image: target geometry, classification, magick args.
+"""What wallready decides about a single image: target geometry, classification, magick args,
+and the name it comes out under.
 
 Pure arithmetic and policy — every filesystem and subprocess call lives in `cli.py`, so the
-rules below (what counts as too small, how a crop is derived) can be read on their own.
+rules below (what counts as too small, how a crop is derived, what counts as an id) can be
+read on their own.
 """
 
 from __future__ import annotations
 
 import re
+import secrets
 from dataclasses import dataclass
 from enum import Enum
 
@@ -216,3 +219,81 @@ def convert_args(
     if strip:
         args.append("-strip")
     return args
+
+
+# --- Naming -----------------------------------------------------------------------------
+#
+# Downloaded wallpapers arrive named after wherever they came from — `1402962.jpg`,
+# `wallhaven-e204cm.jpg` — so a folder's worth of them says nothing about what's in them.
+# With a prefix, each file is renamed `<prefix>-<id>`: the id is carried over from the
+# download name when there's one worth keeping, so the file stays traceable back to its
+# source, and is generated when there isn't.
+
+RANDOM_ID_LEN = 6
+_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+# Everything a downloader puts between the parts of a name: dashes, underscores, spaces
+# and the dots in `wallhaven.e204cm`.
+_TOKEN_SPLIT_RE = re.compile(r"[\s._\-]+")
+
+# A browser's second copy of the same download: `1402962 (1).jpg`, `1402962(1).jpg`.
+_DEDUPE_SUFFIX_RE = re.compile(r"\s*[(\[]\d+[)\]]\s*$")
+
+# Size tokens read as ids otherwise — `1920x1080` is digits-and-letters of exactly the
+# shape an id has, and `2160p`/`4k` are short enough to pass too.
+_DIMENSIONS_RE = re.compile(r"^\d{3,5}[x×]\d{3,5}$")
+_RESOLUTION_RE = re.compile(r"^(?:\d{3,4}[pi]|[2458]k|u?hd|fhd|qhd)$")
+
+# A word with a small number stuck on the end (`wallpaper2`, `image03`) is a name someone
+# typed, not an id — unlike `e204cm`, where the digits sit inside the token.
+_NUMBERED_WORD_RE = re.compile(r"^[a-z]{4,}\d{1,3}$")
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(text: str) -> str:
+    """Filename-safe, lowercase and dash-joined: "Arc Raiders" → `arc-raiders`."""
+    return _SLUG_RE.sub("-", text.strip().lower()).strip("-")
+
+
+def _is_id_token(token: str) -> bool:
+    """True for the one token in a download name that identifies the image.
+
+    An id is either a run of digits (`1402962`) or a mix of letters and digits
+    (`e204cm`) — never a plain word, which is how a site's name drops out of
+    `wallhaven-e204cm` without needing a list of site names to match against.
+    """
+    if _DIMENSIONS_RE.match(token) or _RESOLUTION_RE.match(token):
+        return False
+    if token.isdigit():
+        return len(token) >= 4
+    if not token.isalnum() or len(token) < 5:
+        return False
+    if _NUMBERED_WORD_RE.match(token):
+        return False
+    return any(c.isdigit() for c in token) and any(c.isalpha() for c in token)
+
+
+def extract_id(stem: str) -> str | None:
+    """The id already in a filename, or None if it doesn't carry one.
+
+    The *last* id-like token wins: a name that pairs one with anything else
+    (`pexels-photo-1402962`) puts the identifying part at the end.
+    """
+    cleaned = _DEDUPE_SUFFIX_RE.sub("", stem)
+    ids = [t for t in _TOKEN_SPLIT_RE.split(cleaned.lower()) if t and _is_id_token(t)]
+    return ids[-1] if ids else None
+
+
+def random_id(length: int = RANDOM_ID_LEN) -> str:
+    """A fresh id for a file whose name doesn't carry one, in the shape the sites use."""
+    return "".join(secrets.choice(_ID_ALPHABET) for _ in range(length))
+
+
+def rename_stem(stem: str, prefix: str) -> str:
+    """The stem `stem` should come out under, given an already-slugified `prefix`.
+
+    Re-running with the same prefix is a no-op: `arc-raiders-e204cm` still parses out
+    `e204cm`, so the file keeps the name it already has rather than collecting prefixes.
+    """
+    return f"{prefix}-{extract_id(stem) or random_id()}"
