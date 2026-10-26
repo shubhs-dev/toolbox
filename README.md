@@ -761,6 +761,8 @@ Prepare every image in a folder for use as a wallpaper, using **ImageMagick**.
 ```bash
 wallready                      # prepare the current folder for 4K
 wallready ~/Pictures/walls     # ...or another folder
+wallready "arc raiders"        # ...and rename everything arc-raiders-<id>.jpg
+wallready -p "arc raiders" ~/Pictures/walls
 wallready -n                   # dry run — show the plan, change nothing
 wallready -s 1440p             # target 2560x1440 instead of 4K
 wallready -s 3440x1440         # or any WIDTHxHEIGHT
@@ -770,7 +772,8 @@ wallready -k                   # move originals into originals/ instead of trash
 
 | Flag | Description |
 |------|-------------|
-| `[directory]` | Folder of images to prepare (default: the current directory) |
+| `[directory\|prefix]` | A folder of images to prepare (default: the current directory), or — when it doesn't name one — a prefix to rename every image after, as `<prefix>-<id>` |
+| `-p, --prefix NAME` | Rename every image `<prefix>-<id>`, keeping the id its download name carried and generating one when it carried none |
 | `-s, --size SIZE` | Target size: a preset (`8k`, `5k`, `4k`, `2160p`, `1440p`, `1080p`, `ultrawide`) or `WIDTHxHEIGHT` (default: `4k`) |
 | `-q, --quality N` | JPEG quality 1-100 (default: `92`) |
 | `-b, --background COLOR` | Fill colour for transparent areas, which JPEG can't store (default: `white`) |
@@ -806,6 +809,33 @@ has been written successfully, `-k/--keep` moves it into `originals/` instead, a
 lands via a temp file so an interrupted run can't leave a half-written JPG where the original
 used to be. Subfolders aren't scanned, so re-running on the same folder won't re-process
 what's already been set aside.
+
+#### Renaming a batch
+
+Wallpapers come off a site named after the site: `1402962.jpg`, `wallhaven-e204cm.jpg`. Give
+`wallready` a prefix and each one is renamed after what's actually in it, keeping the id so
+the file stays traceable back to where it came from:
+
+| Downloaded as | `wallready "arc raiders"` |
+|---------------|---------------------------|
+| `1402962.jpg` | `arc-raiders-1402962.jpg` |
+| `wallhaven-e204cm.jpg` | `arc-raiders-e204cm.jpg` |
+| `pexels-photo-1402962.jpg` | `arc-raiders-1402962.jpg` |
+| `cool space shot.png` | `arc-raiders-blrkdg.jpg` |
+| `arc-raiders-e204cm.jpg` | `arc-raiders-e204cm.jpg` |
+
+The id is whatever the name already carried — a run of digits, or a letters-and-digits token
+like `e204cm` — which is also how the site's own name drops out without `wallready` keeping a
+list of sites. A name with nothing identifiable in it (`cool space shot`) gets a fresh random
+id instead, and a name that's already `<prefix>-<id>` keeps it, so re-running the same
+command doesn't stack prefixes or renumber anything. Resolution tokens (`1920x1080`, `4k`)
+never count as the id, and two files that land on the same name get `-2`, `-3` appended
+rather than overwriting each other.
+
+The lone argument is the folder when it names one and the prefix otherwise, so
+`wallready ~/Pictures/walls` still works unchanged — use `-p/--prefix` to pass both at once,
+or to force a prefix that happens to share its name with a real folder. Images set aside into
+`portrait/` or `too-small/` are renamed too; the originals keep their download name.
 
 ---
 

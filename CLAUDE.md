@@ -13,7 +13,7 @@ Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
 `pipx install -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
 `check-deps`, `compressvid`, `concatvid`, `convertimg`, `cutvid`, `cybermod`,
 `downscalevid`, `finddupes`, `flatten`, `flipvid`, `jellyname`, `kavitaname`,
-`mergemanga`, `sortmedia`, `toolbox`, `video-download` —
+`mergemanga`, `optimiselib`, `sortmedia`, `toolbox`, `video-download`, `wallready` —
 identically on both platforms. `inventory.html` is a standalone static HTML dashboard,
 unrelated to the Python package.
 
@@ -29,7 +29,7 @@ python -m toolboxcli.<script>.cli --help
 # Smoke-test everything after a change
 for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cybermod \
            downscalevid finddupes flatten flipvid jellyname kavitaname mergemanga \
-           sortmedia toolbox video-download; do
+           optimiselib sortmedia toolbox video-download wallready; do
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 ```
@@ -61,12 +61,14 @@ src/toolboxcli/
 ├── optimiselib/{cli.py, core.py}
 ├── sortmedia/cli.py
 ├── toolbox/cli.py
-└── videodownload/cli.py
+├── videodownload/cli.py
+└── wallready/{cli.py, core.py}
 ```
 
 Each script is a `<name>/cli.py` with a `main()` function wired up in `pyproject.toml`'s
 `[project.scripts]` table as the console-script entry point. `concatvid`, `cybermod`,
-`downscalevid` and `jellyname` additionally split their logic into `core.py`, keeping `cli.py`
+`downscalevid`, `jellyname`, `optimiselib` and `wallready` additionally split their logic into
+`core.py`, keeping `cli.py`
 to argparse wiring, filesystem I/O and subprocess calls only — follow this `cli.py`/`core.py`
 split for any future script whose logic grows beyond simple argument-parsing-and-dispatch.
 
@@ -280,6 +282,21 @@ Progress *factories* themselves) were extracted from it.
   fansub tags) are dropped. When extending the tag vocabularies or anchor-detection regexes,
   verify against real filename fixtures (still no test framework in this repo) rather than
   reasoning about the regex in isolation — this is still the most fragile/fiddly logic here.
+- `wallready`'s lone positional is a *directory or* a rename prefix, resolved by
+  `cli.looks_like_path()`: an argument that names an existing folder, is `.`/`..`, starts with
+  `~`, or contains a separator is the folder; anything else is a prefix. That keeps the
+  original `wallready ~/Pictures/walls` working while `wallready "arc raiders"` renames the
+  current folder's images, and it makes a mistyped *path* still die as a missing directory
+  rather than silently becoming a prefix. `-p/--prefix` is the unambiguous form for both.
+- `wallready`'s renamer (`core.extract_id`) identifies a download's id *structurally* — a run
+  of 4+ digits, or a 5+ character mix of letters and digits — rather than matching a list of
+  site names. That's what drops `wallhaven` out of `wallhaven-e204cm` without the list
+  needing maintenance, and it's why resolution tokens (`1920x1080`, `4k`, `1080p`) and
+  word-plus-number names (`wallpaper2`) need explicit exclusions: they'd otherwise read as
+  ids. Keeping the source id rather than always generating one is what makes a re-run
+  idempotent — `arc-raiders-e204cm` parses back out to `e204cm`, so prefixes don't stack.
+  Collisions get `-2`/`-3` from `cli.reserve_name()`, which treats a file's own current name
+  as free so a re-run doesn't renumber everything.
 
 ### Dependencies
 

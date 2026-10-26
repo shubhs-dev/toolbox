@@ -7,6 +7,8 @@ Requires:
 Usage:
     wallready
     wallready ~/Pictures/walls
+    wallready "arc raiders"        # ...and rename everything arc-raiders-<id>.jpg
+    wallready -p "arc raiders" ~/Pictures/walls
     wallready -n                   # dry run — show the plan, change nothing
     wallready -s 1440p             # target 2560x1440 instead of 4K
     wallready -s 3440x1440         # or any WIDTHxHEIGHT
@@ -25,6 +27,16 @@ Every image becomes a JPG at the target size (3840x2160 by default):
     untouched into portrait/, since no crop of a tall photo makes a usable wide wallpaper.
   * Smaller than the target on either axis — moved untouched into too-small/.
     Nothing is ever upscaled.
+
+The lone argument is the folder to work in when it names one, and otherwise a prefix to
+rename every image after: `wallready "arc raiders"` turns `1402962.jpg` into
+`arc-raiders-1402962.jpg` and `wallhaven-e204cm.jpg` into `arc-raiders-e204cm.jpg`. The id
+kept on the end is whatever the download name already carried — a run of digits, or a
+letters-and-digits token like `e204cm` — and a name with nothing identifiable in it gets a
+fresh random one instead. A file already named `<prefix>-<id>` keeps the name it has, so
+re-running doesn't stack prefixes. -p/--prefix takes both a prefix and a folder, and is the
+way to pass a prefix that happens to name a real folder. Images set aside into portrait/ or
+too-small/ are renamed too; the originals keep their download name.
 
 EXIF orientation is applied before anything is measured or cropped, transparency is
 flattened onto --background (JPEG has no alpha), and CMYK or wide-gamut sources are
@@ -65,6 +77,8 @@ from toolboxcli.wallready.core import (
     mismatch_dir,
     oriented_size,
     parse_size,
+    rename_stem,
+    slugify,
 )
 
 TOO_SMALL_DIR = "too-small"
@@ -89,8 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "directory", nargs="?", default=".",
-        help="Folder of images to prepare (default: the current directory)",
+        "target", nargs="?", default=None, metavar="DIRECTORY|PREFIX",
+        help="A folder of images to prepare (default: the current directory), or — when it "
+             "doesn't name one — a prefix to rename every image after, as <prefix>-<id>",
+    )
+    parser.add_argument(
+        "-p", "--prefix", default=None, metavar="NAME",
+        help="Rename every image <prefix>-<id>, keeping the id its download name carried "
+             "and generating one when it carried none",
     )
     parser.add_argument(
         "-s", "--size", default="4k", metavar="SIZE",
@@ -122,6 +142,57 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show what would happen without changing anything",
     )
     return parser
+
+
+def looks_like_path(value: str) -> bool:
+    """True when the lone argument is meant as a folder rather than a prefix.
+
+    An argument that already names a folder obviously is one; beyond that it's anything
+    spelled like a path — `~/walls`, `./walls`, `..`, `walls/`. A mistyped folder name with
+    a separator in it still fails loudly as a missing directory instead of being taken for
+    a prefix and quietly run against the current one.
+    """
+    if Path(value).expanduser().is_dir():
+        return True
+    if value in (".", "..") or value.startswith("~"):
+        return True
+    return "/" in value or "\\" in value
+
+
+def resolve_target(args: argparse.Namespace) -> tuple[Path, str | None]:
+    """(folder to work in, prefix to rename after) from the positional and -p/--prefix."""
+    directory, prefix = ".", args.prefix
+
+    if args.target is not None:
+        if prefix is None and not looks_like_path(args.target):
+            prefix = args.target
+        else:
+            directory = args.target
+
+    if prefix is not None:
+        slug = slugify(prefix)
+        if not slug:
+            die(f"prefix '{prefix}' has no letters or digits to make a filename out of")
+        prefix = slug
+
+    return Path(directory).expanduser(), prefix
+
+
+def reserve_name(folder: Path, stem: str, suffix: str, src: Path, taken: set[Path]) -> Path:
+    """A free path for `stem + suffix` in `folder`, numbering it if that name is spoken for.
+
+    Two downloads can carry the same id, and two freshly generated ids can collide, so a
+    renamed file never just overwrites what's already there — `-2`, `-3` and so on are
+    appended until the name is free. `src` doesn't collide with itself: a file re-run under
+    the prefix it already has keeps its name rather than gaining a number every time.
+    """
+    candidate = folder / f"{stem}{suffix}"
+    n = 2
+    while candidate in taken or (candidate.exists() and not is_same_file(src, candidate)):
+        candidate = folder / f"{stem}-{n}{suffix}"
+        n += 1
+    taken.add(candidate)
+    return candidate
 
 
 @contextmanager
@@ -175,13 +246,15 @@ def identify(path: Path) -> tuple[int, int, str, int] | None:
     return width, height, orientation, len(lines)
 
 
-def blocked_reason(src: Path, args: argparse.Namespace, originals: Path) -> str | None:
-    """Why `src`'s wallpaper can't be written, or None if it can.
+def blocked_reason(
+    src: Path, dest: Path, args: argparse.Namespace, originals: Path
+) -> str | None:
+    """Why `src`'s wallpaper can't be written to `dest`, or None if it can.
 
     Checked up front rather than part-way through, so nothing destructive happens on a run
-    that can't finish, and the dry run predicts the same skips the real run performs.
+    that can't finish, and the dry run predicts the same skips the real run performs. Under
+    a prefix the first test never fires — `reserve_name` has already picked a free name.
     """
-    dest = src.with_suffix(".jpg")
     if dest.exists() and not is_same_file(src, dest) and not args.force:
         return f"'{dest.name}' already exists — use -f/--force to replace it"
     if args.keep and (originals / src.name).exists():
@@ -189,16 +262,16 @@ def blocked_reason(src: Path, args: argparse.Namespace, originals: Path) -> str 
     return None
 
 
-def set_aside(src: Path, folder: Path, dry_run: bool) -> bool:
-    """Move an image out of the way, untouched, into `folder`."""
-    dest = folder / src.name
+def set_aside(src: Path, dest: Path, dry_run: bool) -> bool:
+    """Move an image out of the way, untouched, to `dest`."""
+    folder = dest.parent
     # Checked before the dry-run branch, so -n reports the collision rather than
     # promising a move that the real run would refuse.
     if dest.exists():
         warn(f"Skipping '{src.name}': '{folder.name}/{dest.name}' already exists")
         return False
     if dry_run:
-        info(rf"\[dry-run] {src.name}  →  {folder.name}/")
+        info(rf"\[dry-run] {src.name}  →  {folder.name}/{dest.name}")
         return True
     folder.mkdir(exist_ok=True)
     shutil.move(str(src), str(dest))
@@ -237,27 +310,39 @@ def retire_original(src: Path, originals: Path, keep: bool) -> bool:
     return True
 
 
+def rename_only(src: Path, dest: Path, dry_run: bool) -> None:
+    """Give a wallpaper that needs no work the name the prefix asks for.
+
+    No encode, so no original to retire and nothing for -k/--keep to preserve: the file
+    that comes out is the file that went in, under another name.
+    """
+    if dry_run:
+        info(rf"\[dry-run] {src.name}  →  {dest.name}")
+        return
+    shutil.move(str(src), str(dest))
+
+
 def write_wallpaper(
     src: Path,
     read_from: Path,
+    dest: Path,
     plan: Plan,
     args: argparse.Namespace,
     originals: Path,
     multi_frame: bool,
 ) -> Outcome:
-    """Produce `src`'s wallpaper as a sibling .jpg, then retire the original.
+    """Produce `src`'s wallpaper at `dest`, then retire the original.
 
     The encode goes to a temp file in the same folder and only replaces the destination
     once ImageMagick has succeeded, so a failed or interrupted run can't leave a
     half-written wallpaper where the original used to be.
     """
-    dest = src.with_suffix(".jpg")
     # Not `dest == src`: on a case-insensitive filesystem a .JPG source and its lowercase
     # .jpg destination are the same file, and treating them as two would trash the source
     # as "the old destination" and leave nothing to convert.
     in_place = is_same_file(src, dest)
 
-    blocked = blocked_reason(src, args, originals)
+    blocked = blocked_reason(src, dest, args, originals)
     if blocked:
         warn(f"Skipping '{src.name}': {blocked}")
         return Outcome.SKIPPED
@@ -318,7 +403,7 @@ def main() -> None:
     target = parse_size(args.size)
     tw, th = target
 
-    root = Path(args.directory).expanduser()
+    root, prefix = resolve_target(args)
     if not root.is_dir():
         die(f"not a directory: {root}")
 
@@ -339,10 +424,15 @@ def main() -> None:
     originals = root / ORIGINALS_DIR
 
     info(f"Preparing {len(images)} image(s) in {root} for {tw}x{th} wallpapers")
+    if prefix:
+        info(f"Renaming each one '{prefix}-<id>'")
     if args.dry_run:
         warn("Dry-run mode — no files will be changed.")
 
     counts: Counter[str] = Counter()
+    # Names this run has already promised to other images. The dry run leans on it
+    # entirely, since none of the files it reports are actually there to be collided with.
+    taken: set[Path] = set()
 
     for src in images:
         with readable_path(src) as read_from:
@@ -362,33 +452,51 @@ def main() -> None:
 
             label = f"{src.name}: {plan.describe()}"
 
-            if plan.action is Action.READY:
-                info(f"{label} — nothing to do")
-                counts["ready"] += 1
-                continue
-
+            # Set aside before a .jpg name is reserved: these files keep their own format
+            # and land in a subfolder, so they need a different name reserved, not this one.
             if plan.action in SET_ASIDE:
                 folder = aside_dirs[plan.action]
+                dest = (
+                    reserve_name(folder, rename_stem(src.stem, prefix), src.suffix, src, taken)
+                    if prefix
+                    else folder / src.name
+                )
                 warn(label)
-                if set_aside(src, folder, args.dry_run):
+                if set_aside(src, dest, args.dry_run):
                     counts[plan.action.value] += 1
                 else:
                     counts["skipped"] += 1
                 continue
 
+            dest = (
+                reserve_name(root, rename_stem(src.stem, prefix), ".jpg", src, taken)
+                if prefix
+                else src.with_suffix(".jpg")
+            )
+
+            if plan.action is Action.READY:
+                if prefix and dest != src:
+                    rename_only(src, dest, args.dry_run)
+                    ok(f"{label}  →  {dest.name}")
+                    counts["renamed"] += 1
+                else:
+                    info(f"{label} — nothing to do")
+                    counts["ready"] += 1
+                continue
+
             if args.dry_run:
-                blocked = blocked_reason(src, args, originals)
+                blocked = blocked_reason(src, dest, args, originals)
                 if blocked:
                     warn(f"Skipping '{src.name}': {blocked}")
                     counts["skipped"] += 1
                 else:
-                    info(rf"\[dry-run] {label}  →  {src.with_suffix('.jpg').name}")
+                    info(rf"\[dry-run] {label}  →  {dest.name}")
                     counts[plan.action.value] += 1
                 continue
 
-            outcome = write_wallpaper(src, read_from, plan, args, originals, frames > 1)
+            outcome = write_wallpaper(src, read_from, dest, plan, args, originals, frames > 1)
             if outcome is Outcome.WRITTEN:
-                ok(f"{label}  →  {src.with_suffix('.jpg').name}")
+                ok(f"{label}  →  {dest.name}")
                 counts[plan.action.value] += 1
             else:
                 counts[outcome.value] += 1
@@ -407,6 +515,7 @@ def summary(
         (f"Resized to {tw}x{th}", counts[Action.RESIZE.value]),
         ("Re-encoded to JPG", counts[Action.CONVERT.value]),
         ("Already wallpaper-ready", counts["ready"]),
+        ("Renamed only", counts["renamed"]),
         (f"Wrong shape → {aside_dirs[Action.MISMATCH].name}/", counts[Action.MISMATCH.value]),
         (f"Too small → {aside_dirs[Action.TOO_SMALL].name}/", counts[Action.TOO_SMALL.value]),
         ("Skipped", counts["skipped"]),
