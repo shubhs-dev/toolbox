@@ -37,6 +37,17 @@ def check_output_path(input_path: Path, output_path: Path, force: bool) -> None:
             "(the old file is moved to the Trash)")
 
 
+def _new_file_mode() -> int:
+    """The permissions a plain `open()` would have given a new file: 0666 masked by the
+    process umask. `tempfile.mkstemp` deliberately creates its file 0600, which is right
+    for a temp file and wrong for one that goes on to replace the output — a tool's output
+    should look like any other file the user created. There's no way to read the umask
+    without setting it, so it's set and immediately restored."""
+    umask = os.umask(0o022)
+    os.umask(umask)
+    return 0o666 & ~umask
+
+
 @contextmanager
 def atomic_output(output_path: Path, force: bool) -> Iterator[Path]:
     """Yield a temp path beside output_path for the caller to write to. If the block
@@ -51,6 +62,7 @@ def atomic_output(output_path: Path, force: bool) -> Iterator[Path]:
     )
     os.close(fd)
     tmp_path = Path(tmp_name)
+    os.chmod(tmp_path, _new_file_mode())
     try:
         yield tmp_path
 

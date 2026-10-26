@@ -194,7 +194,7 @@ def install_mod(
                     return InstallStatus.SKIPPED
 
         if dry_run:
-            info(f"[dry-run] Would install {filename}")
+            info(rf"\[dry-run] Would install {filename}")
             return InstallStatus.SUCCESS
 
         installed, loose_files = perform_install(mod_root, game_dir)

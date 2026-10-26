@@ -72,7 +72,7 @@ def main() -> None:
     for src in files:
         if is_junk(src):
             if args.dry_run:
-                info(f"[dry-run] Would delete junk: {src}")
+                info(rf"\[dry-run] Would delete junk: {src}")
             else:
                 try:
                     move_to_trash(src)
@@ -94,9 +94,9 @@ def main() -> None:
 
         if args.dry_run:
             if dest_file.exists():
-                warn(f"[dry-run] Would conflict: {src}")
+                warn(rf"\[dry-run] Would conflict: {src}")
             else:
-                info(f"[dry-run] Would move: {src}")
+                info(rf"\[dry-run] Would move: {src}")
             continue
 
         if not dest_file.exists():

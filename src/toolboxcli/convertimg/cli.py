@@ -125,7 +125,7 @@ def main() -> None:
         dest = src.with_suffix(f".{target_fmt}")
 
         if args.dry_run:
-            info(f"[dry-run] {src.name}  →  {dest.name}")
+            info(rf"\[dry-run] {src.name}  →  {dest.name}")
             continue
 
         if dest.exists() and dest != src:

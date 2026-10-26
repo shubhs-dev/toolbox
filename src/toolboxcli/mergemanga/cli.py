@@ -104,7 +104,7 @@ def build_volume(
         warn(f"Volume {vol_num} ({title}): missing chapters: {missing}")
 
     if dry_run:
-        info(f"[dry-run] Would build: {out_name}  (chapters {ch_start}-{ch_end})")
+        info(rf"\[dry-run] Would build: {out_name}  (chapters {ch_start}-{ch_end})")
         return "built"
 
     info(f"Building: {out_name}  (chapters {ch_start}-{ch_end})")
