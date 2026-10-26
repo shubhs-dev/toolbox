@@ -65,11 +65,16 @@ def parse_size(spec: str) -> tuple[int, int]:
     )
 
 
+def is_rotated(orientation: str) -> bool:
+    """True when the stored pixels are a quarter turn out from how they'll be seen."""
+    return orientation.strip() in _SWAPPED_ORIENTATIONS
+
+
 def oriented_size(width: int, height: int, orientation: str) -> tuple[int, int]:
     """Width and height the way a viewer will see them, swapping the pair for the EXIF
     orientations that store the image rotated. Without this a portrait phone photo
     measures as landscape and gets cropped along the wrong axis."""
-    if orientation.strip() in _SWAPPED_ORIENTATIONS:
+    if is_rotated(orientation):
         return height, width
     return width, height
 
@@ -109,6 +114,7 @@ class Plan:
     width: int
     height: int
     target: tuple[int, int]
+    rotated: bool = False  # stored a quarter turn out, per its EXIF orientation
 
     @property
     def scaled(self) -> tuple[int, int]:
@@ -132,6 +138,8 @@ class Plan:
             step = f"{self.width}x{self.height} → {sw}x{sh} → {tw}x{th}"
             return f"{step} ({self.crop_note})"
         if self.action is Action.CONVERT:
+            if self.rotated:
+                return f"{self.width}x{self.height} once rotated — re-encode to apply it"
             return f"{self.width}x{self.height}, already {tw}x{th} — re-encode only"
         if self.action is Action.READY:
             return f"{self.width}x{self.height} — already a {tw}x{th} JPG"
@@ -145,6 +153,7 @@ def classify(
     height: int,
     target: tuple[int, int],
     is_jpeg: bool,
+    rotated: bool = False,
 ) -> Plan:
     """Decide what to do with an image of this size.
 
@@ -159,15 +168,19 @@ def classify(
     target_shape = _shape(*target)
     # A square image is croppable to either shape, so it's never a mismatch.
     if "square" not in (img_shape, target_shape) and img_shape != target_shape:
-        return Plan(Action.MISMATCH, width, height, target)
+        return Plan(Action.MISMATCH, width, height, target, rotated)
 
     if width < tw or height < th:
-        return Plan(Action.TOO_SMALL, width, height, target)
+        return Plan(Action.TOO_SMALL, width, height, target, rotated)
 
     if (width, height) == (tw, th):
-        return Plan(Action.READY if is_jpeg else Action.CONVERT, width, height, target)
+        # A rotated file only measures as the target once its EXIF orientation is applied,
+        # so leaving it alone would leave the pixels stored sideways for anything that
+        # ignores the tag. Re-encoding bakes the rotation in.
+        ready = is_jpeg and not rotated
+        return Plan(Action.READY if ready else Action.CONVERT, width, height, target, rotated)
 
-    return Plan(Action.RESIZE, width, height, target)
+    return Plan(Action.RESIZE, width, height, target, rotated)
 
 
 def convert_args(

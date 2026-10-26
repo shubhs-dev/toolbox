@@ -18,7 +18,9 @@ Every image becomes a JPG at the target size (3840x2160 by default):
   * Bigger than the target — scaled down until it just covers the target, then
     centre-cropped to it. A 16:9 source is a pure downscale; any other aspect ratio
     loses the excess off its long edge, half from each side.
-  * Exactly the target size already — re-encoded to JPG, or left alone if it is one.
+  * Exactly the target size already — re-encoded to JPG, or left alone if it already is
+    one (a JPG stored sideways under an EXIF orientation tag is re-encoded, not skipped,
+    so the rotation is baked in for viewers that ignore the tag).
   * Portrait, against a landscape target (or landscape against a portrait one) — moved
     untouched into portrait/, since no crop of a tall photo makes a usable wide wallpaper.
   * Smaller than the target on either axis — moved untouched into too-small/.
@@ -59,6 +61,7 @@ from toolboxcli.wallready.core import (
     Plan,
     classify,
     convert_args,
+    is_rotated,
     mismatch_dir,
     oriented_size,
     parse_size,
@@ -172,15 +175,31 @@ def identify(path: Path) -> tuple[int, int, str, int] | None:
     return width, height, orientation, len(lines)
 
 
+def blocked_reason(src: Path, args: argparse.Namespace, originals: Path) -> str | None:
+    """Why `src`'s wallpaper can't be written, or None if it can.
+
+    Checked up front rather than part-way through, so nothing destructive happens on a run
+    that can't finish, and the dry run predicts the same skips the real run performs.
+    """
+    dest = src.with_suffix(".jpg")
+    if dest.exists() and not is_same_file(src, dest) and not args.force:
+        return f"'{dest.name}' already exists — use -f/--force to replace it"
+    if args.keep and (originals / src.name).exists():
+        return f"'{originals.name}/{src.name}' already exists"
+    return None
+
+
 def set_aside(src: Path, folder: Path, dry_run: bool) -> bool:
     """Move an image out of the way, untouched, into `folder`."""
     dest = folder / src.name
-    if dry_run:
-        info(rf"\[dry-run] {src.name}  →  {folder.name}/")
-        return True
+    # Checked before the dry-run branch, so -n reports the collision rather than
+    # promising a move that the real run would refuse.
     if dest.exists():
         warn(f"Skipping '{src.name}': '{folder.name}/{dest.name}' already exists")
         return False
+    if dry_run:
+        info(rf"\[dry-run] {src.name}  →  {folder.name}/")
+        return True
     folder.mkdir(exist_ok=True)
     shutil.move(str(src), str(dest))
     return True
@@ -238,8 +257,9 @@ def write_wallpaper(
     # as "the old destination" and leave nothing to convert.
     in_place = is_same_file(src, dest)
 
-    if dest.exists() and not in_place and not args.force:
-        warn(f"Skipping '{src.name}': '{dest.name}' already exists — use -f/--force to replace it")
+    blocked = blocked_reason(src, args, originals)
+    if blocked:
+        warn(f"Skipping '{src.name}': {blocked}")
         return Outcome.SKIPPED
 
     # Read the original's permissions before it's retired — when the wallpaper replaces a
@@ -267,15 +287,16 @@ def write_wallpaper(
             error(f"Failed to convert '{src.name}'" + (f": {detail[0]}" if detail else ""))
             return Outcome.FAILED
 
+        # The original goes first: it has to, when it and the result are the same path (a
+        # JPG resized in place), and doing it before the old destination is trashed means a
+        # run that can't retire the original hasn't already thrown the destination away.
+        if not retire_original(src, originals, args.keep):
+            return Outcome.SKIPPED
+
         if dest.exists() and not in_place:
             if not trash(dest):
                 return Outcome.FAILED
             info(f"Moved the old {dest.name} to the Trash")
-
-        # The original has to go before the result takes its place when the two are the
-        # same path (a JPG resized in place) — afterwards there'd be nothing to retire.
-        if not retire_original(src, originals, args.keep):
-            return Outcome.SKIPPED
         # mkstemp makes its file owner-only; without this the wallpaper would come out
         # 0600 whatever the original was, which breaks a shared or served folder.
         os.chmod(tmp, mode)
@@ -333,7 +354,11 @@ def main() -> None:
 
             raw_w, raw_h, orientation, frames = probed
             width, height = oriented_size(raw_w, raw_h, orientation)
-            plan = classify(width, height, target, normalize_ext(src.suffix) == "jpg")
+            plan = classify(
+                width, height, target,
+                is_jpeg=normalize_ext(src.suffix) == "jpg",
+                rotated=is_rotated(orientation),
+            )
 
             label = f"{src.name}: {plan.describe()}"
 
@@ -352,8 +377,13 @@ def main() -> None:
                 continue
 
             if args.dry_run:
-                info(rf"\[dry-run] {label}  →  {src.with_suffix('.jpg').name}")
-                counts[plan.action.value] += 1
+                blocked = blocked_reason(src, args, originals)
+                if blocked:
+                    warn(f"Skipping '{src.name}': {blocked}")
+                    counts["skipped"] += 1
+                else:
+                    info(rf"\[dry-run] {label}  →  {src.with_suffix('.jpg').name}")
+                    counts[plan.action.value] += 1
                 continue
 
             outcome = write_wallpaper(src, read_from, plan, args, originals, frames > 1)

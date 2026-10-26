@@ -785,6 +785,7 @@ Every image becomes a JPG at the target size — 3840x2160 by default:
 |--------|--------------|
 | Bigger than the target | Scaled down until it just *covers* the target, then centre-cropped to it |
 | Exactly the target size | Re-encoded to JPG, or left alone if it already is one |
+| Stored sideways under an EXIF tag | Re-encoded even at the target size, so the rotation is baked in |
 | Portrait (landscape target) | Moved untouched into `portrait/` |
 | Smaller on either axis | Moved untouched into `too-small/` |
 
@@ -796,7 +797,9 @@ is set aside instead, since a stretched wallpaper is worse than no wallpaper, an
 photo is set aside separately because no crop of it fills a wide screen.
 
 EXIF orientation is applied *before* anything is measured or cropped (otherwise a portrait
-phone photo measures as landscape and gets cropped along the wrong axis), transparency is
+phone photo measures as landscape and gets cropped along the wrong axis), and a file that only
+reaches the target size *once rotated* is re-encoded rather than skipped, so viewers that
+ignore the orientation tag still see it the right way up, transparency is
 flattened onto `--background`, CMYK and wide-gamut sources are converted to sRGB, and animated
 GIF/WebP files contribute their first frame. Each original goes to the Trash once its wallpaper
 has been written successfully, `-k/--keep` moves it into `originals/` instead, and the encode
