@@ -226,12 +226,16 @@ concatvid -g cpu ~/Videos/raw # force software encoding when re-encoding
 Groups files by a common base name with a trailing sequence marker — `Movie 1.mp4`/
 `Movie 2.mp4`, `Movie_pt1.mkv`/`Movie_pt2.mkv`, `Movie (01).mp4`/`Movie (02).mp4`, etc. — and
 concatenates each group in sequence order. Files with no marker, or whose marker has no
-siblings sharing the same base name and extension, are left untouched. The output is named
-after the shared base name (falling back to `<base>.concat<ext>` on a collision); original
-part files are trashed after a successful concat.
+siblings sharing the same base name and extension, are left untouched. Every video, audio
+and subtitle track is kept. The output is named after the shared base name (falling back to
+`<base>.concat<ext>`, `<base>.concat2<ext>`, … on a collision — an existing file is never
+overwritten). Original part files are trashed only once the output's duration is confirmed
+to cover all of them; ffmpeg reports success even when it silently skipped an unreadable or
+truncated part, so otherwise they're left in place with a warning.
 
 Before concatenating, each group is checked via **ffprobe** for stream-copy compatibility —
-resolution, video codec, pixel format, audio codec, sample rate and channel count. Parts that
+resolution, video codec, pixel format, audio codec, sample rate, channel count and track
+count. Parts that
 disagree are normalized to the group's dominant format first, after a prompt (auto-accepted
 with `-y`):
 
@@ -397,6 +401,7 @@ downscalevid movie.mkv -r 1920x1080 movie.1080p.mkv
 downscalevid movie.mkv -r 720 -c h265
 downscalevid movie.mkv -r 1440p -g cpu   # force software encoding
 downscalevid movie.mkv -r 1440p -f       # allow upscaling too
+downscalevid movie.mkv -r 720 out.mkv -o # replace an existing out.mkv
 ```
 
 | Flag | Description |
@@ -405,10 +410,14 @@ downscalevid movie.mkv -r 1440p -f       # allow upscaling too
 | `-c, --codec {h264,h265}` | Video codec to re-encode with (default: `h264`) |
 | `-g, --gpu {auto,amd,apple,nvidia,cpu}` | Which encoder to use (default: `auto`). Env: `DOWNSCALEVID_GPU` |
 | `-f, --force` | Allow upscaling (default: refuse and skip) |
+| `-o, --overwrite` | Replace the output file if it exists (the old one is moved to the Trash) |
 
 Re-encodes the video stream (resolution changes can't stream-copy); audio is always
-stream-copied unchanged. Output filename is auto-derived as `<stem>.<resolution>.<ext>` if
-not given.
+stream-copied unchanged. Every audio and subtitle track is kept, along with chapters and (for
+MKV output) attachments. Output filename is auto-derived as `<stem>.<resolution>.<ext>` if
+not given. The output is written to a temp file and only moved into place once ffmpeg
+succeeds; it can never be the input file, and an existing file is only replaced with
+`-o/--overwrite` (the old one goes to the Trash).
 
 **GPU acceleration.** With `-g auto` (the default) the first working hardware encoder is
 used, in platform preference order — **Apple VideoToolbox** on macOS, **NVIDIA NVENC** then

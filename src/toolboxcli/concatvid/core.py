@@ -80,6 +80,14 @@ class StreamInfo:
         """
         return self.nb_video > 1 or self.nb_audio > 1 or self.nb_subtitle > 0
 
+    @property
+    def track_layout(self) -> tuple[int, int, int]:
+        """(video, audio, subtitle) track counts. The final concat maps every track, and
+        the concat demuxer takes its stream list from the first part — parts that
+        disagree on this can't be stream-copied together without leaving a track empty
+        for part of the runtime."""
+        return (self.nb_video, self.nb_audio, self.nb_subtitle)
+
     def describe(self) -> str:
         """One-line summary of every property the compatibility check compares."""
         if self.acodec is None:
@@ -120,6 +128,7 @@ _COPY_FIELDS: tuple[tuple[str, str], ...] = (
     ("acodec", "audio codec"),
     ("sample_rate", "audio sample rate"),
     ("channels", "audio channels"),
+    ("track_layout", "track count"),
 )
 
 

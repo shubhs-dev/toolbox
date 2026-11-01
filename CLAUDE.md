@@ -166,6 +166,17 @@ Progress *factories* themselves) were extracted from it.
   so when any part carries extra streams *and* a re-encode is needed, every part is normalized
   to keep stream layouts identical. A group where some parts have audio and others don't is
   skipped outright — reconciling it would mean synthesizing silent tracks.
+- `concatvid`'s final concat maps tracks explicitly (`-map 0:V -map 0:a? -map 0:s?`; capital
+  `V` skips cover art) — the concat demuxer otherwise keeps one track per type. Because the
+  demuxer takes its stream list from the first part, a difference in *track count* is a
+  mismatch like any other (`StreamInfo.track_layout`) and goes through the drop-extras
+  normalization. Parts are only trashed after the output's duration is checked against the
+  sum of the parts': ffmpeg's concat demuxer **exits 0** when it can't open a part, or when
+  a part is truncated but its header still claims the full length — the output just stops
+  early. Don't drop that check in favour of the exit code.
+- `downscalevid` writes through `_common/output.py` like `cutvid`/`flipvid`, but its
+  overwrite flag is `-o/--overwrite` because `-f/--force` already meant "allow upscaling"
+  — `check_output_path(..., flag=...)` exists so the error message names the right flag.
 - `optimiselib` deliberately does **not** compose `compressvid` + `sortmedia`, even though it
   does what they do: `compressvid` takes one preset per run and writes to a `compressed/`
   subfolder, while `optimiselib` needs a per-file preset and an in-place result; and
