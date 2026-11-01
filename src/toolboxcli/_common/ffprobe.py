@@ -8,6 +8,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from toolboxcli._common.tooling import detached_kwargs
+
 # Pixel formats name their depth as "<layout>p<depth><endian>" — yuv420p10le. The endian
 # suffix only appears above 8 bits, which is what keeps 8-bit layouts whose *name* contains
 # digits (yuv410p, yuv411p) from being misread as high bit depth.
@@ -26,7 +28,7 @@ def probe(path: Path) -> dict | None:
                 "-show_streams", "-show_format",
                 "-of", "json", str(path),
             ],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=120, **detached_kwargs(),
         )
     except (subprocess.SubprocessError, OSError):
         return None

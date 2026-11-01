@@ -107,8 +107,15 @@ Every script should reach for these instead of reimplementing the same logic:
 - **`humanize.py`** — `human_size(n)`. Byte-size formatting.
 - **`progress.py`** — `spinner()` / `bar()`. rich `Progress` factories for indeterminate and
   determinate work respectively.
-- **`tooling.py`** — `require_tool(name, install_hint=None)`. Check an external CLI binary is
-  on `PATH` before shelling out to it; dies with a clear message if missing.
+- **`tooling.py`** — `require_tool(name, install_hint=None)`, `detached_kwargs()`. Check an
+  external CLI binary is on `PATH` before shelling out to it; dies with a clear message if
+  missing. `detached_kwargs()` are Popen/run kwargs that cut a child off from the terminal
+  (no stdin; POSIX: new session; Windows: `CREATE_NO_WINDOW`) — piping stdout/stderr is *not*
+  enough to silence a child, because HandBrake's bundled libdvdread writes
+  `libdvdread: Can't open file VIDEO_TS.IFO.` straight to the terminal for every input.
+  `handbrake.py` and `ffprobe.py` use it. A detached child no longer receives the terminal's
+  Ctrl+C, so anything that `Popen().wait()`s on one must terminate it on
+  `KeyboardInterrupt` itself (`transcode()` does; `subprocess.run` already kills its child).
 - **`handbrake.py`** — `wait_stable(path)`, `load_preset(name)`, `read_preset_settings(name)`,
   `list_presets()`, `transcode(...)`, `available_encoders()`, `presets_dir()`/`set_presets_dir()`.
   Everything HandBrake-related that `compressvid` and `optimiselib` share, including the
