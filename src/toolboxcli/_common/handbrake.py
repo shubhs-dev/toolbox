@@ -20,6 +20,7 @@ from rich.table import Table
 from rich import box
 
 from toolboxcli._common.console import console, die
+from toolboxcli._common.tooling import detached_kwargs
 
 HANDBRAKE = "HandBrakeCLI"
 
@@ -165,7 +166,13 @@ def transcode(src, dst, preset_file, preset_label, progress=None, task_id=None,
     if extra_args:
         cmd.extend(extra_args)
 
-    popen_kwargs = _low_priority_popen_kwargs() if low_priority else {}
+    popen_kwargs = detached_kwargs()
+    if low_priority:
+        priority = _low_priority_popen_kwargs()
+        # Both may set creationflags on Windows; the flags combine.
+        if "creationflags" in priority:
+            popen_kwargs["creationflags"] = popen_kwargs.get("creationflags", 0) | priority.pop("creationflags")
+        popen_kwargs.update(priority)
 
     try:
         proc = subprocess.Popen(
@@ -193,7 +200,18 @@ def transcode(src, dst, preset_file, preset_label, progress=None, task_id=None,
     out_t.start()
     err_t.start()
 
-    proc.wait()
+    try:
+        proc.wait()
+    except BaseException:
+        # Detached from the terminal, HandBrake doesn't see Ctrl+C itself — stop it here
+        # rather than leave an orphaned encode running.
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        raise
     out_t.join(timeout=5)
     err_t.join(timeout=5)
 
@@ -214,7 +232,7 @@ def available_encoders():
     try:
         result = subprocess.run(
             [HANDBRAKE, "--help"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, **detached_kwargs(),
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return set()
