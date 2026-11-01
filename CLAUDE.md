@@ -207,6 +207,13 @@ Progress *factories* themselves) were extracted from it.
   (0–100, higher better) and must be remapped; passing the presets' CQ 25 straight through
   would silently produce near-worst quality. As with `encoders.py`, an *auto*-selected backend
   that fails mid-encode retries once on CPU; an explicitly requested one does not.
+- `optimiselib`'s `BatchDisplay` is two `Progress` instances in one `Live` (per-file bars on
+  top, the overall bar beneath) rather than one `Progress`, because a `Progress` lists tasks in
+  creation order and per-file tasks come and go — in a single `Progress` the overall bar could
+  only sit at the top. `transcode()` only ever calls `progress.update(task_id, completed=pct)`,
+  so `_EncodeProgress` stands in for the Progress it's given and also feeds each percentage
+  into the overall bar; that's what makes the ETA move *during* a long encode. Only one `Live`
+  can be active at a time, so `process()` must never open its own progress display.
 - Each backend carries a 10-bit encoder alongside its 8-bit one (`vce_h265_10bit`,
   `nvenc_h265_10bit`, `qsv_h265_10bit`, `vt_h265_10bit`, `x265_10bit`), selected on
   `-B/--bit-depth auto` when the *source* is above 8-bit. Deliberately not upconverting 8-bit
