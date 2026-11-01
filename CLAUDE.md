@@ -321,6 +321,19 @@ library (e.g. no Pillow for `convertimg`, no rarfile for `cybermod`) except `mer
 from `7z` to stdlib `zipfile`, which was safe specifically because CBZ files are already zip
 archives.
 
+## Git Workflow
+
+Standing permission from the repo owner — don't ask each time:
+
+- When a change is finished, commit it on a feature branch (never directly on `main`), push,
+  and open a pull request.
+- Review the PR's diff yourself before merging — correctness, the conventions in this file,
+  docstring/`--help` accuracy, and the smoke test above. Fix anything the review turns up and
+  push the fix to the same branch.
+- Once the review is clean, merge the PR. Don't merge if the review leaves an unresolved
+  problem or something you couldn't verify that matters for safety (e.g. a change that could
+  delete or overwrite user files) — report it instead and leave the PR open.
+
 ## When Modifying Scripts
 
 - Reuse `_common` modules — don't reimplement logging, trash, confirmation prompts, or progress
