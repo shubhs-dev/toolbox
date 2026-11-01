@@ -185,6 +185,13 @@ Progress *factories* themselves) were extracted from it.
   sum of the parts': ffmpeg's concat demuxer **exits 0** when it can't open a part, or when
   a part is truncated but its header still claims the full length — the output just stops
   early. Don't drop that check in favour of the exit code.
+- `concatvid` has two modes sharing one `concat_group()`: an explicit file list (joined in the
+  order *given*, never re-sorted by sequence number — the user chose that order) with an
+  optional `-o/--output`, and `-a/--auto [DIR]`, the folder scan. The scan is opt-in: bare
+  `concatvid`, or a lone directory argument, is an error that points at `-a`, rather than
+  silently scanning. `-o` is rejected with `-a` because it names one output and a scan can
+  produce several. A bare `-o` name lands next to the first part; the extension check is
+  against `VIDEO_EXTS`, not `Path.suffix`, so `-o "Trip v1.2"` becomes `Trip v1.2.mp4`.
 - `downscalevid` writes through `_common/output.py` like `cutvid`/`flipvid`, but its
   overwrite flag is `-o/--overwrite` because `-f/--force` already meant "allow upscaling"
   — `check_output_path(..., flag=...)` exists so the error message names the right flag.

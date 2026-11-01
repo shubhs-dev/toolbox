@@ -11,7 +11,7 @@ in Python and installed as a single pipx package.
 | `autosub` | Auto-match subtitle files to videos by episode code, then run `addsub` |
 | `check-deps` | Scan subdirectories for specific npm package versions |
 | `compressvid` | Watch a folder for videos and transcode them with HandBrake; keeps the smaller copy |
-| `concatvid` | Concatenate split video parts in a folder using ffmpeg (stream-copy, re-encoding only mismatched parts) |
+| `concatvid` | Join videos end to end with ffmpeg — ones you list, or numbered parts found in a folder (stream-copy, re-encoding only mismatched parts) |
 | `convertimg` | Batch-convert all images in the current folder to a target format via ImageMagick |
 | `cutvid` | Trim a video to a start/end time using ffmpeg (stream-copy or re-encode) |
 | `cybermod` | Extract and install Cyberpunk 2077 mods from zip/rar/7z archives |
@@ -206,34 +206,48 @@ PCM + DTS + AAC source. These presets are shared with `optimiselib`.
 
 ### concatvid
 
-Concatenate split video parts in a folder using **ffmpeg**'s concat demuxer with
-`-c copy` — no re-encoding, unless the parts don't match each other.
+Join videos end to end using **ffmpeg**'s concat demuxer with `-c copy` — no re-encoding,
+unless the parts don't match each other. List the videos yourself, in order, or let `-a` find
+numbered parts in a folder.
 
 ```bash
-concatvid                     # scan cwd, concat groups after confirmation
-concatvid ~/Videos/raw
-concatvid -y ~/Videos/raw     # skip confirmation prompts
-concatvid -n ~/Videos/raw     # preview groups without concatenating
-concatvid -g cpu ~/Videos/raw # force software encoding when re-encoding
+concatvid a.mp4 b.mp4 c.mp4                  # join in this order → a.concat.mp4
+concatvid "Day 1.mp4" "Day 2.mp4" -o Holiday # → Holiday.mp4, next to Day 1.mp4
+concatvid a.mp4 b.mp4 -o ~/out/joined.mkv    # explicit path and container
+concatvid a.mp4 b.mp4 -o Holiday -f          # replace an existing Holiday.mp4
+concatvid -a                                 # scan the current folder for parts
+concatvid -a ~/Videos/raw -y                 # scan a folder, no prompts
+concatvid -a ~/Videos/raw -n                 # preview groups without joining
+concatvid -g cpu a.mp4 b.mp4                 # force software encoding when re-encoding
 ```
 
 | Flag | Description |
 |------|-------------|
+| `VIDEO ...` | Videos to join, in the order given |
+| `-o, --output NAME` | Name of the joined video. A bare name goes next to the first part; with no video extension, the first part's is added. Default: the parts' shared base name |
+| `-f, --force` | Replace an existing `-o` file (the old one goes to the Trash) |
+| `-a, --auto [DIR]` | Instead of a list, scan `DIR` (default: `.`) for numbered parts and join every group |
 | `-y, --yes` | Skip confirmation prompts |
-| `-n, --dry-run` | Preview groups without concatenating |
+| `-n, --dry-run` | Show what would be joined, and into what, without doing it |
 | `-g, --gpu` | Encoder to use when parts need re-encoding: `auto` (default), `nvidia`, `amd`, `apple`, `cpu`. Env: `CONCATVID_GPU` |
 
-Groups files by a common base name with a trailing sequence marker — `Movie 1.mp4`/
-`Movie 2.mp4`, `Movie_pt1.mkv`/`Movie_pt2.mkv`, `Movie (01).mp4`/`Movie (02).mp4`, etc. — and
-concatenates each group in sequence order. Files with no marker, or whose marker has no
-siblings sharing the same base name and extension, are left untouched. Every video, audio
-and subtitle track is kept. The output is named after the shared base name (falling back to
-`<base>.concat<ext>`, `<base>.concat2<ext>`, … on a collision — an existing file is never
-overwritten). Original part files are trashed only once the output's duration is confirmed
+**Listing videos** joins exactly those files in exactly that order — names don't need to match
+or carry numbers. Without `-o` the result is named after the parts' shared base name
+(`Movie 1.mp4` + `Movie 2.mp4` → `Movie.mp4`), or `<first>.concat` when there isn't one, and
+never over an existing file. The output can never be one of the parts.
+
+**`-a/--auto`** groups files by a common base name with a trailing sequence marker —
+`Movie 1.mp4`/`Movie 2.mp4`, `Movie_pt1.mkv`/`Movie_pt2.mkv`, `Movie (01).mp4`/`Movie (02).mp4`,
+etc. — and joins each group in sequence order. Files with no marker, or whose marker has no
+siblings sharing the same base name and extension, are left untouched. Each output is named
+after the shared base name (falling back to `<base>.concat<ext>`, `<base>.concat2<ext>`, … on a
+collision — an existing file is never overwritten).
+
+Either way, every video, audio and subtitle track is kept, and the original part files are trashed only once the output's duration is confirmed
 to cover all of them; ffmpeg reports success even when it silently skipped an unreadable or
 truncated part, so otherwise they're left in place with a warning.
 
-Before concatenating, each group is checked via **ffprobe** for stream-copy compatibility —
+Before joining, the parts are checked via **ffprobe** for stream-copy compatibility —
 resolution, video codec, pixel format, audio codec, sample rate, channel count, and the
 number and format of any further audio/subtitle tracks (cover art is ignored). Parts that
 disagree are normalized to the group's dominant format first, after a prompt (auto-accepted
