@@ -168,9 +168,13 @@ Progress *factories* themselves) were extracted from it.
   skipped outright — reconciling it would mean synthesizing silent tracks.
 - `concatvid`'s final concat maps tracks explicitly (`-map 0:V -map 0:a? -map 0:s?`; capital
   `V` skips cover art) — the concat demuxer otherwise keeps one track per type. Because the
-  demuxer takes its stream list from the first part, a difference in *track count* is a
-  mismatch like any other (`StreamInfo.track_layout`) and goes through the drop-extras
-  normalization. Parts are only trashed after the output's duration is checked against the
+  demuxer takes its stream list from the first part, a difference in the count *or format*
+  of any non-primary track is a mismatch like any other (`StreamInfo.track_layout`) and goes
+  through the drop-extras normalization — once every track is mapped, a second audio track
+  that's AC3 in one part and AAC in the next would otherwise be copied into one corrupt
+  track. Cover art (`attached_pic`) is filtered out in `parse_streams` and never counts.
+  Fallback outputs are named `<base>.concat<N>`, and `split_sequence` refuses those stems so
+  a later run can't re-concatenate (and trash) concatvid's own outputs. Parts are only trashed after the output's duration is checked against the
   sum of the parts': ffmpeg's concat demuxer **exits 0** when it can't open a part, or when
   a part is truncated but its header still claims the full length — the output just stops
   early. Don't drop that check in favour of the exit code.

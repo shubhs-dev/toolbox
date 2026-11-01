@@ -234,8 +234,8 @@ to cover all of them; ffmpeg reports success even when it silently skipped an un
 truncated part, so otherwise they're left in place with a warning.
 
 Before concatenating, each group is checked via **ffprobe** for stream-copy compatibility —
-resolution, video codec, pixel format, audio codec, sample rate, channel count and track
-count. Parts that
+resolution, video codec, pixel format, audio codec, sample rate, channel count, and the
+number and format of any further audio/subtitle tracks (cover art is ignored). Parts that
 disagree are normalized to the group's dominant format first, after a prompt (auto-accepted
 with `-y`):
 

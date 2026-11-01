@@ -49,6 +49,10 @@ LOSSY_AUDIO_ENCODERS = {"aac", "ac3", "eac3", "libmp3lame", "libopus", "libvorbi
 AUDIO_KBPS_PER_CHANNEL = 96
 
 _KEYWORD = r"(?:part|pt|cd|disc|disk)"
+# What concatvid itself names an output when `<base><ext>` is taken. `Movie.concat2` would
+# otherwise parse as part 2 of "Movie.concat" and get re-concatenated (and trashed).
+_CONCAT_OUTPUT_RE = re.compile(r"\.concat\d*$", re.IGNORECASE)
+
 _SEQUENCE_RE = re.compile(
     rf"^(?P<base>.+?)[\s_.-]*\(?(?:{_KEYWORD}[\s_.-]*)?(?P<num>\d{{1,3}})\)?$",
     re.IGNORECASE,
@@ -69,6 +73,12 @@ class StreamInfo:
     nb_video: int = 1
     nb_audio: int = 0
     nb_subtitle: int = 0
+    # Format of every audio track after the first and every subtitle track, in order.
+    # The final concat maps all of them, so they have to agree just like the primary
+    # tracks do — a second audio track that's AC3 in one part and AAC in the next would
+    # be stream-copied into a single, corrupt track.
+    extra_tracks: tuple[tuple[Any, ...], ...] = ()
+    duration: float | None = None
 
     @property
     def has_extra_streams(self) -> bool:
@@ -81,12 +91,12 @@ class StreamInfo:
         return self.nb_video > 1 or self.nb_audio > 1 or self.nb_subtitle > 0
 
     @property
-    def track_layout(self) -> tuple[int, int, int]:
-        """(video, audio, subtitle) track counts. The final concat maps every track, and
-        the concat demuxer takes its stream list from the first part — parts that
-        disagree on this can't be stream-copied together without leaving a track empty
-        for part of the runtime."""
-        return (self.nb_video, self.nb_audio, self.nb_subtitle)
+    def track_layout(self) -> tuple[int, tuple[tuple[Any, ...], ...]]:
+        """Video track count plus the format of every non-primary track. The final concat
+        maps every track, and the concat demuxer takes its stream list from the first
+        part — parts that disagree on this can't be stream-copied together without
+        leaving a track empty, or corrupt, for part of the runtime."""
+        return (self.nb_video, self.extra_tracks)
 
     def describe(self) -> str:
         """One-line summary of every property the compatibility check compares."""
@@ -128,20 +138,36 @@ _COPY_FIELDS: tuple[tuple[str, str], ...] = (
     ("acodec", "audio codec"),
     ("sample_rate", "audio sample rate"),
     ("channels", "audio channels"),
-    ("track_layout", "track count"),
+    ("track_layout", "track layout"),
 )
 
 
 def parse_streams(payload: dict[str, Any]) -> StreamInfo | None:
-    """Build a StreamInfo from parsed `ffprobe -show_streams -of json` output."""
-    streams = payload.get("streams")
+    """Build a StreamInfo from parsed `ffprobe -show_streams -show_format -of json` output.
+
+    Cover art (attached_pic) is ignored throughout: the final concat maps `0:V`, which
+    skips it, so a part that has cover art and one that doesn't still match.
+    """
+    streams = [
+        s for s in payload.get("streams") or []
+        if not (s.get("codec_type") == "video" and s.get("disposition", {}).get("attached_pic"))
+    ]
     if not streams:
         return None
 
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
     if video is None or "width" not in video or "height" not in video:
         return None
-    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    audios = [s for s in streams if s.get("codec_type") == "audio"]
+    audio = audios[0] if audios else None
+    extra_tracks = tuple(
+        ("audio", s.get("codec_name"), s.get("sample_rate"), s.get("channels")) for s in audios[1:]
+    ) + tuple(("subtitle", s.get("codec_name")) for s in streams if s.get("codec_type") == "subtitle")
+
+    try:
+        duration: float | None = float(payload.get("format", {})["duration"])
+    except (KeyError, TypeError, ValueError):
+        duration = None
 
     kinds = Counter(s.get("codec_type") for s in streams)
     return StreamInfo(
@@ -155,6 +181,8 @@ def parse_streams(payload: dict[str, Any]) -> StreamInfo | None:
         nb_video=kinds["video"],
         nb_audio=kinds["audio"],
         nb_subtitle=kinds["subtitle"],
+        extra_tracks=extra_tracks,
+        duration=duration,
     )
 
 
@@ -252,7 +280,8 @@ def normalize_command(
     only disagrees on, say, channel count never gets its video re-encoded.
     `encoder` may be None only when the video is copyable.
     """
-    cmd = ["ffmpeg", "-y", "-nostdin", "-i", str(src), "-map", "0:v:0"]
+    # `V`, not `v`: never pick a cover-art stream as the part's video.
+    cmd = ["ffmpeg", "-y", "-nostdin", "-i", str(src), "-map", "0:V:0"]
     if target.acodec is not None:
         cmd += ["-map", "0:a:0"]
 
@@ -278,7 +307,10 @@ def normalize_command(
 
 
 def split_sequence(stem: str) -> tuple[str, int] | None:
-    """Split a filename stem into (base_name, sequence_number), or None if no marker."""
+    """Split a filename stem into (base_name, sequence_number), or None if no marker
+    (or if the stem is one of concatvid's own `<base>.concat<N>` outputs)."""
+    if _CONCAT_OUTPUT_RE.search(stem):
+        return None
     m = _SEQUENCE_RE.match(stem)
     if not m:
         return None

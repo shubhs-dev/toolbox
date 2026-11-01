@@ -13,8 +13,8 @@ original part files are trashed once the output's duration is confirmed to cover
 them (otherwise they're left in place with a warning).
 
 Before concatenating, each group is checked via ffprobe for stream-copy compatibility.
-Parts that disagree on resolution, video codec, pixel format, audio layout or track
-count are normalized to the group's dominant format first (prompted, auto-accepted with
+Parts that disagree on resolution, video codec, pixel format, audio layout or the
+format of any other track are normalized to the group's dominant format first (prompted, auto-accepted with
 -y): the smallest resolution wins, so parts are only ever downscaled, and parts already
 in the target format are left untouched. A part whose video already matches has only
 its audio re-encoded.
@@ -37,7 +37,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import tempfile
@@ -74,26 +73,9 @@ GPU_ENV_VAR = "CONCATVID_GPU"
 
 
 def probe(path: Path) -> StreamInfo | None:
-    """Read the stream properties of *path* via ffprobe."""
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries",
-            "stream=codec_type,codec_name,width,height,pix_fmt,sample_rate,channels",
-            "-of", "json",
-            str(path),
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return None
-
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-
-    return parse_streams(payload)
+    """Read the stream properties (and duration) of *path* via ffprobe."""
+    payload = probe_raw(path)
+    return parse_streams(payload) if payload is not None else None
 
 
 def probe_group(members: list[tuple[int, Path, str]]) -> dict[Path, StreamInfo] | None:
@@ -128,7 +110,8 @@ def normalize_part(
         fallback = cpu_encoder(target.codec)
         result = subprocess.run(normalize_command(src, dst, stream_info, target, fallback))
 
-    if result.returncode != 0 or not dst.exists():
+    # mkstemp already created dst, so existence alone proves nothing.
+    if result.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
         dst.unlink(missing_ok=True)
         return False
     return True
@@ -248,6 +231,7 @@ def main() -> None:
 
     concatenated = 0
     trashed = 0
+    unverified = 0
     reencoded = 0
 
     for (base_lower, ext), members in sorted(groups.items()):
@@ -367,12 +351,17 @@ def main() -> None:
             # ffmpeg's concat demuxer exits 0 even when it couldn't open a part — the
             # output just stops early. Only trash the parts once the output provably
             # covers all of them.
-            part_durations = [media_duration(normalized.get(path, path)) for _num, path, _base in members]
+            part_durations = [
+                media_duration(normalized[path]) if path in normalized
+                else infos[path].duration if infos is not None
+                else media_duration(path)
+                for _num, path, _base in members
+            ]
             actual = media_duration(output_path)
             if None in part_durations or actual is None:
                 warn(f"Couldn't verify '{output_path.name}' contains every part — "
                      "left the parts in place, check it before deleting them")
-                concatenated += 1
+                unverified += 1
                 continue
             expected = sum(part_durations)
             if actual + DURATION_SLACK_PER_PART * len(members) < expected:
@@ -395,6 +384,9 @@ def main() -> None:
         f"Done. {concatenated} group(s) concatenated, {reencoded} part(s) re-encoded, "
         f"{trashed} file(s) trashed."
     )
+    if unverified:
+        warn(f"{unverified} more group(s) were written but couldn't be verified — "
+             "their parts were kept.")
 
 
 if __name__ == "__main__":
