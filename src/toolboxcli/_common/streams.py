@@ -11,6 +11,8 @@ from toolboxcli._common.console import warn
 
 MKV_EXTS = {".mkv", ".mka", ".mks"}
 MP4_EXTS = {".mp4", ".m4v", ".mov"}
+WEBM_EXTS = {".webm"}
+NO_SUBTITLE_EXTS = {".avi"}
 TEXT_SUBTITLE_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
 
 
@@ -24,7 +26,8 @@ def main_video_streams(streams: list[dict]) -> list[dict]:
 
 def subtitle_codec_for(codec: str, out_ext: str) -> str | None:
     """Codec to write a subtitle stream with: "copy", an encoder name, or None to drop it.
-    Covers cutting into a different container: MP4 only holds mov_text, MKV can't hold it."""
+    Covers cutting into a different container: MP4 only holds mov_text, MKV can't hold it,
+    WebM only holds WebVTT, and AVI holds no subtitle stream ffmpeg can mux."""
     if out_ext in MKV_EXTS:
         return "srt" if codec == "mov_text" else "copy"
     if out_ext in MP4_EXTS:
@@ -33,6 +36,12 @@ def subtitle_codec_for(codec: str, out_ext: str) -> str | None:
         if codec in TEXT_SUBTITLE_CODECS:
             return "mov_text"
         return None  # image subtitles (PGS, VobSub) have no MP4 equivalent
+    if out_ext in WEBM_EXTS:
+        if codec == "webvtt":
+            return "copy"
+        return "webvtt" if codec in TEXT_SUBTITLE_CODECS else None
+    if out_ext in NO_SUBTITLE_EXTS:
+        return None
     return "copy"
 
 

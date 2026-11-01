@@ -6,13 +6,16 @@ common base name with a trailing sequence marker (`Movie 1.mp4`/`Movie 2.mp4`,
 `Movie_pt1.mkv`/`Movie_pt2.mkv`, `Movie (01).mp4`/`Movie (02).mp4`, etc.), and
 concatenates each group in sequence order via ffmpeg's concat demuxer with
 stream-copy (`-c copy`) — no re-encoding. Files with no sequence marker, or whose
-marker has no siblings, are left untouched. The output is named after the shared
-base name; the original part files are trashed after a successful concat.
+marker has no siblings, are left untouched. Every video, audio and subtitle track is
+kept. The output is named after the shared base name — or `<base>.concat`,
+`<base>.concat2`, … if that's taken; an existing file is never overwritten — and the
+original part files are trashed once the output's duration is confirmed to cover all of
+them (otherwise they're left in place with a warning).
 
 Before concatenating, each group is checked via ffprobe for stream-copy compatibility.
-Parts that disagree on resolution, video codec, pixel format or audio layout are
-normalized to the group's dominant format first (prompted, auto-accepted with -y):
-the smallest resolution wins, so parts are only ever downscaled, and parts already
+Parts that disagree on resolution, video codec, pixel format, audio layout or the
+format of any other track are normalized to the group's dominant format first
+(prompted, auto-accepted with -y): the smallest resolution wins, so parts are only ever downscaled, and parts already
 in the target format are left untouched. A part whose video already matches has only
 its audio re-encoded.
 
@@ -34,7 +37,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import subprocess
 import tempfile
@@ -49,6 +51,8 @@ from toolboxcli._common.encoders import (
     gpu_preference,
     select_encoder,
 )
+from toolboxcli._common.ffprobe import probe as probe_raw
+from toolboxcli._common.output import atomic_output
 from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
 from toolboxcli.concatvid.core import (
@@ -69,26 +73,9 @@ GPU_ENV_VAR = "CONCATVID_GPU"
 
 
 def probe(path: Path) -> StreamInfo | None:
-    """Read the stream properties of *path* via ffprobe."""
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries",
-            "stream=codec_type,codec_name,width,height,pix_fmt,sample_rate,channels",
-            "-of", "json",
-            str(path),
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        return None
-
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return None
-
-    return parse_streams(payload)
+    """Read the stream properties (and duration) of *path* via ffprobe."""
+    payload = probe_raw(path)
+    return parse_streams(payload) if payload is not None else None
 
 
 def probe_group(members: list[tuple[int, Path, str]]) -> dict[Path, StreamInfo] | None:
@@ -123,10 +110,53 @@ def normalize_part(
         fallback = cpu_encoder(target.codec)
         result = subprocess.run(normalize_command(src, dst, stream_info, target, fallback))
 
-    if result.returncode != 0 or not dst.exists():
+    # mkstemp already created dst, so existence alone proves nothing.
+    if result.returncode != 0 or not dst.exists() or dst.stat().st_size == 0:
         dst.unlink(missing_ok=True)
         return False
     return True
+
+
+class _ConcatFailed(Exception):
+    """Raised inside atomic_output() so a failed concat discards the temp output."""
+
+    def __init__(self, returncode: int) -> None:
+        super().__init__(returncode)
+        self.returncode = returncode
+
+
+# Slack per part when checking the output covers every part: a part's container duration
+# and what the concat demuxer actually reads from it can differ by a few frames.
+DURATION_SLACK_PER_PART = 0.5
+
+
+def media_duration(path: Path) -> float | None:
+    """Container duration in seconds, or None if ffprobe can't tell."""
+    data = probe_raw(path)
+    try:
+        return float(data["format"]["duration"]) if data else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def free_output_path(target_dir: Path, base: str, ext: str) -> Path:
+    """`<base><ext>`, or the first of `<base>.concat<ext>`, `<base>.concat2<ext>`, … that
+    doesn't exist yet. Picking a free name up front is what lets the concat never
+    overwrite anything — ffmpeg's `-y` used to clobber a leftover `.concat` file."""
+    candidate = target_dir / f"{base}{ext}"
+    n = 1
+    while candidate.exists():
+        candidate = target_dir / f"{base}.concat{n if n > 1 else ''}{ext}"
+        n += 1
+    return candidate
+
+
+def temp_part_path(target_dir: Path, src: Path) -> Path:
+    """A fresh hidden path for a normalized copy of *src*, named so a leftover from a
+    crash is recognisably ours. mkstemp reserves the name; ffmpeg then writes to it."""
+    fd, name = tempfile.mkstemp(prefix=f".concatvid-{src.stem}.", suffix=src.suffix, dir=target_dir)
+    os.close(fd)
+    return Path(name)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -160,7 +190,13 @@ def main() -> None:
     if not target_dir.is_dir():
         die(f"not a directory: {target_dir}")
 
-    videos = sorted(p for p in target_dir.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTS)
+    # Dotfiles are skipped: macOS `._Movie 1.mp4` AppleDouble files on external drives
+    # aren't videos, and a crash-leftover `.concatvid-*` temp part must never be re-read
+    # as a part.
+    videos = sorted(
+        p for p in target_dir.iterdir()
+        if p.is_file() and not p.name.startswith(".") and p.suffix.lower() in VIDEO_EXTS
+    )
 
     groups: dict[tuple[str, str], list[tuple[int, Path, str]]] = {}
     for video in videos:
@@ -195,6 +231,7 @@ def main() -> None:
 
     concatenated = 0
     trashed = 0
+    unverified = 0
     reencoded = 0
 
     for (base_lower, ext), members in sorted(groups.items()):
@@ -202,130 +239,154 @@ def main() -> None:
         console.print()
 
         normalized: dict[Path, Path] = {}
+        temps: list[Path] = []  # every normalized-part temp file, cleaned up however the group ends
+        try:
 
-        infos = probe_group(members)
-        if infos is None:
-            warn(f"ffprobe couldn't read one or more parts of '{display_base}{ext}' — proceeding without a compatibility check")
-        else:
-            ordered = [infos[path] for _num, path, _base in members]
-            resolution_mismatch, mismatched = find_incompatibilities(ordered)
+            infos = probe_group(members)
+            if infos is None:
+                warn(f"ffprobe couldn't read one or more parts of '{display_base}{ext}' — proceeding without a compatibility check")
+            else:
+                ordered = [infos[path] for _num, path, _base in members]
+                resolution_mismatch, mismatched = find_incompatibilities(ordered)
 
-            if resolution_mismatch or mismatched:
-                reasons = (["resolution"] if resolution_mismatch else []) + mismatched
-                warn(
-                    f"Parts of '{display_base}{ext}' differ in {', '.join(reasons)} "
-                    f"— can't stream-copy concat them as-is:"
-                )
-                for _num, path, _base in members:
-                    console.print(f"  {path.name}: {infos[path].describe()}")
+                if resolution_mismatch or mismatched:
+                    reasons = (["resolution"] if resolution_mismatch else []) + mismatched
+                    warn(
+                        f"Parts of '{display_base}{ext}' differ in {', '.join(reasons)} "
+                        f"— can't stream-copy concat them as-is:"
+                    )
+                    for _num, path, _base in members:
+                        console.print(f"  {path.name}: {infos[path].describe()}")
 
-                if audio_presence_mismatch(ordered):
-                    warn("Skipping — some parts have no audio track at all, which "
-                         "re-encoding can't reconcile. Fix those parts first.")
-                    continue
+                    if audio_presence_mismatch(ordered):
+                        warn("Skipping — some parts have no audio track at all, which "
+                             "re-encoding can't reconcile. Fix those parts first.")
+                        continue
 
-                target = choose_target(ordered)
-                drop_extras = any(p.has_extra_streams for p in ordered)
-                todo = [
-                    (path, infos[path])
-                    for _num, path, _base in members
-                    if needs_normalizing(infos[path], target, drop_extras)
-                ]
+                    target = choose_target(ordered)
+                    drop_extras = any(p.has_extra_streams for p in ordered)
+                    todo = [
+                        (path, infos[path])
+                        for _num, path, _base in members
+                        if needs_normalizing(infos[path], target, drop_extras)
+                    ]
 
-                console.print(f"  → target: {target.describe()}")
-                if drop_extras:
-                    warn("  Extra streams (subtitles, secondary audio) will be dropped so "
-                         "every part ends up with the same stream layout.")
+                    console.print(f"  → target: {target.describe()}")
+                    if drop_extras:
+                        warn("  Extra streams (subtitles, secondary audio) will be dropped so "
+                             "every part ends up with the same stream layout.")
 
-                do_encode = True
-                if not args.yes:
-                    do_encode = confirm(
-                        f"Re-encode {len(todo)} of {len(members)} part(s) to match before concatenating?",
-                        default="y",
-                    ) == "y"
-                if not do_encode:
+                    do_encode = True
+                    if not args.yes:
+                        do_encode = confirm(
+                            f"Re-encode {len(todo)} of {len(members)} part(s) to match before concatenating?",
+                            default="y",
+                        ) == "y"
+                    if not do_encode:
+                        info("Skipped.")
+                        continue
+
+                    # Only probe for a GPU if some part actually needs its video redone —
+                    # an audio-only fixup stream-copies the video and needs no encoder.
+                    encoder: Encoder | None = None
+                    if any(not video_matches(si, target) for _path, si in todo):
+                        encoder = select_encoder(target.codec, preference)
+                        info(f"Encoder: {encoder.label} ({encoder.name})")
+
+                    failed = False
+                    for path, stream_info in todo:
+                        tmp_path = temp_part_path(target_dir, path)
+                        temps.append(tmp_path)
+                        if not normalize_part(path, tmp_path, stream_info, target, encoder, preference):
+                            warn(f"re-encode failed for '{path.name}', skipping group")
+                            failed = True
+                            break
+                        normalized[path] = tmp_path
+                        reencoded += 1
+
+                    if failed:
+                        continue
+
+            if not args.yes:
+                reply = confirm(f"Concatenate {len(members)} parts into '{display_base}{ext}'?", default="y")
+                if reply != "y":
                     info("Skipped.")
                     continue
 
-                # Only probe for a GPU if some part actually needs its video redone —
-                # an audio-only fixup stream-copies the video and needs no encoder.
-                encoder: Encoder | None = None
-                if any(not video_matches(si, target) for _path, si in todo):
-                    encoder = select_encoder(target.codec, preference)
-                    info(f"Encoder: {encoder.label} ({encoder.name})")
+            output_path = free_output_path(target_dir, display_base, ext)
+            if output_path.name != f"{display_base}{ext}":
+                warn(f"Output name already exists, using '{output_path.name}' instead")
 
-                failed = False
-                for path, stream_info in todo:
-                    tmp_fd, tmp_name = tempfile.mkstemp(suffix=path.suffix, dir=target_dir)
-                    os.close(tmp_fd)
-                    tmp_path = Path(tmp_name)
-                    tmp_path.unlink()
-                    if not normalize_part(path, tmp_path, stream_info, target, encoder, preference):
-                        warn(f"re-encode failed for '{path.name}', skipping group")
-                        failed = True
-                        break
-                    normalized[path] = tmp_path
-                    reencoded += 1
+            list_fd, list_name = tempfile.mkstemp(suffix=".txt", text=True)
+            list_path = Path(list_name)
+            try:
+                with os.fdopen(list_fd, "w", encoding="utf-8") as f:
+                    for _num, path, _base in members:
+                        concat_path = normalized.get(path, path)
+                        escaped = str(concat_path.resolve()).replace("'", "'\\''")
+                        f.write(f"file '{escaped}'\n")
 
-                if failed:
-                    for tmp in normalized.values():
-                        tmp.unlink(missing_ok=True)
-                    continue
+                # Without explicit maps ffmpeg keeps one track of each type, silently
+                # dropping second-language audio and extra subtitles. `V` (not `v`) skips
+                # cover art. -y only ever overwrites atomic_output()'s own temp file.
+                with atomic_output(output_path, force=False) as tmp_out:
+                    result = subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-nostdin",
+                            "-f", "concat", "-safe", "0",
+                            "-i", str(list_path),
+                            "-map", "0:V", "-map", "0:a?", "-map", "0:s?",
+                            "-c", "copy",
+                            str(tmp_out),
+                        ]
+                    )
+                    if result.returncode != 0:
+                        raise _ConcatFailed(result.returncode)
+            except _ConcatFailed as e:
+                warn(f"ffmpeg failed for '{display_base}{ext}' (exit code {e.returncode}), skipping")
+                continue
+            finally:
+                list_path.unlink(missing_ok=True)
 
-        if not args.yes:
-            reply = confirm(f"Concatenate {len(members)} parts into '{display_base}{ext}'?", default="y")
-            if reply != "y":
-                info("Skipped.")
-                for tmp in normalized.values():
-                    tmp.unlink(missing_ok=True)
+            # ffmpeg's concat demuxer exits 0 even when it couldn't open a part — the
+            # output just stops early. Only trash the parts once the output provably
+            # covers all of them.
+            part_durations = [
+                media_duration(normalized[path]) if path in normalized
+                else infos[path].duration if infos is not None
+                else media_duration(path)
+                for _num, path, _base in members
+            ]
+            actual = media_duration(output_path)
+            if None in part_durations or actual is None:
+                warn(f"Couldn't verify '{output_path.name}' contains every part — "
+                     "left the parts in place, check it before deleting them")
+                unverified += 1
+                continue
+            expected = sum(part_durations)
+            if actual + DURATION_SLACK_PER_PART * len(members) < expected:
+                warn(f"'{output_path.name}' is {actual:.1f}s but the parts add up to "
+                     f"{expected:.1f}s — some part didn't make it in. Left the parts in place.")
                 continue
 
-        output_path = target_dir / f"{display_base}{ext}"
-        if output_path.exists():
-            output_path = target_dir / f"{display_base}.concat{ext}"
-            warn(f"Output name already exists, using '{output_path.name}' instead")
+            for _num, path, _base in members:
+                move_to_trash(path)
+                trashed += 1
 
-        list_fd, list_name = tempfile.mkstemp(suffix=".txt", text=True)
-        list_path = Path(list_name)
-        try:
-            with os.fdopen(list_fd, "w", encoding="utf-8") as f:
-                for _num, path, _base in members:
-                    concat_path = normalized.get(path, path)
-                    escaped = str(concat_path.resolve()).replace("'", "'\\''")
-                    f.write(f"file '{escaped}'\n")
-
-            result = subprocess.run(
-                [
-                    "ffmpeg", "-y",
-                    "-f", "concat", "-safe", "0",
-                    "-i", str(list_path),
-                    "-c", "copy",
-                    str(output_path),
-                ]
-            )
+            ok(f"Concatenated → {output_path}")
+            concatenated += 1
         finally:
-            list_path.unlink(missing_ok=True)
-            for tmp in normalized.values():
+            for tmp in temps:
                 tmp.unlink(missing_ok=True)
-
-        if result.returncode != 0:
-            if output_path.exists():
-                output_path.unlink()
-            warn(f"ffmpeg failed for '{display_base}{ext}' (exit code {result.returncode}), skipping")
-            continue
-
-        for _num, path, _base in members:
-            move_to_trash(path)
-            trashed += 1
-
-        ok(f"Concatenated → {output_path}")
-        concatenated += 1
 
     console.print()
     ok(
         f"Done. {concatenated} group(s) concatenated, {reencoded} part(s) re-encoded, "
         f"{trashed} file(s) trashed."
     )
+    if unverified:
+        warn(f"{unverified} more group(s) were written but couldn't be verified — "
+             "their parts were kept.")
 
 
 if __name__ == "__main__":

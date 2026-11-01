@@ -166,6 +166,21 @@ Progress *factories* themselves) were extracted from it.
   so when any part carries extra streams *and* a re-encode is needed, every part is normalized
   to keep stream layouts identical. A group where some parts have audio and others don't is
   skipped outright — reconciling it would mean synthesizing silent tracks.
+- `concatvid`'s final concat maps tracks explicitly (`-map 0:V -map 0:a? -map 0:s?`; capital
+  `V` skips cover art) — the concat demuxer otherwise keeps one track per type. Because the
+  demuxer takes its stream list from the first part, a difference in the count *or format*
+  of any non-primary track is a mismatch like any other (`StreamInfo.track_layout`) and goes
+  through the drop-extras normalization — once every track is mapped, a second audio track
+  that's AC3 in one part and AAC in the next would otherwise be copied into one corrupt
+  track. Cover art (`attached_pic`) is filtered out in `parse_streams` and never counts.
+  Fallback outputs are named `<base>.concat<N>`, and `split_sequence` refuses those stems so
+  a later run can't re-concatenate (and trash) concatvid's own outputs. Parts are only trashed after the output's duration is checked against the
+  sum of the parts': ffmpeg's concat demuxer **exits 0** when it can't open a part, or when
+  a part is truncated but its header still claims the full length — the output just stops
+  early. Don't drop that check in favour of the exit code.
+- `downscalevid` writes through `_common/output.py` like `cutvid`/`flipvid`, but its
+  overwrite flag is `-o/--overwrite` because `-f/--force` already meant "allow upscaling"
+  — `check_output_path(..., flag=...)` exists so the error message names the right flag.
 - `optimiselib` deliberately does **not** compose `compressvid` + `sortmedia`, even though it
   does what they do: `compressvid` takes one preset per run and writes to a `compressed/`
   subfolder, while `optimiselib` needs a per-file preset and an in-place result; and
@@ -309,6 +324,19 @@ and single-keypress confirmation is hand-rolled via `termios`/`tty`/`msvcrt` in
 library (e.g. no Pillow for `convertimg`, no rarfile for `cybermod`) except `mergemanga`'s move
 from `7z` to stdlib `zipfile`, which was safe specifically because CBZ files are already zip
 archives.
+
+## Git Workflow
+
+Standing permission from the repo owner — don't ask each time:
+
+- When a change is finished, commit it on a feature branch (never directly on `main`), push,
+  and open a pull request.
+- Review the PR's diff yourself before merging — correctness, the conventions in this file,
+  docstring/`--help` accuracy, and the smoke test above. Fix anything the review turns up and
+  push the fix to the same branch.
+- Once the review is clean, merge the PR. Don't merge if the review leaves an unresolved
+  problem or something you couldn't verify that matters for safety (e.g. a change that could
+  delete or overwrite user files) — report it instead and leave the PR open.
 
 ## When Modifying Scripts
 

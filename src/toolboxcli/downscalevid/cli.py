@@ -3,7 +3,13 @@ downscalevid — Reduce a video's resolution using ffmpeg, GPU-accelerated when 
 
 Scales down to a target resolution while preserving aspect ratio (unless an explicit
 WIDTHxHEIGHT is given). Never upscales unless -f/--force is passed. Re-encodes video
-(H.264 by default); audio is stream-copied unchanged.
+(H.264 by default); audio is stream-copied unchanged. Every audio and subtitle track is
+kept, along with chapters and (for MKV output) attachments such as subtitle fonts.
+
+The output is written to a temporary file next to the destination and only moved into
+place once ffmpeg succeeds. It can never be the input file, and an existing file is never
+overwritten unless -o/--overwrite is given, in which case the old file is moved to the
+Trash first.
 
 Encoding runs on the GPU when a supported one is available — NVIDIA (NVENC), AMD (AMF)
 or Apple silicon (VideoToolbox) — and falls back to the CPU encoder otherwise. Override
@@ -18,16 +24,17 @@ Usage:
     downscalevid movie.mkv -r 720 -c h265
     downscalevid movie.mkv -r 1440p -g cpu   # force software encoding
     downscalevid movie.mkv -r 1440p -f       # allow upscaling too
+    downscalevid movie.mkv -r 720 out.mkv -o # replace an existing out.mkv
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 from pathlib import Path
 
 from toolboxcli._common.console import die, info, ok, warn
+from toolboxcli._common.ffprobe import probe
 from toolboxcli._common.encoders import (
     CODECS,
     GPU_CHOICES,
@@ -36,31 +43,24 @@ from toolboxcli._common.encoders import (
     gpu_preference,
     select_encoder,
 )
+from toolboxcli._common.output import atomic_output, check_output_path
+from toolboxcli._common.streams import keep_all_streams_args, main_video_streams
 from toolboxcli._common.tooling import require_tool
 from toolboxcli.downscalevid.core import PRESET_HEIGHTS, parse_resolution
 
 GPU_ENV_VAR = "DOWNSCALEVID_GPU"
 
 
-def probe_dimensions(path: Path) -> tuple[int, int]:
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=width,height",
-            "-of", "json",
-            str(path),
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        die(f"ffprobe failed to read '{path.name}': {result.stderr.strip()}")
-
-    streams = json.loads(result.stdout).get("streams", [])
-    if not streams:
+def probe_streams(path: Path) -> list[dict]:
+    """ffprobe streams of *path*; dies if it can't be read or has no real video stream
+    (cover art doesn't count — scaling a thumbnail isn't what was asked for)."""
+    data = probe(path)
+    if data is None:
+        die(f"ffprobe could not read '{path.name}'")
+    streams = data.get("streams", [])
+    if not main_video_streams(streams):
         die(f"no video stream found in '{path.name}'")
-
-    return streams[0]["width"], streams[0]["height"]
+    return streams
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,17 +85,27 @@ def build_parser() -> argparse.ArgumentParser:
              f"Env: {GPU_ENV_VAR}",
     )
     parser.add_argument("-f", "--force", action="store_true", help="Allow upscaling (default: refuse)")
+    parser.add_argument(
+        "-o", "--overwrite", action="store_true",
+        help="Replace the output file if it exists (the old one is moved to the Trash)",
+    )
     return parser
 
 
-def run_ffmpeg(input_path: Path, output_path: Path, scale_expr: str, encoder: Encoder) -> int:
+def run_ffmpeg(
+    input_path: Path, output_path: Path, scale_expr: str, encoder: Encoder, stream_maps: list[str]
+) -> int:
+    # -y only ever overwrites atomic_output()'s own temp file (or a failed first attempt
+    # at it), never a real destination — check_output_path() has already vetted that.
     result = subprocess.run([
         "ffmpeg",
         "-y",
+        "-hide_banner",
         "-i", str(input_path),
         "-vf", f"scale={scale_expr}",
+        "-c", "copy",
         "-c:v", encoder.name, *encoder.args,
-        "-c:a", "copy",
+        *stream_maps,
         str(output_path),
     ])
     return result.returncode
@@ -114,7 +124,9 @@ def main() -> None:
 
     target_width, target_height = parse_resolution(args.resolution)
 
-    src_width, src_height = probe_dimensions(input_path)
+    streams = probe_streams(input_path)
+    main_video = main_video_streams(streams)[0]
+    src_width, src_height = main_video["width"], main_video["height"]
 
     if target_width is not None:
         would_not_shrink = target_width * target_height >= src_width * src_height
@@ -135,8 +147,8 @@ def main() -> None:
         )
         output_path = input_path.with_suffix(f".{label}{input_path.suffix}")
 
-    if output_path == input_path:
-        die("output path must differ from input path")
+    check_output_path(input_path, output_path, args.overwrite, flag="-o/--overwrite")
+    stream_maps = keep_all_streams_args(streams, output_path.suffix.lower())
 
     scale_expr = f"{target_width}:{target_height}" if target_width else f"-2:{target_height}"
 
@@ -149,22 +161,24 @@ def main() -> None:
     info(f"Codec      : {args.codec}")
     info(f"Encoder    : {encoder.label} ({encoder.name})")
 
-    returncode = run_ffmpeg(input_path, output_path, scale_expr, encoder)
+    try:
+        with atomic_output(output_path, args.overwrite) as tmp_path:
+            returncode = run_ffmpeg(input_path, tmp_path, scale_expr, encoder, stream_maps)
 
-    # A GPU we picked ourselves can still fail on a specific input (unsupported
-    # pixel format, session limit, driver hiccup) — retry once on the CPU rather
-    # than making the user rerun with -g cpu. An explicitly requested GPU is not
-    # second-guessed.
-    if returncode != 0 and encoder.is_hardware and preference == "auto":
-        output_path.unlink(missing_ok=True)
-        warn(f"{encoder.label} encode failed (exit {returncode}), retrying on CPU...")
-        encoder = cpu_encoder(args.codec)
-        info(f"Encoder    : {encoder.label} ({encoder.name})")
-        returncode = run_ffmpeg(input_path, output_path, scale_expr, encoder)
+            # A GPU we picked ourselves can still fail on a specific input (unsupported
+            # pixel format, session limit, driver hiccup) — retry once on the CPU rather
+            # than making the user rerun with -g cpu. An explicitly requested GPU is not
+            # second-guessed.
+            if returncode != 0 and encoder.is_hardware and preference == "auto":
+                warn(f"{encoder.label} encode failed (exit {returncode}), retrying on CPU...")
+                encoder = cpu_encoder(args.codec)
+                info(f"Encoder    : {encoder.label} ({encoder.name})")
+                returncode = run_ffmpeg(input_path, tmp_path, scale_expr, encoder, stream_maps)
 
-    if returncode != 0:
-        output_path.unlink(missing_ok=True)
-        die(f"ffmpeg failed with exit code {returncode}")
+            if returncode != 0:
+                die(f"ffmpeg failed with exit code {returncode}")
+    except KeyboardInterrupt:
+        die("interrupted", code=130)
 
     ok(f"Done → {output_path}")
 

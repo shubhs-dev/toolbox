@@ -25,15 +25,19 @@ def is_same_file(a: Path, b: Path) -> bool:
         return False
 
 
-def check_output_path(input_path: Path, output_path: Path, force: bool) -> None:
+def check_output_path(
+    input_path: Path, output_path: Path, force: bool, flag: str = "-f/--force"
+) -> None:
     """Die unless output_path is safe to write: never the input file, its directory must
-    exist, and an existing file is only allowed with force (it gets trashed on success)."""
+    exist, and an existing file is only allowed with force (it gets trashed on success).
+    `flag` is the option the error message tells the user to pass, for scripts where
+    -f/--force already means something else."""
     if is_same_file(input_path, output_path):
         die("output path must differ from input path")
     if not output_path.parent.is_dir():
         die(f"output directory does not exist: {output_path.parent}")
     if output_path.exists() and not force:
-        die(f"{output_path} already exists — use -f/--force to replace it "
+        die(f"{output_path} already exists — use {flag} to replace it "
             "(the old file is moved to the Trash)")
 
 
