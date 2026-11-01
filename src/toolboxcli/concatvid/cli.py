@@ -14,8 +14,8 @@ them (otherwise they're left in place with a warning).
 
 Before concatenating, each group is checked via ffprobe for stream-copy compatibility.
 Parts that disagree on resolution, video codec, pixel format, audio layout or the
-format of any other track are normalized to the group's dominant format first (prompted, auto-accepted with
--y): the smallest resolution wins, so parts are only ever downscaled, and parts already
+format of any other track are normalized to the group's dominant format first
+(prompted, auto-accepted with -y): the smallest resolution wins, so parts are only ever downscaled, and parts already
 in the target format are left untouched. A part whose video already matches has only
 its audio re-encoded.
 
