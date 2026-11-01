@@ -1,23 +1,30 @@
 """
-concatvid — Concatenate split video parts in a folder using ffmpeg.
+concatvid — Join videos end to end using ffmpeg, re-encoding only what has to be.
 
-Scans a directory (default: current directory) for video files, groups them by a
-common base name with a trailing sequence marker (`Movie 1.mp4`/`Movie 2.mp4`,
-`Movie_pt1.mkv`/`Movie_pt2.mkv`, `Movie (01).mp4`/`Movie (02).mp4`, etc.), and
-concatenates each group in sequence order via ffmpeg's concat demuxer with
-stream-copy (`-c copy`) — no re-encoding. Files with no sequence marker, or whose
-marker has no siblings, are left untouched. Every video, audio and subtitle track is
-kept. The output is named after the shared base name — or `<base>.concat`,
-`<base>.concat2`, … if that's taken; an existing file is never overwritten — and the
-original part files are trashed once the output's duration is confirmed to cover all of
-them (otherwise they're left in place with a warning).
+Give it the videos to join, in order, and optionally a name for the result:
 
-Before concatenating, each group is checked via ffprobe for stream-copy compatibility.
-Parts that disagree on resolution, video codec, pixel format, audio layout or the
-format of any other track are normalized to the group's dominant format first
-(prompted, auto-accepted with -y): the smallest resolution wins, so parts are only ever downscaled, and parts already
-in the target format are left untouched. A part whose video already matches has only
-its audio re-encoded.
+    concatvid "Day 1.mp4" "Day 2.mp4" "Day 3.mp4" -o "Holiday"
+
+A bare -o name lands next to the first part and gets its extension; a name with a folder
+in it is used as given. Without -o the result is named after the parts' shared base name
+(`Movie 1.mp4` + `Movie 2.mp4` → `Movie.mp4`), never over an existing file. An existing
+-o file is only replaced with -f/--force (the old one goes to the Trash).
+
+Or let it find the parts itself: -a/--auto scans a folder (default: the current one) for
+videos sharing a base name with a trailing sequence marker (`Movie 1.mp4`/`Movie 2.mp4`,
+`Movie_pt1.mkv`/`Movie_pt2.mkv`, `Movie (01).mp4`/`Movie (02).mp4`, etc.) and joins each
+group in sequence order. Files with no marker, or whose marker has no siblings, are left
+untouched; outputs are named `<base>`, or `<base>.concat`, `<base>.concat2`, … if taken.
+
+Either way, parts are joined with ffmpeg's concat demuxer and stream-copied (`-c copy`),
+keeping every video, audio and subtitle track. Before joining, the parts are checked via
+ffprobe for stream-copy compatibility. Parts that disagree on resolution, video codec,
+pixel format, audio layout or the format of any other track are normalized to the
+dominant format first (prompted, auto-accepted with -y): the smallest resolution wins,
+so parts are only ever downscaled, parts already in the target format are left
+untouched, and a part whose video already matches has only its audio re-encoded. The
+original parts are trashed once the result's duration is confirmed to cover all of them
+(otherwise they're left in place with a warning).
 
 Re-encoding runs on the GPU when a supported one is available — NVIDIA (NVENC), AMD
 (AMF) or Apple silicon (VideoToolbox) — and falls back to the CPU encoder otherwise.
@@ -27,11 +34,14 @@ Requires:
     ffmpeg, ffprobe
 
 Usage:
-    concatvid
-    concatvid ~/Videos/raw
-    concatvid -y ~/Videos/raw     # skip confirmation prompts
-    concatvid -n ~/Videos/raw     # preview groups without concatenating
-    concatvid -g cpu ~/Videos/raw # force software encoding when re-encoding
+    concatvid a.mp4 b.mp4 c.mp4                  # join in this order → a.concat.mp4
+    concatvid "Day 1.mp4" "Day 2.mp4" -o Holiday # → Holiday.mp4, next to Day 1.mp4
+    concatvid a.mp4 b.mp4 -o ~/out/joined.mkv    # explicit path and container
+    concatvid a.mp4 b.mp4 -o Holiday -f          # replace an existing Holiday.mp4
+    concatvid -a                                 # scan the current folder for parts
+    concatvid -a ~/Videos/raw -y                 # scan a folder, no prompts
+    concatvid -a ~/Videos/raw -n                 # preview groups without joining
+    concatvid -g cpu a.mp4 b.mp4                 # force software encoding when re-encoding
 """
 
 from __future__ import annotations
@@ -40,6 +50,7 @@ import argparse
 import os
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from toolboxcli._common.confirm import confirm
@@ -52,7 +63,7 @@ from toolboxcli._common.encoders import (
     select_encoder,
 )
 from toolboxcli._common.ffprobe import probe as probe_raw
-from toolboxcli._common.output import atomic_output
+from toolboxcli._common.output import atomic_output, is_same_file
 from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
 from toolboxcli.concatvid.core import (
@@ -78,10 +89,10 @@ def probe(path: Path) -> StreamInfo | None:
     return parse_streams(payload) if payload is not None else None
 
 
-def probe_group(members: list[tuple[int, Path, str]]) -> dict[Path, StreamInfo] | None:
-    """Probe every member of a group; return None if any file can't be read."""
+def probe_group(parts: list[Path]) -> dict[Path, StreamInfo] | None:
+    """Probe every part; return None if any file can't be read."""
     infos: dict[Path, StreamInfo] = {}
-    for _num, path, _base in members:
+    for path in parts:
         result = probe(path)
         if result is None:
             return None
@@ -159,15 +170,173 @@ def temp_part_path(target_dir: Path, src: Path) -> Path:
     return Path(name)
 
 
+@dataclass
+class Stats:
+    concatenated: int = 0
+    reencoded: int = 0
+    trashed: int = 0
+    unverified: int = 0
+
+
+def concat_group(
+    parts: list[Path],
+    label: str,
+    output_path: Path,
+    overwrite: bool,
+    args: argparse.Namespace,
+    preference: str,
+    stats: Stats,
+) -> None:
+    """Concatenate *parts*, in order, into *output_path*: check compatibility, normalize
+    mismatched parts, stream-copy concat, verify the result, then trash the parts.
+    Shared by both modes — the automatic folder scan and an explicit file list."""
+    work_dir = output_path.parent
+    normalized: dict[Path, Path] = {}
+    temps: list[Path] = []  # every normalized-part temp file, cleaned up however this ends
+    try:
+        infos = probe_group(parts)
+        if infos is None:
+            warn(f"ffprobe couldn't read one or more parts of '{label}' — proceeding without a compatibility check")
+        else:
+            ordered = [infos[path] for path in parts]
+            resolution_mismatch, mismatched = find_incompatibilities(ordered)
+
+            if resolution_mismatch or mismatched:
+                reasons = (["resolution"] if resolution_mismatch else []) + mismatched
+                warn(
+                    f"Parts of '{label}' differ in {', '.join(reasons)} "
+                    f"— can't stream-copy concat them as-is:"
+                )
+                for path in parts:
+                    console.print(f"  {path.name}: {infos[path].describe()}")
+
+                if audio_presence_mismatch(ordered):
+                    warn("Skipping — some parts have no audio track at all, which "
+                         "re-encoding can't reconcile. Fix those parts first.")
+                    return
+
+                target = choose_target(ordered)
+                drop_extras = any(p.has_extra_streams for p in ordered)
+                todo = [
+                    (path, infos[path]) for path in parts
+                    if needs_normalizing(infos[path], target, drop_extras)
+                ]
+
+                console.print(f"  → target: {target.describe()}")
+                if drop_extras:
+                    warn("  Extra streams (subtitles, secondary audio) will be dropped so "
+                         "every part ends up with the same stream layout.")
+
+                if not args.yes and confirm(
+                    f"Re-encode {len(todo)} of {len(parts)} part(s) to match before concatenating?",
+                    default="y",
+                ) != "y":
+                    info("Skipped.")
+                    return
+
+                # Only probe for a GPU if some part actually needs its video redone —
+                # an audio-only fixup stream-copies the video and needs no encoder.
+                encoder: Encoder | None = None
+                if any(not video_matches(si, target) for _path, si in todo):
+                    encoder = select_encoder(target.codec, preference)
+                    info(f"Encoder: {encoder.label} ({encoder.name})")
+
+                for path, stream_info in todo:
+                    tmp_path = temp_part_path(work_dir, path)
+                    temps.append(tmp_path)
+                    if not normalize_part(path, tmp_path, stream_info, target, encoder, preference):
+                        warn(f"re-encode failed for '{path.name}', skipping '{label}'")
+                        return
+                    normalized[path] = tmp_path
+                    stats.reencoded += 1
+
+        if not args.yes and confirm(
+            f"Concatenate {len(parts)} parts into '{output_path.name}'?", default="y",
+        ) != "y":
+            info("Skipped.")
+            return
+
+        list_fd, list_name = tempfile.mkstemp(suffix=".txt", text=True)
+        list_path = Path(list_name)
+        try:
+            with os.fdopen(list_fd, "w", encoding="utf-8") as f:
+                for path in parts:
+                    escaped = str(normalized.get(path, path).resolve()).replace("'", "'\\''")
+                    f.write(f"file '{escaped}'\n")
+
+            # Without explicit maps ffmpeg keeps one track of each type, silently
+            # dropping second-language audio and extra subtitles. `V` (not `v`) skips
+            # cover art. -y only ever overwrites atomic_output()'s own temp file.
+            with atomic_output(output_path, force=overwrite) as tmp_out:
+                result = subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-nostdin",
+                        "-f", "concat", "-safe", "0",
+                        "-i", str(list_path),
+                        "-map", "0:V", "-map", "0:a?", "-map", "0:s?",
+                        "-c", "copy",
+                        str(tmp_out),
+                    ]
+                )
+                if result.returncode != 0:
+                    raise _ConcatFailed(result.returncode)
+        except _ConcatFailed as e:
+            warn(f"ffmpeg failed for '{label}' (exit code {e.returncode}), skipping")
+            return
+        finally:
+            list_path.unlink(missing_ok=True)
+
+        # ffmpeg's concat demuxer exits 0 even when it couldn't open a part — the
+        # output just stops early. Only trash the parts once the output provably
+        # covers all of them.
+        part_durations = [
+            media_duration(normalized[path]) if path in normalized
+            else infos[path].duration if infos is not None
+            else media_duration(path)
+            for path in parts
+        ]
+        actual = media_duration(output_path)
+        if None in part_durations or actual is None:
+            warn(f"Couldn't verify '{output_path.name}' contains every part — "
+                 "left the parts in place, check it before deleting them")
+            stats.unverified += 1
+            return
+        expected = sum(part_durations)
+        if actual + DURATION_SLACK_PER_PART * len(parts) < expected:
+            warn(f"'{output_path.name}' is {actual:.1f}s but the parts add up to "
+                 f"{expected:.1f}s — some part didn't make it in. Left the parts in place.")
+            return
+
+        for path in parts:
+            move_to_trash(path)
+            stats.trashed += 1
+
+        ok(f"Concatenated → {output_path}")
+        stats.concatenated += 1
+    finally:
+        for tmp in temps:
+            tmp.unlink(missing_ok=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="concatvid",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("directory", nargs="?", default=".", help="Directory to scan (default: .)")
+    parser.add_argument("files", nargs="*", metavar="VIDEO",
+                        help="Videos to join, in the order given")
+    parser.add_argument("-o", "--output", metavar="NAME", default=None,
+                        help="Name of the joined video (default: the parts' shared base name). "
+                             "A bare name goes next to the first part; no extension → the first part's")
+    parser.add_argument("-f", "--force", action="store_true",
+                        help="Replace an existing -o/--output file (the old one goes to the Trash)")
+    parser.add_argument("-a", "--auto", nargs="?", const=".", default=None, metavar="DIR",
+                        help="Instead of a file list, scan DIR (default: .) for numbered parts "
+                             "and join every group found")
     parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
-    parser.add_argument("-n", "--dry-run", action="store_true", help="Preview groups without concatenating")
+    parser.add_argument("-n", "--dry-run", action="store_true",
+                        help="Show what would be joined, and into what, without doing it")
     parser.add_argument(
         "-g", "--gpu", choices=GPU_CHOICES, default=None,
         help="Encoder to use when parts need re-encoding (default: auto — first "
@@ -176,17 +345,73 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
+def named_output_path(first: Path, name: str) -> Path:
+    """Where `-o NAME` puts the joined video. A bare name lands next to the first part
+    (that's where the parts are, and usually where you'd look); anything with a folder in
+    it is used as given. With no video extension, the first part's is added — checked
+    against VIDEO_EXTS rather than Path.suffix, so `Trip v1.2` doesn't read as a `.2` file."""
+    raw = Path(name).expanduser()
+    if raw.suffix.lower() not in VIDEO_EXTS:
+        raw = raw.with_name(raw.name + first.suffix)
+    has_folder = raw.parent != Path(".") or name.startswith(("./", ".\\"))
+    return raw if has_folder else first.parent / raw
 
-    if not args.dry_run:
-        require_tool("ffmpeg")
-        require_tool("ffprobe")
 
-    preference = args.gpu or gpu_preference(GPU_ENV_VAR)
+def default_output_path(first: Path) -> Path:
+    """The parts' shared base name (`Movie 1.mp4` → `Movie.mp4`), or `<first>.concat` when the
+    first part has no sequence marker — never an existing file."""
+    split = split_sequence(first.stem)
+    base = split[0] if split else first.stem
+    return free_output_path(first.parent, base, first.suffix)
 
-    target_dir = Path(args.directory)
+
+def run_manual(parser: argparse.ArgumentParser, args: argparse.Namespace,
+               preference: str) -> None:
+    parts = [Path(f) for f in args.files]
+    if len(parts) == 1 and parts[0].is_dir():
+        die(f"'{parts[0]}' is a folder — use -a {parts[0]} to scan it for numbered parts")
+    if len(parts) < 2:
+        parser.error("give at least two videos to join (or -a to scan a folder)")
+    for p in parts:
+        if not p.is_file():
+            die(f"not a file: {p}")
+    for i, a in enumerate(parts):
+        for b in parts[i + 1:]:
+            if is_same_file(a, b):
+                die(f"'{a}' and '{b}' are the same file — each part can only be given once")
+
+    if args.output:
+        output_path = named_output_path(parts[0], args.output)
+        for p in parts:
+            if is_same_file(p, output_path):
+                die(f"the output can't be one of the parts: {output_path}")
+        if not output_path.parent.is_dir():
+            die(f"output folder does not exist: {output_path.parent}")
+        if output_path.exists() and not args.force:
+            die(f"{output_path} already exists — use -f/--force to replace it "
+                "(the old file is moved to the Trash)")
+    else:
+        output_path = default_output_path(parts[0])
+
+    info(f"Joining {len(parts)} parts, in this order:")
+    for n, p in enumerate(parts, 1):
+        console.print(f"  [{n}] {p}")
+    console.print(f"  → {output_path}")
+
+    if args.dry_run:
+        console.print()
+        info("Dry run — nothing joined.")
+        return
+
+    console.print()
+    stats = Stats()
+    concat_group(parts, output_path.name, output_path, bool(args.output and args.force),
+                 args, preference, stats)
+    report(stats, single=True)
+
+
+def run_auto(args: argparse.Namespace, preference: str) -> None:
+    target_dir = Path(args.auto).expanduser()
     if not target_dir.is_dir():
         die(f"not a directory: {target_dir}")
 
@@ -229,164 +454,57 @@ def main() -> None:
         info(f"Dry run complete. {len(groups)} group(s) would be concatenated.")
         return
 
-    concatenated = 0
-    trashed = 0
-    unverified = 0
-    reencoded = 0
-
-    for (base_lower, ext), members in sorted(groups.items()):
+    stats = Stats()
+    for (_base_lower, ext), members in sorted(groups.items()):
         display_base = members[0][2]
         console.print()
+        output_path = free_output_path(target_dir, display_base, ext)
+        if output_path.name != f"{display_base}{ext}":
+            warn(f"Output name already exists, using '{output_path.name}' instead")
+        concat_group([path for _num, path, _base in members], f"{display_base}{ext}",
+                     output_path, False, args, preference, stats)
+    report(stats, single=False)
 
-        normalized: dict[Path, Path] = {}
-        temps: list[Path] = []  # every normalized-part temp file, cleaned up however the group ends
-        try:
 
-            infos = probe_group(members)
-            if infos is None:
-                warn(f"ffprobe couldn't read one or more parts of '{display_base}{ext}' — proceeding without a compatibility check")
-            else:
-                ordered = [infos[path] for _num, path, _base in members]
-                resolution_mismatch, mismatched = find_incompatibilities(ordered)
-
-                if resolution_mismatch or mismatched:
-                    reasons = (["resolution"] if resolution_mismatch else []) + mismatched
-                    warn(
-                        f"Parts of '{display_base}{ext}' differ in {', '.join(reasons)} "
-                        f"— can't stream-copy concat them as-is:"
-                    )
-                    for _num, path, _base in members:
-                        console.print(f"  {path.name}: {infos[path].describe()}")
-
-                    if audio_presence_mismatch(ordered):
-                        warn("Skipping — some parts have no audio track at all, which "
-                             "re-encoding can't reconcile. Fix those parts first.")
-                        continue
-
-                    target = choose_target(ordered)
-                    drop_extras = any(p.has_extra_streams for p in ordered)
-                    todo = [
-                        (path, infos[path])
-                        for _num, path, _base in members
-                        if needs_normalizing(infos[path], target, drop_extras)
-                    ]
-
-                    console.print(f"  → target: {target.describe()}")
-                    if drop_extras:
-                        warn("  Extra streams (subtitles, secondary audio) will be dropped so "
-                             "every part ends up with the same stream layout.")
-
-                    do_encode = True
-                    if not args.yes:
-                        do_encode = confirm(
-                            f"Re-encode {len(todo)} of {len(members)} part(s) to match before concatenating?",
-                            default="y",
-                        ) == "y"
-                    if not do_encode:
-                        info("Skipped.")
-                        continue
-
-                    # Only probe for a GPU if some part actually needs its video redone —
-                    # an audio-only fixup stream-copies the video and needs no encoder.
-                    encoder: Encoder | None = None
-                    if any(not video_matches(si, target) for _path, si in todo):
-                        encoder = select_encoder(target.codec, preference)
-                        info(f"Encoder: {encoder.label} ({encoder.name})")
-
-                    failed = False
-                    for path, stream_info in todo:
-                        tmp_path = temp_part_path(target_dir, path)
-                        temps.append(tmp_path)
-                        if not normalize_part(path, tmp_path, stream_info, target, encoder, preference):
-                            warn(f"re-encode failed for '{path.name}', skipping group")
-                            failed = True
-                            break
-                        normalized[path] = tmp_path
-                        reencoded += 1
-
-                    if failed:
-                        continue
-
-            if not args.yes:
-                reply = confirm(f"Concatenate {len(members)} parts into '{display_base}{ext}'?", default="y")
-                if reply != "y":
-                    info("Skipped.")
-                    continue
-
-            output_path = free_output_path(target_dir, display_base, ext)
-            if output_path.name != f"{display_base}{ext}":
-                warn(f"Output name already exists, using '{output_path.name}' instead")
-
-            list_fd, list_name = tempfile.mkstemp(suffix=".txt", text=True)
-            list_path = Path(list_name)
-            try:
-                with os.fdopen(list_fd, "w", encoding="utf-8") as f:
-                    for _num, path, _base in members:
-                        concat_path = normalized.get(path, path)
-                        escaped = str(concat_path.resolve()).replace("'", "'\\''")
-                        f.write(f"file '{escaped}'\n")
-
-                # Without explicit maps ffmpeg keeps one track of each type, silently
-                # dropping second-language audio and extra subtitles. `V` (not `v`) skips
-                # cover art. -y only ever overwrites atomic_output()'s own temp file.
-                with atomic_output(output_path, force=False) as tmp_out:
-                    result = subprocess.run(
-                        [
-                            "ffmpeg", "-y", "-nostdin",
-                            "-f", "concat", "-safe", "0",
-                            "-i", str(list_path),
-                            "-map", "0:V", "-map", "0:a?", "-map", "0:s?",
-                            "-c", "copy",
-                            str(tmp_out),
-                        ]
-                    )
-                    if result.returncode != 0:
-                        raise _ConcatFailed(result.returncode)
-            except _ConcatFailed as e:
-                warn(f"ffmpeg failed for '{display_base}{ext}' (exit code {e.returncode}), skipping")
-                continue
-            finally:
-                list_path.unlink(missing_ok=True)
-
-            # ffmpeg's concat demuxer exits 0 even when it couldn't open a part — the
-            # output just stops early. Only trash the parts once the output provably
-            # covers all of them.
-            part_durations = [
-                media_duration(normalized[path]) if path in normalized
-                else infos[path].duration if infos is not None
-                else media_duration(path)
-                for _num, path, _base in members
-            ]
-            actual = media_duration(output_path)
-            if None in part_durations or actual is None:
-                warn(f"Couldn't verify '{output_path.name}' contains every part — "
-                     "left the parts in place, check it before deleting them")
-                unverified += 1
-                continue
-            expected = sum(part_durations)
-            if actual + DURATION_SLACK_PER_PART * len(members) < expected:
-                warn(f"'{output_path.name}' is {actual:.1f}s but the parts add up to "
-                     f"{expected:.1f}s — some part didn't make it in. Left the parts in place.")
-                continue
-
-            for _num, path, _base in members:
-                move_to_trash(path)
-                trashed += 1
-
-            ok(f"Concatenated → {output_path}")
-            concatenated += 1
-        finally:
-            for tmp in temps:
-                tmp.unlink(missing_ok=True)
-
+def report(stats: Stats, single: bool) -> None:
     console.print()
+    if single:
+        if stats.concatenated:
+            ok(f"Done. {stats.reencoded} part(s) re-encoded, {stats.trashed} file(s) trashed.")
+        elif stats.unverified:
+            warn("The joined video was written but couldn't be verified — the parts were kept.")
+        return
     ok(
-        f"Done. {concatenated} group(s) concatenated, {reencoded} part(s) re-encoded, "
-        f"{trashed} file(s) trashed."
+        f"Done. {stats.concatenated} group(s) concatenated, {stats.reencoded} part(s) re-encoded, "
+        f"{stats.trashed} file(s) trashed."
     )
-    if unverified:
-        warn(f"{unverified} more group(s) were written but couldn't be verified — "
+    if stats.unverified:
+        warn(f"{stats.unverified} more group(s) were written but couldn't be verified — "
              "their parts were kept.")
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.auto is not None and args.files:
+        parser.error("give either a list of videos or -a/--auto, not both")
+    if args.auto is not None and args.output:
+        parser.error("-o/--output names a single joined video, so it only works with a "
+                     "list of videos, not -a/--auto")
+    if args.auto is None and not args.files:
+        parser.error("give the videos to join, in order (or -a to scan a folder for numbered parts)")
+
+    if not args.dry_run:
+        require_tool("ffmpeg")
+        require_tool("ffprobe")
+
+    preference = args.gpu or gpu_preference(GPU_ENV_VAR)
+
+    if args.auto is not None:
+        run_auto(args, preference)
+    else:
+        run_manual(parser, args, preference)
 
 
 if __name__ == "__main__":
