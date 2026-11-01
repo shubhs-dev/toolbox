@@ -21,6 +21,9 @@ root it will:
 Only files sitting directly in the root are touched. Subfolders — including the trip
 folders and any folder you use to stage files by hand — are left completely alone.
 
+While a batch runs, an overall progress bar is pinned beneath the current file's: files
+done and left, a tally of outcomes (done / review / skipped / failed), elapsed time and ETA.
+
 On every poll it also looks for subtitle files sitting in the root. A subtitle is matched to
 a video by the first " - " field of its name (e.g. "People" in "People - Title - Trip") —
 only an unambiguous 1:1 match is merged; anything ambiguous is left alone and retried next
@@ -57,7 +60,17 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from rich.console import Group
+from rich.live import Live
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 from rich import box
 
@@ -111,6 +124,93 @@ def update_log(root: Path, log: dict, key: str, value: dict) -> None:
     with _log_lock:
         log[key] = value
         save_log(root, log)
+
+
+# ── Batch progress display ────────────────────────────────────────────
+
+# How each result status reads in the overall tally, in display order. dry-run is left out:
+# every row of a dry run has it, so counting it says nothing.
+_TALLY = (
+    ("sorted", "[green]✓ {n} done[/]"),
+    ("review", "[yellow]{n} to review[/]"),
+    ("skipped", "[dim]{n} skipped[/]"),
+    ("failed", "[red]✗ {n} failed[/]"),
+)
+
+
+class BatchDisplay:
+    """The live display for one poll's batch: the current file's encode bar on top and an
+    overall bar pinned beneath it — files done, files left, a tally of outcomes, elapsed
+    time and an ETA. Messages printed while it's up scroll above both bars.
+
+    Two Progress instances share one Live rather than living in one Progress, because a
+    Progress lists tasks in creation order: per-file tasks come and go, so in a single
+    Progress the overall bar could only ever sit at the top.
+    """
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.done = 0
+        self.counts: dict[str, int] = {}
+        self.files = progress_bar()
+        self.overall = Progress(
+            TextColumn("{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("•"),
+            TimeElapsedColumn(),
+            TextColumn("• ETA"),
+            TimeRemainingColumn(),
+            console=console,
+        )
+        self.overall_task = self.overall.add_task(self._describe(), total=total)
+        self.live = Live(Group(self.files, self.overall), console=console, refresh_per_second=4)
+
+    def __enter__(self) -> BatchDisplay:
+        self.live.__enter__()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.live.__exit__(*exc)
+
+    def _describe(self) -> str:
+        left = self.total - self.done
+        text = f"[bold]Overall[/] {self.done}/{self.total} · {left} left"
+        tally = [label.format(n=self.counts[status])
+                 for status, label in _TALLY if self.counts.get(status)]
+        return text + (f"  {'  '.join(tally)}" if tally else "")
+
+    def encode_task(self, description: str) -> tuple[_EncodeProgress, int]:
+        """A (progress, task_id) pair to hand to transcode(). Its percentage updates the
+        file's own bar and move the overall bar along with it, so the ETA reflects work
+        inside a long encode rather than only jumping once per finished file."""
+        task_id = self.files.add_task(description, total=100)
+        return _EncodeProgress(self, task_id), task_id
+
+    def end_encode(self, task_id: int) -> None:
+        self.files.remove_task(task_id)
+
+    def file_fraction(self, fraction: float) -> None:
+        self.overall.update(self.overall_task, completed=self.done + min(max(fraction, 0.0), 1.0))
+
+    def finish(self, result: dict) -> None:
+        self.done += 1
+        status = result.get("status", "")
+        self.counts[status] = self.counts.get(status, 0) + 1
+        self.overall.update(self.overall_task, completed=self.done, description=self._describe())
+
+
+class _EncodeProgress:
+    """Stands in for the Progress that transcode() reports to — it only ever calls
+    `update(task_id, completed=pct)` — and forwards each percentage to the batch too."""
+
+    def __init__(self, display: BatchDisplay, task_id: int) -> None:
+        self.display = display
+        self.task_id = task_id
+
+    def update(self, task_id: int, completed: float) -> None:
+        self.display.files.update(task_id, completed=completed)
+        self.display.file_fraction(completed / 100)
 
 
 # ── Probing ───────────────────────────────────────────────────────────
@@ -423,7 +523,7 @@ def park_for_review(root: Path, video: Path, reason: str) -> Path:
 
 
 def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
-            seen: set[str]) -> dict:
+            seen: set[str], display: BatchDisplay) -> dict:
     """Optimise, tag and sort one file. Returns a result row for the summary table."""
     name = video.name
 
@@ -533,10 +633,10 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
 
     preset_file, preset_label = load_preset(preset_stem)
 
-    with progress_bar() as progress:
-        task = progress.add_task(
-            f"[cyan]{name}[/]  [dim]{fmt_size(orig_size)} · {preset_stem}[/]", total=100,
-        )
+    progress, task = display.encode_task(
+        f"[cyan]{name}[/]  [dim]{fmt_size(orig_size)} · {preset_stem}[/]"
+    )
+    try:
         succeeded = transcode(
             src_processing, tmp, preset_file, preset_label, progress, task,
             extra_args=plan.args_for(preset_stem, ten_bit=ten_bit),
@@ -548,11 +648,14 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
             warn(f"{plan.backend.name} encode failed for {name} — retrying on CPU")
             if tmp.exists():
                 tmp.unlink()
+            progress.update(task, completed=0)
             succeeded = transcode(
                 src_processing, tmp, preset_file, preset_label, progress, task,
                 extra_args=plan.args_for(preset_stem, force_cpu=True, ten_bit=ten_bit),
                 low_priority=not args.no_nice,
             )
+    finally:
+        display.end_encode(task)
 
     if not succeeded or not tmp.exists():
         if tmp.exists():
@@ -1039,7 +1142,12 @@ def main() -> None:
 
             if videos:
                 console.print(f"[bold]Found {len(videos)} file(s)[/]\n")
-                results = [process(v, root, log, plan, args, seen) for v in videos]
+                results = []
+                with BatchDisplay(len(videos)) as display:
+                    for v in videos:
+                        result = process(v, root, log, plan, args, seen, display)
+                        display.finish(result)
+                        results.append(result)
                 show_summary(results)
             elif args.once and first_scan:
                 info("Nothing new to process.")

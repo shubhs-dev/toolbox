@@ -628,6 +628,12 @@ For every video that appears **directly in the library root**:
 Subfolders are never scanned, so trip folders and any folder you use to stage files by hand are
 left completely alone.
 
+**Progress** — while a batch runs, the current file's encode bar sits above an overall bar
+pinned to the bottom of the screen: files done and left (`Overall 3/10 · 7 left`), a running
+tally (`✓ 3 done  1 skipped`), elapsed time and an ETA. The overall bar advances during each
+encode rather than only when a file finishes, so the ETA is meaningful even with a few long
+files.
+
 **Subtitles** — on every poll, optimiselib also looks for subtitle files sitting in the root
 and matches each one to a video by the first `' - '`-separated field of its name (e.g. `People`
 in `People - Title - Trip`). Only an unambiguous 1:1 match is merged — a subtitle matching more
