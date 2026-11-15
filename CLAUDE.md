@@ -13,7 +13,7 @@ Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
 `pipx install -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
 `check-deps`, `compressvid`, `concatvid`, `convertimg`, `cutvid`, `cybermod`,
 `downscalevid`, `finddupes`, `flatten`, `flipvid`, `jellyname`, `kavitaname`,
-`mergemanga`, `optimiselib`, `sortmedia`, `toolbox`, `video-download`, `wallready` —
+`mergemanga`, `optimiselib`, `prunelib`, `sortmedia`, `toolbox`, `video-download`, `wallready` —
 identically on both platforms. `inventory.html` is a standalone static HTML dashboard,
 unrelated to the Python package.
 
@@ -29,7 +29,7 @@ python -m toolboxcli.<script>.cli --help
 # Smoke-test everything after a change
 for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cybermod \
            downscalevid finddupes flatten flipvid jellyname kavitaname mergemanga \
-           optimiselib sortmedia toolbox video-download wallready; do
+           optimiselib prunelib sortmedia toolbox video-download wallready; do
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 ```
@@ -59,6 +59,7 @@ src/toolboxcli/
 ├── kavitaname/cli.py
 ├── mergemanga/{cli.py, data/volume_map.json}
 ├── optimiselib/{cli.py, core.py}
+├── prunelib/{cli.py, core.py}
 ├── sortmedia/cli.py
 ├── toolbox/cli.py
 ├── videodownload/cli.py
@@ -67,7 +68,7 @@ src/toolboxcli/
 
 Each script is a `<name>/cli.py` with a `main()` function wired up in `pyproject.toml`'s
 `[project.scripts]` table as the console-script entry point. `concatvid`, `cybermod`,
-`downscalevid`, `jellyname`, `optimiselib` and `wallready` additionally split their logic into
+`downscalevid`, `jellyname`, `optimiselib`, `prunelib` and `wallready` additionally split their logic into
 `core.py`, keeping `cli.py`
 to argparse wiring, filesystem I/O and subprocess calls only — follow this `cli.py`/`core.py`
 split for any future script whose logic grows beyond simple argument-parsing-and-dispatch.
@@ -318,6 +319,24 @@ Progress *factories* themselves) were extracted from it.
   fansub tags) are dropped. When extending the tag vocabularies or anchor-detection regexes,
   verify against real filename fixtures (still no test framework in this repo) rather than
   reasoning about the regex in isolation — this is still the most fragile/fiddly logic here.
+- `prunelib` deletes files the user *picked*, rather than files it
+  produced, so everything it removes is listed and confirmed first, and it trashes by default
+  (`-p/--permanent` requires typing the item count, not a y/n keypress). Sidecars are files
+  named after the video (`stem.` / `stem-` prefix) **and** of a metadata/artwork/subtitle type
+  (`core.is_leftover`), so an unrelated `Movie.zip` never rides along; each sidecar belongs to
+  the video with the *longest* matching stem, which keeps `Show S01E01-E02.nfo` from being
+  deleted with `Show S01E01.mkv`. Folders are only swept when what's left is leftover-type
+  content, walking upward but never removing the scan root.
+- `prunelib`'s history (`.prunelib-history.json`, in the directory it's run from) records
+  files that were *shown and kept*, keyed by root-relative POSIX path with size + mtime: a
+  file that changes (an `optimiselib` re-encode in place) is suggested again. It's only
+  written on a normal finish (`q`/EOF); Ctrl+C means "didn't really review these". The scan
+  skips NAS recycle bins (`#recycle`, `@Recycle`, `$RECYCLE.BIN`) as well as dot-folders —
+  trashing on a Synology SMB share lands files in `#recycle`, which would otherwise offer
+  them straight back.
+- `prunelib`'s review prompt is line-based (`1 3 5-7`, `o 3`, `d`, `q`) rather than a
+  raw-keypress cursor UI: raw key handling is unreliable under Git Bash/mintty, and a typed
+  multi-select needs no new dependency.
 - `wallready`'s lone positional is a *directory or* a rename prefix, resolved by
   `cli.looks_like_path()`: an argument that names an existing folder, is `.`/`..`, starts with
   `~`, or contains a separator is the folder; anything else is a prefix. That keeps the

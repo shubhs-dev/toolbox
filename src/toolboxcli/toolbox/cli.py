@@ -31,6 +31,7 @@ SCRIPTS = [
     ("kavitaname", "Rename manga/manhwa/book files for Kavita server compatibility"),
     ("mergemanga", "Merge One Piece chapter CBZ files into volume CBZ files with metadata"),
     ("optimiselib", "Watch a library root: compress new videos to 1080p, tag the resolution and sort by trip"),
+    ("prunelib", "Review the biggest, oldest or least-watched videos in a library and delete the ones you pick"),
     ("sortmedia", "Move video files into folders based on the camelCase type tag in each filename"),
     ("toolbox", "List all custom scripts with a brief description (this script)"),
     ("video-download", "Download every video listed in ./urls.txt with yt-dlp + aria2c, optionally in parallel"),
