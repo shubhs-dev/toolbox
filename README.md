@@ -23,6 +23,7 @@ in Python and installed as a single pipx package.
 | `kavitaname` | Rename manga/manhwa/book files for Kavita server compatibility |
 | `mergemanga` | Merge individual One Piece chapter CBZ files into volume CBZ files with metadata |
 | `optimiselib` | Watch a library root: compress new videos to 1080p, tag the resolution and sort by trip |
+| `prunelib` | Review the biggest, oldest or least-watched videos in a library and delete the ones you pick |
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
 | `toolbox` | List all scripts in this repo with a brief description |
 | `video-download` | Download every video listed in `./urls.txt` with yt-dlp + aria2c, optionally in parallel |
@@ -706,6 +707,51 @@ the chosen backend has no 10-bit encoder in your HandBrake build, it stays 8-bit
 Windows scheduled task all work. It de-prioritises the encoder by default, and
 `-H`/`-L` keep it out of the way of live playback. State lives in `.optimiselib.json` at the
 library root, and a run killed mid-encode restores the source file on restart.
+
+---
+
+### prunelib
+
+Free up space in a media library without buying another disk. Run it from the library root:
+it ranks the videos below the current directory and lists the top few for you to review,
+open and delete.
+
+```bash
+prunelib              # 10 biggest videos
+prunelib 10 size
+prunelib oldest 25    # count and type in either order
+prunelib 20 stale -p
+```
+
+| Type | Ranks by |
+|------|----------|
+| `size` | Biggest first (default) |
+| `oldest` | Oldest modified date first |
+| `stale` | Least recently opened first (last-access time). Unreliable where the drive doesn't record access times (Windows turns that off on large NTFS volumes); prunelib warns when it looks that way |
+
+| Flag | Description |
+|------|-------------|
+| `-a, --all-files` | Rank every file, not just videos |
+| `-p, --permanent` | Delete outright instead of moving to the Recycle Bin/Trash (you type the item count to confirm) |
+| `-r, --reset-history` | Forget which files were already reviewed in this directory |
+
+At the prompt, type row numbers or ranges (`1 3 5-7`) to toggle them, `a`/`n` to select
+all/none, `o 3` to open row 3 in your default player, `d` to delete the selection and `q` to
+finish. Before anything is deleted you see the full list and confirm it.
+
+Deleting a video also removes its sidecars: subtitles, `.nfo`, artwork and `.trickplay`
+named after it. A folder left holding only Jellyfin metadata, artwork or subtitles is removed
+too, so a finished show goes entirely once its last episode does. Files go to the Recycle
+Bin/Trash by default, so empty it to actually free the space. On a network share there may be
+no Recycle Bin, in which case the server's own recycle folder (Synology `#recycle`) is used or
+the file is deleted outright.
+
+Files you were shown and kept are recorded in `.prunelib-history.json` in the directory you ran
+it from and skipped next time, so each run moves on to new suggestions. A file comes back if
+its size or modified date changes, for example after `optimiselib` re-encodes it. History is
+saved when you finish with `q`; Ctrl+C leaves it untouched. Dot-folders and NAS
+recycle-bin/snapshot folders (`#recycle`, `@Recycle`, `$RECYCLE.BIN`, `@eaDir`) are never
+scanned.
 
 ---
 
