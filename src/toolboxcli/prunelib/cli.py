@@ -173,7 +173,11 @@ class Plan:
 
 
 def _sweepable(d: Path, planned: set[Path]) -> bool:
-    """True if, once ``planned`` is gone, ``d`` holds only Jellyfin leftovers."""
+    """True if, once ``planned`` is gone, ``d`` holds only Jellyfin leftovers.
+
+    Subfolders are always looked inside, never waved through by name: a folder called
+    ``metadata`` holding a video must keep its parent, and whatever a swept folder
+    contains has to be something the confirmation listing accounts for."""
     try:
         entries = list(os.scandir(d))
     except OSError:
@@ -183,7 +187,7 @@ def _sweepable(d: Path, planned: set[Path]) -> bool:
         if p in planned:
             continue
         if e.is_dir(follow_symlinks=False):
-            if core.is_leftover(e.name, True) or _sweepable(p, planned):
+            if _sweepable(p, planned):
                 continue
             return False
         if not core.is_leftover(e.name, False):
@@ -216,10 +220,12 @@ def build_plan(root: Path, videos: list[Path]) -> Plan:
             siblings = os.listdir(v.parent)
         except OSError:
             continue
-        planned.update(
-            v.parent / s
-            for s in core.sidecar_names(v.name, siblings, lambda n, d=v.parent: (d / n).is_dir())
-        )
+        for s in core.sidecar_names(v.name, siblings, lambda n, d=v.parent: (d / n).is_dir()):
+            sc = v.parent / s
+            # A sidecar folder (Movie.trickplay) goes only if it holds nothing but leftovers.
+            if sc.is_dir() and not sc.is_symlink() and not _sweepable(sc, set()):
+                continue
+            planned.add(sc)
 
     # Walk up from each emptied folder, deepest first, sweeping folders left holding
     # only leftovers. Never the scan root itself, nor anything outside it.
@@ -268,7 +274,9 @@ def show_plan(root: Path, plan: Plan, videos: set[Path], permanent: bool) -> Non
 
 def remove(p: Path, permanent: bool) -> None:
     if not permanent:
-        move_to_trash(p.resolve())
+        # absolute(), not resolve(): a symlinked sidecar must trash the link, never
+        # the file it points at.
+        move_to_trash(p.absolute())
     elif p.is_dir() and not p.is_symlink():
         shutil.rmtree(p)
     else:
