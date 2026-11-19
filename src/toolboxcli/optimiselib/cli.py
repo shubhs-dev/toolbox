@@ -46,6 +46,13 @@ Usage:
     optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
     optimiselib -S                        # don't scan for or merge subtitle files
     optimiselib -s                        # merge waiting subtitles only, then exit
+    optimiselib -R                        # TEMPORARY: log videos compressed by hand
+
+-R/--reconcile is a temporary migration aid: it walks every folder in the library (not the
+root, not _review/), and adds each video the log doesn't know about yet as if optimiselib had
+sorted it there — probed for resolution, depth, duration and subtitles, but renamed, moved
+and re-encoded not at all. Stop a running watcher first: it holds the log in memory and
+would overwrite the new entries the next time it saves.
 """
 
 from __future__ import annotations
@@ -62,6 +69,7 @@ from pathlib import Path
 
 from rich.console import Group
 from rich.live import Live
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -963,6 +971,100 @@ def list_library(root: Path, dest: str | None) -> None:
     ok(f"{len(names)} file{'' if len(names) == 1 else 's'} → {out}")
 
 
+def reconcile(root: Path, log: dict, dry_run: bool) -> None:
+    """Log every video in the library's folders that the log doesn't know about yet, as if
+    optimiselib had sorted it there. TEMPORARY — for bringing files compressed by hand with
+    compressvid into the log; remove once the library is reconciled.
+
+    Nothing is renamed, moved or re-encoded: each file is probed and recorded as it stands.
+    Root files are left out, since they're the pipeline's pending input rather than finished
+    work, and so is `_review/`. The log is keyed by file name, so a name the log already
+    holds — from any folder — is left alone, and of two unlogged files sharing a name only
+    the first is added.
+    """
+    require_tool("ffprobe", "part of ffmpeg")
+
+    in_folders = sorted(
+        (v for v in all_videos(root) if v.parent != root),
+        key=lambda v: str(v.relative_to(root)).lower(),
+    )
+    missing = [v for v in in_folders if v.name not in log]
+    already = len(in_folders) - len(missing)
+
+    if not missing:
+        info(f"Log already covers all {already} video(s) in the library's folders")
+        return
+
+    added: dict[str, dict] = {}
+    unreadable: list[Path] = []
+    clashes: list[Path] = []
+    interrupted = False
+    try:
+        with progress_bar() as progress:
+            task = progress.add_task("Probing", total=len(missing))
+            for v in missing:
+                if v.name in added:
+                    clashes.append(v)
+                else:
+                    probed = probe(v)
+                    if probed is None:
+                        unreadable.append(v)
+                    else:
+                        height, duration, depth, has_sub = probed
+                        added[v.name] = {
+                            "status": "sorted",
+                            "resolution": core.resolution_label(height),
+                            # The pre-compression height is unknown; the current one is the
+                            # best stand-in resolve_duplicate() will get.
+                            "source_height": height,
+                            "duration": duration,
+                            "bit_depth": depth,
+                            "has_sub": has_sub,
+                            "compressed_size": v.stat().st_size,
+                            # From the name, as _finish() records it; the folder when the
+                            # name carries no collection field.
+                            "trip": core.parse_stem(v.stem).trip or v.parent.name,
+                            "dest": str(v.relative_to(root)),
+                            "reconciled": True,
+                            "ts": datetime.now().isoformat(),
+                        }
+                progress.advance(task)
+    except KeyboardInterrupt:
+        interrupted = True
+
+    if dry_run:
+        tbl = Table(title="Would be added to the log", box=box.ROUNDED, title_style="bold cyan")
+        tbl.add_column("File", style="cyan")
+        tbl.add_column("Resolution", justify="center")
+        tbl.add_column("Depth", justify="center")
+        tbl.add_column("Sub", justify="center")
+        for entry in added.values():
+            tbl.add_row(
+                escape(entry["dest"]), entry["resolution"],
+                f"{entry['bit_depth']}-bit", "yes" if entry["has_sub"] else "",
+            )
+        if added:
+            console.print(tbl)
+    elif added:
+        # Saved even after Ctrl+C: what was probed is still correct, and a re-run only has
+        # the rest to do.
+        with _log_lock:
+            log.update(added)
+            save_log(root, log)
+
+    for v in unreadable:
+        warn(f"Not added (ffprobe could not read it): {escape(str(v.relative_to(root)))}")
+    for v in clashes:
+        warn(f"Not added (another file is already logged as {escape(v.name)}): "
+             f"{escape(str(v.relative_to(root)))}")
+    verb = "Would add" if dry_run else "Added"
+    summary = f"{verb} {len(added)} video(s) to {LOG_NAME}; {already} already logged"
+    if interrupted:
+        warn(f"Interrupted. {summary}. Run it again to finish the rest.")
+    else:
+        ok(summary)
+
+
 def show_summary(results: list[dict]) -> None:
     if not results:
         return
@@ -1003,6 +1105,10 @@ def build_parser() -> argparse.ArgumentParser:
                     dest="list_files",
                     help="List every video in the library alphabetically and exit; with a "
                          "FILE, write the list there instead of printing it")
+    ap.add_argument("-R", "--reconcile", action="store_true",
+                    help="TEMPORARY: log every video in the library's folders that the log "
+                         "doesn't have yet, as already optimised, then exit. Renames and "
+                         "moves nothing; -n previews it")
     ap.add_argument("-F", "--force", action="store_true",
                     help="Re-process files the log has already marked done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
@@ -1047,6 +1153,10 @@ def main() -> None:
 
     if args.report:
         show_report(root, log)
+        return
+
+    if args.reconcile:
+        reconcile(root, log, args.dry_run)
         return
 
     if args.subs_only:
