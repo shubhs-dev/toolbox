@@ -133,6 +133,18 @@ def test_atomic_output_replaces_only_on_success(tmp_path, monkeypatch):
     assert trashed == [dest]
 
 
+# ── handbrake presets ──────────────────────────────────────────────────
+
+
+def test_list_presets_reads_the_bundled_presets(capsys):
+    # The bundled directory is an importlib.resources Traversable, which only promises
+    # iterdir(); listing it used to rely on glob().
+    from toolboxcli._common import handbrake
+    handbrake.list_presets()
+    out = capsys.readouterr().out
+    assert "hw-1080" in out and "hw-720" in out
+
+
 # ── video-download ─────────────────────────────────────────────────────
 
 

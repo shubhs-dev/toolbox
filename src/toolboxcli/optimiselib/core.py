@@ -60,7 +60,7 @@ class ParsedStem:
     """A filename stem split into its base name and its bracketed tag group."""
 
     base: str                                    # "People - Title - Trip"
-    tags: list[str] = field(default_factory=list)  # ["Restored", "1080p"]
+    tags: list[str] = field(default_factory=list[str])  # ["Restored", "1080p"]
 
     @property
     def fields(self) -> list[str]:
@@ -121,7 +121,7 @@ def apply_tags(stem: str, height: int, depth: int = 8, has_sub: bool = False) ->
         if not any(pattern.match(t) for pattern in _OWNED_TOKEN_RES)
     ]
 
-    managed = []
+    managed: list[str] = []
     label = resolution_label(height)
     if label:
         managed.append(label)

@@ -301,7 +301,7 @@ def concat_group(
                  "left the parts in place, check it before deleting them")
             stats.unverified += 1
             return
-        expected = sum(part_durations)
+        expected = sum(d for d in part_durations if d is not None)  # none are, per the check above
         if actual + DURATION_SLACK_PER_PART * len(parts) < expected:
             warn(f"'{output_path.name}' is {actual:.1f}s but the parts add up to "
                  f"{expected:.1f}s — some part didn't make it in. Left the parts in place.")

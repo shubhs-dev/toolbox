@@ -48,6 +48,7 @@ where = ["src"]
 
 [dependency-groups]
 dev = [
+    "pyright[nodejs]>=1.1.400",
     "pytest>=8",
     "ruff>=0.16",
 ]
@@ -56,6 +57,16 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["tests"]   # so test modules can `from conftest import ...`
 addopts = ["-ra"]
+
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.9"   # matches requires-python
+typeCheckingMode = "basic"
+# The I/O-free logic modules are held to strict: they're where the parsing and decision
+# logic lives, and they take plain values, so full types cost little there.
+strict = ["src/toolboxcli/*/core.py"]
+venvPath = "."
+venv = ".venv"
 
 [tool.ruff]
 src = ["src"]

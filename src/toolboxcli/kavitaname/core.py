@@ -179,7 +179,7 @@ _RANGE_VOL_RE = re.compile(r"(?:vol|v)\.?[\s_]?\d+(?:\.\d+)?-(?:vol|v)\.?[\s_]?\
 _RANGE_CH_RE = re.compile(r"(?:ch|c)\.?[\s_]?\d+(?:\.\d+)?-(?:ch|c)\.?[\s_]?\d+", re.IGNORECASE)
 
 
-def _truncate_at_duplicate(name: str, dup_re: re.Pattern, range_re: re.Pattern, marker_re: re.Pattern) -> str:
+def _truncate_at_duplicate(name: str, dup_re: re.Pattern[str], range_re: re.Pattern[str], marker_re: re.Pattern[str]) -> str:
     if range_re.search(name):
         return name
     if not dup_re.search(name):
@@ -248,7 +248,7 @@ def _format_number(value: str, width: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _match_any(token: str, patterns: list[re.Pattern]) -> str:
+def _match_any(token: str, patterns: list[re.Pattern[str]]) -> str:
     for pattern in patterns:
         m = pattern.search(token)
         if m:
@@ -358,10 +358,10 @@ def parse_stem(stem: str) -> ChapterInfo:
     # pattern too, and checking it first would swallow the number.
     if not info.has_number():
         for i, tok in enumerate(tokens):
-            inner = _unwrap(tok)
-            if not PROLOGUE_RE.match(inner):
+            prologue = PROLOGUE_RE.match(_unwrap(tok))
+            if not prologue:
                 continue
-            num = PROLOGUE_RE.match(inner).group("num")
+            num = prologue.group("num")
             if num is None and i + 1 < len(tokens):
                 nxt = BARE_NUM_RE.match(_unwrap(tokens[i + 1]))
                 if nxt:

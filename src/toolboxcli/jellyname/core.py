@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from toolboxcli._common.console import warn
 from toolboxcli._common.ffprobe import bit_depth as _probe_bit_depth
@@ -96,9 +96,9 @@ class MediaTags:
     video_codec: str = ""
     bit_depth: str = ""
     hdr: str = ""
-    audio: list[str] = field(default_factory=list)
-    source: list[str] = field(default_factory=list)
-    edition: list[str] = field(default_factory=list)
+    audio: list[str] = field(default_factory=list[str])
+    source: list[str] = field(default_factory=list[str])
+    edition: list[str] = field(default_factory=list[str])
 
     def add(self, category: str, value: str) -> None:
         if category in ("audio", "source", "edition"):
@@ -138,7 +138,7 @@ _PROBE_VIDEO_CODECS = {"h264": "AVC", "hevc": "HEVC"}
 _INTERLACED_FIELD_ORDERS = {"tt", "bb", "tb", "bt"}
 
 
-def _title_source_edition(payload: dict) -> tuple[list[str], list[str]]:
+def _title_source_edition(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
     """Extracts source/edition tags (BluRay, PROPER, IMAX, ...) from the
     container's embedded title tag, by running it through the same
     tokenizer/classifier a filename gets. Looked up case-insensitively since
@@ -147,7 +147,7 @@ def _title_source_edition(payload: dict) -> tuple[list[str], list[str]]:
     the stream itself via probed_tags(), which is authoritative; a stale
     embedded string should never compete with that.
     """
-    tags_dict = payload.get("format", {}).get("tags") or {}
+    tags_dict: dict[str, Any] = payload.get("format", {}).get("tags") or {}
     title = next((v for k, v in tags_dict.items() if k.lower() == "title"), "")
     if not title or not isinstance(title, str):
         return [], []
@@ -157,7 +157,7 @@ def _title_source_edition(payload: dict) -> tuple[list[str], list[str]]:
     return scratch.source, scratch.edition
 
 
-def probed_tags(payload: dict) -> dict[str, str | list[str]]:
+def probed_tags(payload: dict[str, Any]) -> dict[str, str | list[str]]:
     """Pure mapping from an already-fetched ffprobe JSON payload to whichever
     MediaTags fields can be confidently derived from stream data, plus
     source/edition recovered from the embedded title tag if one is present."""
@@ -182,9 +182,9 @@ def probed_tags(payload: dict) -> dict[str, str | list[str]]:
         if depth > 8:
             result["bit_depth"] = f"{depth}bit"
 
+        side_data: list[dict[str, Any]] = video.get("side_data_list") or []
         is_dolby_vision = any(
-            "dovi" in (sd.get("side_data_type") or "").lower()
-            for sd in video.get("side_data_list") or []
+            "dovi" in (sd.get("side_data_type") or "").lower() for sd in side_data
         )
         transfer = (video.get("color_transfer") or "").lower()
         if is_dolby_vision:
@@ -214,8 +214,9 @@ def apply_probed_tags(tags: MediaTags, probed: dict[str, str | list[str]]) -> No
     for field_name in ("resolution", "video_codec", "bit_depth", "hdr"):
         if not getattr(tags, field_name) and probed.get(field_name):
             setattr(tags, field_name, probed[field_name])
-    if not tags.audio and probed.get("audio"):
-        tags.audio.append(probed["audio"])
+    audio = probed.get("audio")
+    if not tags.audio and isinstance(audio, str) and audio:
+        tags.audio.append(audio)
     if not tags.source and probed.get("source"):
         tags.source.extend(probed["source"])
     if not tags.edition and probed.get("edition"):
@@ -292,7 +293,7 @@ def _classify_trailing(tokens: list[str], tags: MediaTags) -> str:
     """Tokens after a TV anchor: leading unclassified tokens are the episode
     title; the first recognized tag permanently switches every remaining
     token into tag-or-noise mode (a token never re-enters the title)."""
-    title_tokens = []
+    title_tokens: list[str] = []
     trailing = False
     for tok in tokens:
         result = _classify_token(tok, tags)

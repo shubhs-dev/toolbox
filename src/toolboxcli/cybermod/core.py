@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -68,7 +69,7 @@ def find_overwrites(src_dir: Path, dest_dir: Path) -> list[str]:
     """Return relative paths under src_dir that already exist under dest_dir."""
     if not dest_dir.is_dir():
         return []
-    overwrites = []
+    overwrites: list[str] = []
     for f in src_dir.rglob("*"):
         if f.is_file():
             rel = f.relative_to(src_dir)
@@ -150,7 +151,7 @@ def install_mod(
     game_dir: Path,
     yes: bool,
     dry_run: bool,
-    confirm_fn,
+    confirm_fn: Callable[[str], bool],
 ) -> InstallStatus:
     """Extract, preview, confirm, and install a single mod archive."""
     filename = archive.name

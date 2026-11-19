@@ -36,6 +36,7 @@ def _run_ffmpeg(cmd: list[str]) -> int:
     noise dropped (it writes straight to stderr on every input, DVD or not, and
     ignores ffmpeg's own -loglevel)."""
     proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True, bufsize=1)
+    assert proc.stderr is not None  # stderr=PIPE
     for line in proc.stderr:
         if not line.lstrip().startswith("libdvdread:"):
             sys.stderr.write(line)
@@ -193,6 +194,7 @@ def main() -> None:
 
         console.print()
         if inplace:
+            assert tmpfile is not None  # set above whenever inplace
             _replace(tmpfile, video)
             tmpfile = None
             console.print(f"addsub: done → {video} (updated in place)")

@@ -148,8 +148,9 @@ def parse_streams(payload: dict[str, Any]) -> StreamInfo | None:
     Cover art (attached_pic) is ignored throughout: the final concat maps `0:V`, which
     skips it, so a part that has cover art and one that doesn't still match.
     """
+    probed: list[dict[str, Any]] = payload.get("streams") or []
     streams = [
-        s for s in payload.get("streams") or []
+        s for s in probed
         if not (s.get("codec_type") == "video" and s.get("disposition", {}).get("attached_pic"))
     ]
     if not streams:
@@ -299,9 +300,16 @@ def normalize_command(
     elif audio_matches(info, target):
         cmd += ["-c:a", "copy"]
     else:
-        cmd += ["-c:a", target.aencoder, "-ar", str(target.sample_rate), "-ac", str(target.channels)]
+        assert target.aencoder is not None  # set whenever acodec is
+        cmd += ["-c:a", target.aencoder]
+        # ffprobe can omit either property; then ffmpeg keeps the source's own value
+        # rather than being handed "None".
+        if target.sample_rate:
+            cmd += ["-ar", str(target.sample_rate)]
+        if target.channels:
+            cmd += ["-ac", str(target.channels)]
         if target.aencoder in LOSSY_AUDIO_ENCODERS:
-            cmd += ["-b:a", f"{AUDIO_KBPS_PER_CHANNEL * target.channels}k"]
+            cmd += ["-b:a", f"{AUDIO_KBPS_PER_CHANNEL * (target.channels or 2)}k"]
 
     return [*cmd, str(dst)]
 

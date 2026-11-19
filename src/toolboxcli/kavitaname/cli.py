@@ -324,7 +324,7 @@ def make_special_counter(files: list[Path]) -> Callable[[], int]:
     return next_index
 
 
-def process_folder(folder: Path, args: argparse.ArgumentParser, volume_map: dict[int, int]) -> tuple[int, int, int]:
+def process_folder(folder: Path, args: argparse.Namespace, volume_map: dict[int, int]) -> tuple[int, int, int]:
     files = discover_files(folder, args.type)
     if not files:
         warn(f"No {args.type} files found in: {folder}")
