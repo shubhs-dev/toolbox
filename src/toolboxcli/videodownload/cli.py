@@ -288,7 +288,7 @@ def positive_int(value: str) -> int:
     try:
         n = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"not a number: {value!r}")
+        raise argparse.ArgumentTypeError(f"not a number: {value!r}") from None
     if n < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
     return n

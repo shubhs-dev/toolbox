@@ -49,7 +49,13 @@ from typing import Callable
 from toolboxcli._common import ffprobe as ffprobe_common
 from toolboxcli._common.console import console, die, info, ok, warn
 from toolboxcli._common.tooling import require_tool
-from toolboxcli.jellyname.core import VIDEO_EXTS, MediaTags, apply_probed_tags, probed_tags, process_file
+from toolboxcli.jellyname.core import (
+    VIDEO_EXTS,
+    MediaTags,
+    apply_probed_tags,
+    probed_tags,
+    process_file,
+)
 
 
 def do_rename(src_file: Path, target_dir: Path, new_filename: str, src_dir: Path, dry_run: bool) -> str:

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import argparse
 
-from rich.table import Table
 from rich import box
+from rich.table import Table
 
 from toolboxcli._common.console import console
 

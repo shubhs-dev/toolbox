@@ -34,9 +34,16 @@ for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cyb
            optimiselib prunelib sortmedia toolbox video-download wallready; do
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
+
+# Lint (config in pyproject.toml); must pass before a change is committed
+uv run ruff check src
 ```
 
-No lint/format/test commands exist — there's no configured linter or test runner in this repo.
+ruff is a linter only: `ruff format` is deliberately not used, because it would explode
+the paired argument layouts (`"-o", template,` on one line) that make the subprocess
+command lists readable. The rule set is correctness-focused (pyflakes, pycodestyle,
+bugbear, import order, pyupgrade, pylint errors); don't add complexity/style rule families
+without a reason. No test runner exists yet.
 
 ## Architecture
 
