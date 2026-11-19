@@ -43,10 +43,15 @@ uv run pytest
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same three on every push to `main` and every PR:
-ruff + pyright once, and pytest on Linux, macOS and Windows × Python 3.9 (the
+ruff + pyright once, and pytest on Linux, macOS and Windows × Python 3.11 (the
 `requires-python` floor) and 3.14 (what `uv tool install --managed-python` picks). Only
 Linux installs HandBrakeCLI, so the encode/sort integration tests run there and skip
 elsewhere. Don't merge a PR with a red check; don't skip or disable a test to get green.
+
+`requires-python` tracks the oldest Python still in support (3.11 until its end of life in
+October 2027); uv installs its own newer Python, so raising the floor costs users nothing.
+Dependabot (`.github/dependabot.yml`) opens monthly PRs for the GitHub Actions and the uv
+lock file; they go through CI like any other PR.
 
 ruff is a linter only: `ruff format` is deliberately not used, because it would explode
 the paired argument layouts (`"-o", template,` on one line) that make the subprocess
@@ -58,8 +63,8 @@ without a reason.
 
 pyright runs in **basic** mode over `src/`, and **strict** for the `*/core.py` modules
 (`[tool.pyright]` in pyproject.toml) — those hold the parsing and decision logic and take
-plain values, so full types are cheap there. `pythonVersion = "3.9"` matches
-`requires-python`, so a stdlib call newer than 3.9 is flagged. ffprobe/JSON payloads are
+plain values, so full types are cheap there. `pythonVersion = "3.11"` matches
+`requires-python`, so a stdlib call newer than 3.11 is flagged. ffprobe/JSON payloads are
 dynamic: annotate them `dict[str, Any]` / `list[dict[str, Any]]` rather than bare `dict`,
 which strict mode reports as unknown. When pyright can't see an invariant the code relies on
 (e.g. `plan` is only None in a dry run), narrow with an `assert` that states it, rather than

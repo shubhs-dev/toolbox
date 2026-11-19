@@ -48,7 +48,6 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from rich.markup import escape
 
@@ -208,7 +207,7 @@ def _shorten(text: str, width: int = STATUS_WIDTH) -> str:
 
 # Worker result: (yt-dlp exit code, last lines of output), or None when the line was
 # deleted from urls.txt before the download started.
-Outcome = Optional[tuple[int, list[str]]]
+Outcome = tuple[int, list[str]] | None
 
 
 def run_parallel(downloads: list[Download], workers: int, urls: UrlsFile, results: Results) -> None:

@@ -19,9 +19,9 @@ Two things are worth knowing before touching the anchor patterns:
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from toolboxcli._common.pathsafe import sanitize_for_path
 

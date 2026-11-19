@@ -56,9 +56,8 @@ import json
 import re
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable
 
 from toolboxcli._common.console import console, die, info, ok, warn
 from toolboxcli._common.pathsafe import sanitize_for_path

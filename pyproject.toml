@@ -7,13 +7,13 @@ name = "shubhs-toolbox"
 version = "0.1.0"
 description = "Personal CLI toolbox for media processing and game modding"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Shubhanshu", email = "shubhanshu@createdigitalsolutions.com" }]
 
 dependencies = [
-    "rich>=13.7",
-    "send2trash>=1.8",
+    "rich>=15",
+    "send2trash>=2.2",
 ]
 
 [project.scripts]
@@ -48,9 +48,9 @@ where = ["src"]
 
 [dependency-groups]
 dev = [
-    "pyright[nodejs]>=1.1.400",
-    "pytest>=8",
-    "ruff>=0.16",
+    "pyright[nodejs]>=1.1.414",
+    "pytest>=9.2",
+    "ruff>=0.17",
 ]
 
 [tool.pytest.ini_options]
@@ -60,7 +60,7 @@ addopts = ["-ra"]
 
 [tool.pyright]
 include = ["src"]
-pythonVersion = "3.9"   # matches requires-python
+pythonVersion = "3.11"   # matches requires-python
 typeCheckingMode = "basic"
 # The I/O-free logic modules are held to strict: they're where the parsing and decision
 # logic lives, and they take plain values, so full types cost little there.
@@ -70,7 +70,7 @@ venv = ".venv"
 
 [tool.ruff]
 src = ["src"]
-target-version = "py39"   # matches requires-python
+target-version = "py311"   # matches requires-python
 line-length = 100
 
 [tool.ruff.lint]
