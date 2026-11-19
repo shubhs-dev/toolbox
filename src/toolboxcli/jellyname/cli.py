@@ -43,8 +43,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from toolboxcli._common import ffprobe as ffprobe_common
 from toolboxcli._common.console import console, die, info, ok, warn

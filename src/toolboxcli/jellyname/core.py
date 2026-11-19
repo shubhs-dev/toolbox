@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from toolboxcli._common.console import warn
 from toolboxcli._common.ffprobe import bit_depth as _probe_bit_depth

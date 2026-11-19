@@ -43,10 +43,15 @@ uv run pytest
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same three on every push to `main` and every PR:
-ruff + pyright once, and pytest on Linux, macOS and Windows × Python 3.9 (the
+ruff + pyright once, and pytest on Linux, macOS and Windows × Python 3.11 (the
 `requires-python` floor) and 3.14 (what `uv tool install --managed-python` picks). Only
 Linux installs HandBrakeCLI, so the encode/sort integration tests run there and skip
 elsewhere. Don't merge a PR with a red check; don't skip or disable a test to get green.
+
+`requires-python` tracks the oldest Python still in support (3.11 until its end of life in
+October 2027); uv installs its own newer Python, so raising the floor costs users nothing.
+Dependabot (`.github/dependabot.yml`) opens monthly PRs for the GitHub Actions and the uv
+lock file; they go through CI like any other PR.
 
 ruff is a linter only: `ruff format` is deliberately not used, because it would explode
 the paired argument layouts (`"-o", template,` on one line) that make the subprocess
@@ -58,8 +63,8 @@ without a reason.
 
 pyright runs in **basic** mode over `src/`, and **strict** for the `*/core.py` modules
 (`[tool.pyright]` in pyproject.toml) — those hold the parsing and decision logic and take
-plain values, so full types are cheap there. `pythonVersion = "3.9"` matches
-`requires-python`, so a stdlib call newer than 3.9 is flagged. ffprobe/JSON payloads are
+plain values, so full types are cheap there. `pythonVersion = "3.11"` matches
+`requires-python`, so a stdlib call newer than 3.11 is flagged. ffprobe/JSON payloads are
 dynamic: annotate them `dict[str, Any]` / `list[dict[str, Any]]` rather than bare `dict`,
 which strict mode reports as unknown. When pyright can't see an invariant the code relies on
 (e.g. `plan` is only None in a dry run), narrow with an `assert` that states it, rather than
@@ -257,14 +262,12 @@ Progress *factories* themselves) were extracted from it.
   for being larger, the tag reverts to the original's real depth rather than the intent. It also
   treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
   that guard those files sort into a folder called `Sub`.
-- `optimiselib -R/--reconcile` is a **temporary** migration aid, to be removed once the owner's
-  library is reconciled: it logs every unlogged video in the library (not `_review/`) from a
-  probe, without renaming or moving anything — folder files as `sorted`, root files as
-  `reconciled`. Entries carry `"reconciled": true`, which `process()` treats as "already
-  compressed": the file is tagged, deduplicated and sorted but never encoded (unless `-F`),
-  because a compressvid output's name has no resolution tag for `already_optimised()` to see.
-  `_finish()` keeps the marker and moves the entry to the tagged name. Remove all of it
-  together. Don't build anything else on it.
+- Log entries marked `"reconciled": true` were written by a since-removed `-R/--reconcile`
+  migration that logged files compressed by hand with compressvid. `process()` still treats
+  the marker as "already compressed" — tagged, deduplicated and sorted, never encoded (unless
+  `-F`) — because a compressvid output's name has no resolution tag for `already_optimised()`
+  to see, and `_finish()` keeps the marker when it moves the entry to the tagged name. It goes
+  when the log is replaced; don't build anything else on it.
 - `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
   `-e`/`-q` on the command line so the bundled presets are never edited: if the preset's own
   encoder is available it's used with **no** override at all. Unlike `ffmpeg -encoders`, which

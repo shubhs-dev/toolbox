@@ -40,29 +40,6 @@ def library(tmp_path, make_video):
 
 
 @needs("ffmpeg", "ffprobe")
-def test_reconcile_dry_run_writes_nothing(library, run_cli):
-    result = run_cli("optimiselib", [str(library), "-R", "-n"])
-    assert result.returncode == 0, result.stderr
-    assert "Would add 3 video(s)" in result.stdout
-    assert not (library / ".optimiselib.json").exists()
-
-
-@needs("ffmpeg", "ffprobe")
-def test_reconcile_logs_root_and_folders_but_not_review(library, run_cli):
-    result = run_cli("optimiselib", [str(library), "-R"])
-    assert result.returncode == 0, result.stderr
-    log = _log(library)
-    assert set(log) == {"Alice - Day 1 - Lakes.mp4", "Dave - Hike - Lakes.mp4", "Eve - Untitled.mp4"}
-    assert log["Alice - Day 1 - Lakes.mp4"]["status"] == "sorted"
-    assert log["Dave - Hike - Lakes.mp4"]["status"] == "reconciled"
-    assert log["Dave - Hike - Lakes.mp4"]["resolution"] == "720p"
-    assert all(entry["reconciled"] for entry in log.values())
-
-    again = run_cli("optimiselib", [str(library), "-R"])
-    assert "Log already covers all 3 video(s)" in again.stdout
-
-
-@needs("ffmpeg", "ffprobe")
 def test_dry_run_plans_but_changes_nothing(library, run_cli):
     before = _files(library)
     result = run_cli("optimiselib", [str(library), "-n", "-O", "-S"])
@@ -73,7 +50,13 @@ def test_dry_run_plans_but_changes_nothing(library, run_cli):
 
 @needs("ffmpeg", "ffprobe", "HandBrakeCLI")
 def test_reconciled_files_are_sorted_without_encoding(library, run_cli):
-    assert run_cli("optimiselib", [str(library), "-R"]).returncode == 0
+    # Log entries as the since-removed -R/--reconcile wrote them: still in real libraries,
+    # and still meaning "already compressed, don't encode".
+    (library / ".optimiselib.json").write_text(json.dumps({
+        "Alice - Day 1 - Lakes.mp4": {"status": "sorted", "reconciled": True},
+        "Dave - Hike - Lakes.mp4": {"status": "reconciled", "reconciled": True},
+        "Eve - Untitled.mp4": {"status": "reconciled", "reconciled": True},
+    }))
     result = run_cli("optimiselib", [str(library), "-O", "-S", "-g", "cpu"])
     assert result.returncode == 0, result.stderr
     assert _files(library) == {
