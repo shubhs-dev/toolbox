@@ -647,9 +647,13 @@ For every video that appears **directly in the library root**:
    added yourself survive, and the managed tokens are replaced rather than duplicated, so
    `[Restored 720p]` becomes `[Restored 1080p]` after an external upscale. The tag always
    describes the finished file — if a transcode is discarded for being larger, it reverts.
-3. **Deduplicate** — a higher-resolution or more complete copy replaces the one already in the
-   library (the old one goes to the Recycle Bin). Anything ambiguous — higher res but shorter,
-   longer but lower res — is parked in `_review/` rather than decided unattended.
+3. **Deduplicate** — a copy of the same video anywhere in the library is found: the same people,
+   title and collection, whatever the order or case and whatever the tags, so
+   `Alice, Bob - Day 1 - Lakes [1080p]` and `bob and alice - day 1 - lakes` are one video.
+   People may be separated by commas, `&` or `and`. A higher-resolution or more complete copy
+   replaces the one already in the library (the old one goes to the Recycle Bin). Anything
+   ambiguous — higher res but shorter, longer but lower res — is parked in `_review/` rather
+   than decided unattended.
 4. **Sort** — moved into the folder named by the **Trip** field, the last `' - '`-separated part
    of the name. A name without all three fields is tagged, left in root and reported.
 
@@ -689,7 +693,7 @@ file is overwritten.
 | `-n, --dry-run` | off | Show planned rename, destination and duplicate verdict; change nothing |
 | `-r, --report` | off | List files below 1080p and the review queue, then exit |
 | `-l, --list` | off | List every video in the library alphabetically, then exit; with a `FILE` argument, write the list there instead of printing it |
-| `-F, --force` | off | Re-process files the log already marked done |
+| `-F, --force` | off | Re-process files the library database already knows as done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |
 | `-B, --bit-depth` | `auto` | `auto` matches the source (10-bit stays 10-bit, 8-bit isn't inflated); `8`/`10` force it |
@@ -718,8 +722,17 @@ the chosen backend has no 10-bit encoder in your HandBrake build, it stays 8-bit
 
 **Running it as a service** — it's a plain foreground process, so `systemd`, `nohup` or a
 Windows scheduled task all work. It de-prioritises the encoder by default, and
-`-H`/`-L` keep it out of the way of live playback. State lives in `.optimiselib.json` at the
-library root, and a run killed mid-encode restores the source file on restart.
+`-H`/`-L` keep it out of the way of live playback. A run killed mid-encode restores the source
+file on restart.
+
+**Library database** — everything optimiselib knows lives in `.optimiselib.db` at the library
+root: a single SQLite file, no server, and you can open it with any SQLite viewer. Before each
+poll it's synced with the disk — a file you rename or move by hand keeps its history and is
+never re-encoded (it's recognised by its size and modified time), files you add to folders
+yourself are recorded as they are, and files that have gone are marked missing. The old
+`.optimiselib.json` log is imported on the first run and kept as `.optimiselib.json.migrated`.
+A dry run (`-n`) works on an in-memory copy, so it changes nothing. Keep the library on a
+local disk: SQLite's locking isn't reliable over a network share.
 
 ---
 

@@ -12,9 +12,10 @@ root it will:
      later with a better tool are visible at a glance:
          People - Title - Trip  ->  People - Title - Trip [1080p].mp4
      Tags you added yourself are preserved: [Restored 720p] -> [Restored 1080p].
-  3. Compare it against any copy already in the library. A higher-resolution or more
-     complete version replaces the old one (which goes to the Recycle Bin); anything
-     ambiguous is parked in _review/ for you to decide.
+  3. Compare it against any copy already in the library — the same people, title and
+     collection, in any order or case and whatever its tags, in any folder. A
+     higher-resolution or more complete version replaces the old one (which goes to the
+     Recycle Bin); anything ambiguous is parked in _review/ for you to decide.
   4. Move it into the folder named by its Trip field — the last " - " separated part of
      the name.
 
@@ -31,6 +32,13 @@ poll. A match is merged in with `addsub` and the file is tagged [... Sub] instea
 an addsub-style " - Sub" filename suffix. This works both for a subtitle already sitting next
 to a brand-new video, and for one dropped in later for a video that's already been optimised
 and filed into a trip folder.
+
+Everything optimiselib knows lives in .optimiselib.db, an SQLite file in the library root
+(no server). Before each poll it syncs that with the disk: a file you renamed or moved by
+hand keeps its history (so it's never re-encoded), files you add to folders yourself are
+recorded as they are, and files that have gone are marked missing. An old .optimiselib.json
+log is imported on the first run and kept as .optimiselib.json.migrated. A dry run works on
+an in-memory copy, so it changes nothing.
 
 Requires:
     HandBrakeCLI, ffprobe
@@ -51,18 +59,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
-import threading
 import time
-from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from rich import box
 from rich.console import Group
 from rich.live import Live
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -90,40 +96,109 @@ from toolboxcli._common.progress import bar as progress_bar
 from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
 from toolboxcli.optimiselib import core
+from toolboxcli.optimiselib.db import REVIEW_DIR, LibraryDB, Video, import_json_log
 
 VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
     ".m4v", ".mpg", ".mpeg", ".ts", ".vob", ".3gp", ".mts",
 }
 
-LOG_NAME = ".optimiselib.json"
-REVIEW_DIR = "_review"
-
-_log_lock = threading.Lock()
-
-
-# ── State log ─────────────────────────────────────────────────────────
-
-def load_log(root: Path) -> dict:
-    p = root / LOG_NAME
-    if p.exists():
-        try:
-            with p.open() as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            warn(f"Unreadable log at {p}, starting fresh")
-    return {}
+# Statuses meaning "this file is already compressed": optimiselib wrote it, or recorded it
+# as compressed (a sync of the library's folders, or the old log's reconciled files).
+DONE_STATUSES = {"sorted", "compressed", "awaiting_trip", "skipped", "review"}
 
 
-def save_log(root: Path, log: dict) -> None:
-    with (root / LOG_NAME).open("w") as f:
-        json.dump(log, f, indent=2)
+# ── Library database ──────────────────────────────────────────────────
+
+def rel_path(root: Path, path: Path) -> str:
+    """The database's key for a file: root-relative and '/'-separated on every platform."""
+    return path.relative_to(root).as_posix()
 
 
-def update_log(root: Path, log: dict, key: str, value: dict) -> None:
-    with _log_lock:
-        log[key] = value
-        save_log(root, log)
+def record(db: LibraryDB, root: Path, path: Path, status: str, **fields: object) -> None:
+    """Write the row for the file now at *path*, reading its size and mtime from disk — the
+    pair a later hand rename is recognised by."""
+    try:
+        st = path.stat()
+        size, mtime = st.st_size, st.st_mtime
+    except OSError:
+        size, mtime = 0, 0.0
+    db.upsert(Video(path=rel_path(root, path), status=status, size=size, mtime=mtime,
+                    **fields))  # pyright: ignore[reportArgumentType]
+
+
+def forget(db: LibraryDB, root: Path, *paths: Path) -> None:
+    """Drop the rows of files that no longer exist under these names (renamed by the
+    pipeline, or replaced by an encode with a different extension)."""
+    for path in paths:
+        if not path.exists():
+            db.remove(rel_path(root, path))
+
+
+def library_files(root: Path) -> dict[str, os.stat_result]:
+    """Every video under *root*, _review/ included, keyed by rel_path."""
+    found: dict[str, os.stat_result] = {}
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            path = Path(dirpath) / name
+            if _is_video(path):
+                found[rel_path(root, path)] = path.stat()
+    return found
+
+
+def sync_library(root: Path, db: LibraryDB) -> None:
+    """Bring the database in line with what's on disk, before each poll.
+
+    - A file at a new path with the exact size and mtime of a row whose file is gone was
+      renamed or moved by hand: its row (and so its history) follows it, so it's never
+      mistaken for a new video and re-encoded.
+    - A file in a folder (or _review/) that the database doesn't know is recorded as it is:
+      optimiselib never touches subfolders, so whatever is there is already compressed.
+    - A file in the root it doesn't know is left alone: that's new input for the pipeline.
+    - A row whose file has gone, and wasn't found elsewhere, is marked missing.
+    """
+    on_disk = library_files(root)
+    known = {v.path: v for v in db.all(include_missing=True)}
+    gone = [v for path, v in known.items() if path not in on_disk]
+
+    unknown_in_folders: list[str] = []
+    for path in sorted(p for p in on_disk if p not in known):
+        st = on_disk[path]
+        match = next((v for v in gone if v.size == st.st_size
+                      and abs(v.mtime - st.st_mtime) < 0.001), None)
+        if match is not None:
+            gone.remove(match)
+            db.move(match.path, path)
+            db.log_event(path, "renamed", f"from {match.path}")
+        elif "/" in path:
+            unknown_in_folders.append(path)
+
+    for path in on_disk:
+        row = known.get(path)
+        if row is not None and row.status == "missing":
+            row.status = "sorted" if "/" in path else "compressed"
+            db.upsert(row)
+            db.log_event(path, "reappeared")
+
+    for row in gone:
+        if row.status != "missing":
+            row.status = "missing"
+            db.upsert(row)
+            db.log_event(row.path, "missing")
+
+    if not unknown_in_folders:
+        return
+    with progress_bar() as progress:
+        task = progress.add_task("Recording library files", total=len(unknown_in_folders))
+        for path in unknown_in_folders:
+            probed = probe(root / path)
+            height, duration, depth, has_sub = probed or (0, 0.0, 8, False)
+            status = "review" if path.startswith(f"{REVIEW_DIR}/") else "sorted"
+            record(db, root, root / path, status, height=height, duration=duration,
+                   bit_depth=depth, has_sub=has_sub, source_height=height)
+            db.log_event(path, "found")
+            progress.advance(task)
+    info(f"Recorded {len(unknown_in_folders)} file(s) already in the library's folders")
 
 
 # ── Batch progress display ────────────────────────────────────────────
@@ -294,20 +369,6 @@ def find_folder(base: Path, name: str) -> Path | None:
     return None
 
 
-def find_existing_copy(folder: Path, identity: str, exclude: Path | None = None) -> Path | None:
-    """The file in *folder* that is the same video as *identity*, ignoring tag groups."""
-    if not folder.is_dir():
-        return None
-    for f in sorted(folder.iterdir()):
-        if not f.is_file() or f.suffix.lower() not in VIDEO_EXTS:
-            continue
-        if exclude is not None and f == exclude:
-            continue
-        if core.parse_stem(f.stem).identity() == identity:
-            return f
-    return None
-
-
 def recover_interrupted(root: Path) -> list[str]:
     """Undo a half-finished run: restore *.processing sources, drop *.tmp outputs.
 
@@ -429,48 +490,42 @@ def build_encoder_plan(args, preset_stems: list[str]) -> EncoderPlan:
 MAX_FAILURES = 3
 
 
-def should_process(video: Path, log: dict) -> bool:
+def should_process(video: Path, root: Path, db: LibraryDB) -> bool:
     """Whether a file in the root is worth another pass.
 
-    Everything in the root is a candidate — a file the log calls "sorted" that is still
-    here means you moved it back to be re-filed. Only two things are skipped, both to stop
-    a long-running watcher spinning on the same file every interval.
+    Everything in the root is a candidate — a known file that is still here means you moved
+    it back to be re-filed. Only three things are skipped, all to stop a long-running watcher
+    spinning on the same file every interval.
     """
-    entry = log.get(video.name)
-    if entry is None:
+    row = db.get(rel_path(root, video))
+    if row is None:
         return True
-
-    status = entry.get("status")
-    if status == "awaiting_trip" and not core.parse_stem(video.stem).trip:
+    if row.status == "awaiting_trip" and not core.parse_stem(video.stem).trip:
         return False   # nothing changed since we last warned about it
-    if status == "failed" and entry.get("failures", 1) >= MAX_FAILURES:
+    if row.status == "failed" and row.failures >= MAX_FAILURES:
         return False   # give up rather than retry a broken file forever
-    if status == "skipped" and entry.get("reason") == "destination exists":
+    if row.status == "skipped" and row.reason == "destination exists":
         # Stays in the root until you move or rename something, and re-encoding it on
         # every poll in the meantime would burn the GPU indefinitely. -F retries it.
         return False
     return True
 
 
-def seen_identities(log: dict) -> set[str]:
-    """Every video the log has already optimised, keyed by tag-stripped name."""
-    return {core.parse_stem(Path(name).stem).identity() for name in log}
+def already_done(row: Video | None, src_depth: int, bit_depth_pref: str) -> bool:
+    """True when this exact file is already compressed and only needs sorting.
 
-
-def already_optimised(video: Path, height: int, depth: int, has_sub: bool,
-                      seen: set[str]) -> bool:
-    """True when this file has been through the pipeline before and needn't be re-encoded.
-
-    This is what makes the round trip cheap when you stage a file in a folder by hand and
-    later move it back to the root to be sorted: the name already carries the tags the
-    encode would produce, and the log has seen this video, so only the sort step is left.
-    has_sub is measured from the real subtitle streams, so a file whose tag and actual
-    content agree (with or without a subtitle) isn't mistaken for needing more work.
+    "This exact file" is what the database knows by path — kept true across hand renames and
+    moves by sync_library() — so a file you staged in a folder and moved back to the root is
+    never re-encoded, whatever its name says. The one exception is a forced -B whose depth
+    the file doesn't have: asking for 8-bit re-encodes a 10-bit file, and vice versa.
     """
-    parsed = core.parse_stem(video.stem)
-    tagged = any(core.RESOLUTION_TOKEN_RE.match(t) for t in parsed.tags)
-    matches = core.apply_tags(video.stem, height, depth, has_sub) == video.stem
-    return tagged and matches and parsed.identity() in seen
+    if row is None or row.status not in DONE_STATUSES:
+        return False
+    if bit_depth_pref == "8":
+        return src_depth <= 8
+    if bit_depth_pref == "10":
+        return src_depth > 8
+    return True
 
 
 def plan_destination(root: Path, stem: str) -> tuple[str, Path | None]:
@@ -481,28 +536,29 @@ def plan_destination(root: Path, stem: str) -> tuple[str, Path | None]:
     return trip, find_folder(root, trip)
 
 
-def resolve_duplicate(root: Path, video: Path, height: int, duration: float,
-                      dest_folder: Path | None, log: dict, policy: str,
-                      ) -> tuple[str | None, Path | None]:
-    """Compare *video* with any copy already filed under *dest_folder*.
+def resolve_duplicate(root: Path, db: LibraryDB, video: Path, height: int, duration: float,
+                      policy: str) -> tuple[str | None, Video | None]:
+    """Compare *video* with the library's copy of the same video, wherever it's filed.
 
-    Returns (verdict, existing_path) — both None when there's nothing to compare.
+    "The same video" is the same set of people, title and collection, whatever their order,
+    case or tags (core.parse_name). Copies parked in _review/ are a decision still waiting on
+    you, so they're never compared against. Returns (verdict, existing) — both None when
+    there's no copy.
     """
-    if dest_folder is None:
+    copies = [
+        c for c in db.same_video(video.stem, exclude_path=rel_path(root, video))
+        if c.status != "review" and (root / c.path).is_file()
+    ]
+    if not copies:
         return None, None
+    existing = min(copies, key=lambda c: (c.status != "sorted", c.path))
 
-    identity = core.parse_stem(video.stem).identity()
-    existing = find_existing_copy(dest_folder, identity, exclude=video)
-    if existing is None:
-        return None, None
-
-    # A 1440p and a 1080p source both come out of hw-1080 at 1080p, so where the log
+    # A 1440p and a 1080p source both come out of hw-1080 at 1080p, so where the database
     # remembers what the existing file started as, that beats its current height.
-    entry = log.get(existing.name, {})
-    old_height = entry.get("source_height") or 0
-    old_duration = entry.get("duration") or 0.0
+    old_height = existing.source_height or existing.height
+    old_duration = existing.duration
     if not old_height or not old_duration:
-        probed = probe(existing)
+        probed = probe(root / existing.path)
         if probed is None:
             return core.AMBIGUOUS, existing
         old_height = old_height or probed[0]
@@ -523,8 +579,8 @@ def park_for_review(root: Path, video: Path, reason: str) -> Path:
     return dest
 
 
-def process(video: Path, root: Path, log: dict, plan: EncoderPlan | None, args,
-            seen: set[str], display: BatchDisplay) -> dict:
+def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, args,
+            display: BatchDisplay) -> dict:
     """Optimise, tag and sort one file. Returns a result row for the summary table."""
     name = video.name
 
@@ -534,35 +590,26 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan | None, args,
         return {"file": name, "status": "skipped", "reason": "unreadable"}
     src_height, src_duration, src_depth, src_has_sub = probed
 
-    # Logged as "reconciled" by the since-removed -R/--reconcile: already compressed (by
-    # compressvid), so never re-encoded — only tagged, deduplicated and sorted. Kept until the
-    # log is replaced, since entries carrying the marker are still in real libraries. Its name usually carries no resolution tag, so
-    # already_optimised() can't recognise it. -F still forces an encode.
-    reconciled = not args.force and bool(log.get(name, {}).get("reconciled"))
+    row = db.get(rel_path(root, video))
+    # A file the database knows as compressed is only tagged, deduplicated and sorted. -F
+    # forces an encode anyway.
+    skip_encode = not args.force and already_done(row, src_depth, args.bit_depth)
 
     # 10-bit tracks the source by default, so HDR and 10-bit grades aren't flattened to
     # 8-bit — but a backend without a 10-bit encoder quietly stays 8-bit rather than
-    # jumping to different hardware, so say when that happens. Decided before anything
-    # else, because both the filename and the "is this already done?" test depend on the
-    # depth this run would produce.
+    # jumping to different hardware, so say when that happens.
     if plan is None:
         ten_bit = src_depth > 8          # no encoder to consult; display only
     else:
         ten_bit = plan.wants_10bit(src_depth)
         if ten_bit and not plan.has_10bit():
-            if not reconciled:   # nothing will be encoded, so nothing to warn about
+            if not skip_encode:   # nothing will be encoded, so nothing to warn about
                 warn(
                     f"{name}: {src_depth}-bit source but {plan.backend.name} has no 10-bit "
                     f"encoder here — encoding 8-bit"
                 )
             ten_bit = False
     target_depth = 10 if ten_bit else 8
-
-    # Compared against what *this* invocation would produce, not against the file's own
-    # content — so `-B 8` re-encodes a file already tagged 10bit instead of calling it done.
-    skip_encode = reconciled or (not args.force and already_optimised(
-        video, src_height, target_depth, src_has_sub, seen,
-    ))
 
     # A file that isn't encoded keeps its own depth, so its tag must describe that — the
     # same depth _finish() retags it with.
@@ -573,21 +620,20 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan | None, args,
 
     # Pre-flight: reject a clear downgrade before spending an hour encoding it.
     verdict, existing = resolve_duplicate(
-        root, video, src_height, src_duration, dest_folder, log, args.on_duplicate,
+        root, db, video, src_height, src_duration, args.on_duplicate,
     )
     if verdict == core.DOWNGRADE and existing is not None and args.on_duplicate != "ignore":
         if args.dry_run:
-            info(f"{name}: downgrade of {existing.name} — would park in {REVIEW_DIR}/")
+            info(f"{name}: downgrade of {existing.path} — would park in {REVIEW_DIR}/")
         else:
-            park_for_review(root, video, f"downgrade of {existing.name}")
-            update_log(root, log, name, {
-                "status": "review", "reason": "downgrade",
-                "resolution": core.resolution_label(src_height),
-                "source_height": src_height, "duration": src_duration,
-                "compared_with": existing.name, "ts": datetime.now().isoformat(),
-                # Kept so it still isn't re-encoded if it's moved back from _review/.
-                **({"reconciled": True} if reconciled else {}),
-            })
+            parked = park_for_review(root, video, f"downgrade of {existing.path}")
+            # The parked file keeps a "done" status if it was already compressed, so moving
+            # it back out of _review/ later doesn't re-encode it.
+            record(db, root, parked, "review", reason="downgrade",
+                   compared_with=existing.path, height=src_height, bit_depth=src_depth,
+                   has_sub=src_has_sub, duration=src_duration, source_height=src_height)
+            forget(db, root, video)
+            db.log_event(rel_path(root, parked), "parked", f"downgrade of {existing.path}")
         return {"file": name, "status": "review", "reason": "downgrade"}
 
     preset_stem = core.select_preset(src_height, args.preset_1080, args.preset_720)
@@ -601,7 +647,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan | None, args,
             dest_desc = f"{dest_folder.relative_to(root)}/  [dim](existing)[/]"
         else:
             dest_desc = f"{trip}/  [yellow](would be created)[/]"
-        extra = f"  [{verdict} vs {existing.name}]" if verdict and existing else ""
+        extra = f"  [{verdict} vs {existing.path}]" if verdict and existing else ""
         depth_note = (
             f", {src_depth}-bit source, encoder not checked"
             if plan is None
@@ -625,14 +671,11 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan | None, args,
     assert plan is not None
 
     if skip_encode:
-        # Seen before and already carrying the right tag — go straight to sorting.
-        final = video
-        orig_size = comp_size = video.stat().st_size
-        out_height, out_duration = src_height, src_duration
         info(f"{name}  [dim]already optimised — sorting only[/]")
-        return _finish(video, final, root, log, plan, args,
-                       orig_size, comp_size, src_height, out_height, out_duration,
-                       src_depth, src_has_sub, reconciled=reconciled)
+        size = video.stat().st_size
+        return _finish(video, video, root, db, plan, args, row,
+                       size, size, src_height, src_height, src_duration,
+                       src_depth, src_has_sub, encoded=False)
 
     # ── Encode ────────────────────────────────────────────────────
     if not wait_stable(video):
@@ -679,15 +722,14 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan | None, args,
         if tmp.exists():
             tmp.unlink()
         src_processing.rename(video)
-        failures = log.get(name, {}).get("failures", 0) + 1
+        failures = (row.failures if row else 0) + 1
         warn(
             f"Transcode failed: {name}"
             + (f" — giving up after {failures} attempts" if failures >= MAX_FAILURES else "")
         )
-        update_log(root, log, name, {
-            "status": "failed", "failures": failures,
-            "ts": datetime.now().isoformat(),
-        })
+        record(db, root, video, "failed", failures=failures, height=src_height,
+               duration=src_duration, bit_depth=src_depth, has_sub=src_has_sub)
+        db.log_event(rel_path(root, video), "failed", f"attempt {failures}")
         return {"file": name, "status": "failed", "original_size": orig_size}
 
     comp_size = tmp.stat().st_size
@@ -719,19 +761,21 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan | None, args,
     out_depth = reprobed[2] if reprobed else src_depth
     out_has_sub = reprobed[3] if reprobed else src_has_sub
 
-    return _finish(video, final, root, log, plan, args,
+    return _finish(video, final, root, db, plan, args, row,
                    orig_size, comp_size, src_height, out_height, out_duration,
-                   out_depth, out_has_sub)
+                   out_depth, out_has_sub, encoded=True)
 
 
-def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, args,
-            orig_size: int, comp_size: int, src_height: int,
+def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPlan, args,
+            row: Video | None, orig_size: int, comp_size: int, src_height: int,
             out_height: int, out_duration: float, out_depth: int = 8,
-            has_sub: bool = False, reconciled: bool = False) -> dict:
-    """Retag to the measured resolution, resolve duplicates, and sort.
+            has_sub: bool = False, encoded: bool = True) -> dict:
+    """Retag to the measured resolution, resolve duplicates, sort, and record the result.
 
-    Shared by the encode path and the already-optimised path so a file that comes back to
-    the root reaches exactly the same destination as one that was just transcoded.
+    Shared by the encode path and the already-done path so a file that comes back to the
+    root reaches exactly the same destination as one that was just transcoded. A file that
+    wasn't encoded here keeps what its row already knew about its origins (source height,
+    original size, the backend that encoded it).
     """
     name = video.name
 
@@ -741,47 +785,40 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
         final.rename(renamed)
         final = renamed
 
-    entry = {
-        "status": "sorted",
-        "resolution": core.resolution_label(out_height),
-        "source_height": src_height,
-        "duration": out_duration,
+    fields: dict[str, object] = {
+        "height": out_height,
         "bit_depth": out_depth,
         "has_sub": has_sub,
-        "backend": plan.backend.name,
+        "duration": out_duration,
+        "source_height": src_height,
         "original_size": orig_size,
-        "compressed_size": comp_size,
-        "ts": datetime.now().isoformat(),
+        "backend": plan.backend.name if encoded else "",
     }
-    if reconciled:
-        # Never encoded here, so no backend to credit. The marker is kept so the file is
-        # still recognised as compressed if it ever comes back to the root, and the entry
-        # moves to the tagged name — every branch below saves the log.
-        del entry["backend"]
-        entry["reconciled"] = True
-        if final.name != name:
-            with _log_lock:
-                log.pop(name, None)
+    if not encoded and row is not None:
+        fields.update(source_height=row.source_height or src_height,
+                      original_size=row.original_size or orig_size, backend=row.backend)
 
     # ── Duplicate resolution, re-decided on the finished file ─────
     trip, dest_folder = plan_destination(root, final.stem)
     verdict, existing = resolve_duplicate(
-        root, final, out_height, out_duration, dest_folder, log, args.on_duplicate,
+        root, db, final, out_height, out_duration, args.on_duplicate,
     )
 
     if verdict and existing and not core.wins(verdict) and args.on_duplicate != "ignore":
-        park_for_review(root, final, f"{verdict} vs {existing.name}")
-        entry.update(status="review", reason=verdict, compared_with=existing.name)
-        update_log(root, log, final.name, entry)
+        parked = park_for_review(root, final, f"{verdict} vs {existing.path}")
+        record(db, root, parked, "review", reason=verdict, compared_with=existing.path,
+               **fields)  # pyright: ignore[reportArgumentType]
+        forget(db, root, video, final)
+        db.log_event(rel_path(root, parked), "parked", f"{verdict} vs {existing.path}")
         return {"file": name, "status": "review", "reason": verdict,
                 "original_size": orig_size, "compressed_size": comp_size}
 
     # ── Sort ──────────────────────────────────────────────────────
     if not trip:
-        if log.get(final.name, {}).get("status") != "awaiting_trip":
+        if row is None or row.status != "awaiting_trip":
             warn(f"No trip field, leaving in root: {final.name}")
-        entry["status"] = "awaiting_trip"
-        update_log(root, log, final.name, entry)
+        record(db, root, final, "awaiting_trip", **fields)  # pyright: ignore[reportArgumentType]
+        forget(db, root, video)
         return {"file": name, "status": "awaiting_trip",
                 "original_size": orig_size, "compressed_size": comp_size}
 
@@ -789,26 +826,31 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
         dest_folder = root / trip
         dest_folder.mkdir(parents=True, exist_ok=True)
 
+    replaced = ""
     if verdict and existing and core.wins(verdict):
-        move_to_trash(str(existing))
-        ok(f"Replaced {existing.name} ({verdict})")
-        entry["replaced"] = existing.name
+        move_to_trash(str(root / existing.path))
+        db.remove(existing.path)
+        db.log_event(existing.path, "replaced", f"by {final.name} ({verdict})")
+        ok(f"Replaced {existing.path} ({verdict})")
+        replaced = existing.path
 
     dest = dest_folder / final.name
     if dest.exists():
         warn(f"Already exists, leaving in root: {dest}")
-        entry["status"] = "skipped"
-        entry["reason"] = "destination exists"
-        update_log(root, log, final.name, entry)
+        record(db, root, final, "skipped", reason="destination exists", replaced=replaced,
+               **fields)  # pyright: ignore[reportArgumentType]
+        forget(db, root, video)
         return {"file": name, "status": "skipped", "reason": "destination exists",
                 "original_size": orig_size, "compressed_size": comp_size}
 
     shutil.move(str(final), str(dest))
     ok(f"{final.name} → {trip}/")
 
-    entry["trip"] = trip
-    entry["dest"] = str(dest.relative_to(root))
-    update_log(root, log, final.name, entry)
+    record(db, root, dest, "sorted", replaced=replaced,
+           **fields)  # pyright: ignore[reportArgumentType]
+    forget(db, root, video, final)
+    db.log_event(rel_path(root, dest), "encoded" if encoded else "sorted",
+                 f"from {name}" if name != dest.name else "")
 
     return {"file": name, "status": "sorted", "trip": trip,
             "original_size": orig_size, "compressed_size": comp_size}
@@ -816,22 +858,7 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
 
 # ── Subtitle merging ─────────────────────────────────────────────────
 
-def rekey_log(root: Path, log: dict, old_name: str, new_name: str, updates: dict) -> None:
-    """Move a log entry to a new key when a file is renamed in place, merging in *updates*.
-
-    No-ops if there's no existing entry — never fabricate one for a file optimiselib never
-    processed, e.g. a video that was never run through the pipeline at all.
-    """
-    with _log_lock:
-        entry = log.pop(old_name, None)
-        if entry is None:
-            return
-        entry.update(updates)
-        log[new_name] = entry
-        save_log(root, log)
-
-
-def merge_subtitles(root: Path, log: dict, args) -> list[dict]:
+def merge_subtitles(root: Path, db: LibraryDB, args) -> list[dict]:
     """Match waiting subtitle files to videos anywhere in the library and merge unambiguous
     1:1 pairs with addsub.
 
@@ -855,12 +882,12 @@ def merge_subtitles(root: Path, log: dict, args) -> list[dict]:
     video_by_stem = {v.stem: v for v in videos}
     sub_by_name = {s.name: s for s in subs}
     return [
-        _merge_one(root, video_by_stem[video_stem], sub_by_name[sub_name], log, args)
+        _merge_one(root, video_by_stem[video_stem], sub_by_name[sub_name], db, args)
         for sub_name, video_stem in matches.items()
     ]
 
 
-def _merge_one(root: Path, video: Path, sub: Path, log: dict, args) -> dict:
+def _merge_one(root: Path, video: Path, sub: Path, db: LibraryDB, args) -> dict:
     if args.dry_run:
         probed = probe(video)
         if probed is not None:
@@ -889,16 +916,24 @@ def _merge_one(root: Path, video: Path, sub: Path, log: dict, args) -> dict:
         video.rename(renamed)
         final = renamed
 
-    updates: dict[str, object] = {"has_sub": has_sub}
-    if video.name in log and "dest" in log[video.name]:
-        updates["dest"] = str(final.relative_to(root))
-    rekey_log(root, log, video.name, final.name, updates)
+    # The merge rewrote the file, so its size and mtime changed too: update them along with
+    # the path, or a later hand rename couldn't be matched back to this row. A video the
+    # database has never seen (new input still in the root) gets no row invented for it.
+    old_rel, new_rel = rel_path(root, video), rel_path(root, final)
+    if db.get(old_rel) is not None:
+        db.move(old_rel, new_rel)
+        row = db.get(new_rel)
+        assert row is not None
+        st = final.stat()
+        row.has_sub, row.size, row.mtime, row.updated_at = has_sub, st.st_size, st.st_mtime, ""
+        db.upsert(row)
+        db.log_event(new_rel, "subtitle merged", sub.name)
 
     ok(f"{sub.name} → merged into {final.name}")
     return {"file": final.name, "status": "sub-merged"}
 
 
-def merge_only(root: Path, log: dict, args) -> None:
+def merge_only(root: Path, db: LibraryDB, args) -> None:
     """One subtitle-merging pass, then exit — the tail of a normal poll on its own.
 
     Needs only addsub and ffprobe, so it's dispatched ahead of the HandBrake check and the
@@ -912,19 +947,15 @@ def merge_only(root: Path, log: dict, args) -> None:
         info(f"No subtitle files waiting in {root}")
         return
 
-    results = merge_subtitles(root, log, args)
+    results = merge_subtitles(root, db, args)
     if results:
         show_summary(results)
 
 
 # ── Reporting ─────────────────────────────────────────────────────────
 
-def show_report(root: Path, log: dict) -> None:
-    below = {
-        k: v for k, v in log.items()
-        if core.resolution_height(v.get("resolution", "")) and
-        core.resolution_height(v.get("resolution", "")) < 1080
-    }
+def show_report(root: Path, db: LibraryDB) -> None:
+    below = [v for v in db.all() if 0 < v.height < 1080]
     if below:
         tbl = Table(
             title="Below 1080p — candidates for upscaling",
@@ -934,12 +965,11 @@ def show_report(root: Path, log: dict) -> None:
         tbl.add_column("Resolution", justify="center")
         tbl.add_column("Depth", justify="center")
         tbl.add_column("Location")
-        for fname, entry in sorted(below.items()):
-            depth = entry.get("bit_depth")
+        for video in below:
+            folder = str(PurePosixPath(video.path).parent)
             tbl.add_row(
-                fname, entry.get("resolution", "?"),
-                f"{depth}-bit" if depth else "—",
-                entry.get("dest", "—"),
+                escape(video.filename), video.resolution, f"{video.bit_depth}-bit",
+                "(root)" if folder == "." else escape(folder),
             )
         console.print(tbl)
     else:
@@ -956,8 +986,9 @@ def show_report(root: Path, log: dict) -> None:
         tbl.add_column("Reason")
         tbl.add_column("Compared with")
         for p in parked:
-            entry = log.get(p.name, {})
-            tbl.add_row(p.name, entry.get("reason", "—"), entry.get("compared_with", "—"))
+            row = db.get(rel_path(root, p))
+            tbl.add_row(escape(p.name), (row.reason if row else "") or "—",
+                        escape(row.compared_with if row else "") or "—")
         console.print()
         console.print(tbl)
 
@@ -1031,7 +1062,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="List every video in the library alphabetically and exit; with a "
                          "FILE, write the list there instead of printing it")
     ap.add_argument("-F", "--force", action="store_true",
-                    help="Re-process files the log has already marked done")
+                    help="Re-process files the library database already knows as done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
                     help="Encoder backend (default: auto; env OPTIMISELIB_GPU)")
     ap.add_argument("-Q", "--quality", type=float, default=None,
@@ -1066,20 +1097,40 @@ def main() -> None:
     if not root.is_dir():
         die(f"Not a directory: {root}")
 
-    log = load_log(root)
-
     if args.list_files is not None:
         list_library(root, args.list_files or None)
         return
 
+    if args.subs_only and args.no_subs:
+        die("--subs-only and --no-subs contradict each other")
+
+    # A dry run works on an in-memory copy of the database, so importing the old log or
+    # syncing the library changes nothing on disk.
+    try:
+        db = LibraryDB.open(root, in_memory=args.dry_run)
+    except (RuntimeError, OSError) as exc:
+        die(f"Can't open the library database: {exc}")
+    with db:
+        try:
+            migrated = import_json_log(root, db, rename=not args.dry_run)
+        except RuntimeError as exc:
+            die(f"Can't migrate the old log: {exc}")
+        if migrated:
+            info(f"Imported {migrated} entries from the old log into {db.path.name}")
+        run(root, db, args)
+
+
+def run(root: Path, db: LibraryDB, args) -> None:
+    # Reports and subtitle merges read the database, so bring it in line with the disk
+    # first — otherwise a file moved by hand since the last poll shows where it used to be.
     if args.report:
-        show_report(root, log)
+        sync_library(root, db)
+        show_report(root, db)
         return
 
     if args.subs_only:
-        if args.no_subs:
-            die("--subs-only and --no-subs contradict each other")
-        merge_only(root, log, args)
+        sync_library(root, db)
+        merge_only(root, db, args)
         return
 
     require_tool("ffprobe", "part of ffmpeg")
@@ -1156,23 +1207,26 @@ def main() -> None:
                 time.sleep(args.interval)
                 continue
 
+            # Hand renames and moves, and files added to folders by hand, are picked up
+            # before anything in the root is judged new.
+            sync_library(root, db)
+
             # Anything sitting in the root is fair game: it's either new, or one you moved
-            # back from a folder of your own to be sorted. already_optimised() is what
-            # stops the latter being re-encoded, so this filter only has to skip the two
-            # cases that would otherwise spin — a name still missing its trip field, and a
-            # file that keeps failing to transcode.
+            # back from a folder of your own to be sorted. already_done() is what stops the
+            # latter being re-encoded, so this filter only has to skip the cases that would
+            # otherwise spin — a name still missing its trip field, a file that keeps failing
+            # to transcode, and one whose destination is taken.
             videos = [
                 v for v in scan(root)
-                if args.force or should_process(v, log)
+                if args.force or should_process(v, root, db)
             ]
-            seen = seen_identities(log)
 
             if videos:
                 console.print(f"[bold]Found {len(videos)} file(s)[/]\n")
                 results = []
                 with BatchDisplay(len(videos)) as display:
                     for v in videos:
-                        result = process(v, root, log, plan, args, seen, display)
+                        result = process(v, root, db, plan, args, display)
                         display.finish(result)
                         results.append(result)
                 show_summary(results)
@@ -1182,7 +1236,7 @@ def main() -> None:
             # Runs every poll, including ones with no new video — that's exactly the case
             # where a subtitle was dropped in for a video that's already been sorted away.
             if addsub_present and not args.no_subs:
-                sub_results = merge_subtitles(root, log, args)
+                sub_results = merge_subtitles(root, db, args)
                 if sub_results:
                     show_summary(sub_results)
 

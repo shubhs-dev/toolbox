@@ -151,9 +151,18 @@ def _resolution_query(text: str) -> str:
 class LibraryDB:
     """An open `.optimiselib.db`. Use as a context manager, or call close()."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, in_memory: bool = False) -> None:
         self.path = path
-        self.conn = sqlite3.connect(path, timeout=10)
+        if in_memory:
+            # A private copy for a dry run: everything it writes (a JSON import, a library
+            # sync) happens in memory and vanishes, while reads see the real data.
+            self.conn = sqlite3.connect(":memory:")
+            if path.is_file():
+                with sqlite3.connect(path, timeout=10) as source:
+                    source.backup(self.conn)
+                source.close()
+        else:
+            self.conn = sqlite3.connect(path, timeout=10)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         # WAL lets a report or query read while the watcher writes. Fine on a local disk;
@@ -166,8 +175,9 @@ class LibraryDB:
             raise
 
     @classmethod
-    def open(cls, root: Path) -> LibraryDB:
-        return cls(root / DB_NAME)
+    def open(cls, root: Path, in_memory: bool = False) -> LibraryDB:
+        """The library's database; with in_memory, a throwaway copy of it (for -n)."""
+        return cls(root / DB_NAME, in_memory=in_memory)
 
     def close(self) -> None:
         self.conn.close()
@@ -366,8 +376,9 @@ def _num(entry: dict[str, object], key: str, default: float = 0) -> float:
     return float(value) if isinstance(value, (int, float)) else default
 
 
-def import_json_log(root: Path, db: LibraryDB) -> int:
-    """Copy `.optimiselib.json` into the database, then rename it `.optimiselib.json.migrated`.
+def import_json_log(root: Path, db: LibraryDB, rename: bool = True) -> int:
+    """Copy `.optimiselib.json` into the database, then rename it `.optimiselib.json.migrated`
+    (unless `rename` is False, as for a dry run's in-memory database).
 
     Returns the number of entries imported (0 when there's no log). The old log's
     "reconciled" marker retires here: a reconciled file that was still waiting in the root
@@ -423,5 +434,6 @@ def import_json_log(root: Path, db: LibraryDB) -> int:
         imported += 1
 
     db.log_event(JSON_LOG_NAME, "migrated", f"{imported} entries")
-    log_path.rename(log_path.with_name(log_path.name + MIGRATED_SUFFIX))
+    if rename:
+        log_path.rename(log_path.with_name(log_path.name + MIGRATED_SUFFIX))
     return imported

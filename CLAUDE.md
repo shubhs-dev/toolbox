@@ -271,13 +271,17 @@ Progress *factories* themselves) were extracted from it.
   on every write and never set directly. The schema is versioned with `PRAGMA user_version`:
   a change to it needs a migration step in `_migrate_schema`, not an edit to `_SCHEMA`.
   `import_json_log` migrates the old `.optimiselib.json` once (renaming it `.migrated`).
-  Until the pipeline is switched over, cli.py still reads and writes the JSON log.
-- Log entries marked `"reconciled": true` were written by a since-removed `-R/--reconcile`
-  migration that logged files compressed by hand with compressvid. `process()` still treats
-  the marker as "already compressed" — tagged, deduplicated and sorted, never encoded (unless
-  `-F`) — because a compressvid output's name has no resolution tag for `already_optimised()`
-  to see, and `_finish()` keeps the marker when it moves the entry to the tagged name. It goes
-  when the log is replaced; don't build anything else on it.
+- `optimiselib`'s "already done" test is `already_done()`: the database knows *this exact
+  file* (by path) with a done status — not a guess from the filename's tags, which is what
+  let a hand-renamed file be re-encoded before. `sync_library()` keeps paths true before each
+  poll: a file at a new path with the exact size + mtime of a vanished row was renamed or
+  moved by hand and its row follows it; unknown files in folders (or `_review/`) are recorded
+  as already compressed, since the pipeline never touches subfolders; unknown *root* files are
+  left as pipeline input; vanished rows become `missing`. Every pipeline write goes through
+  `record()`, which re-reads size + mtime from disk — skip that and the next hand rename can't
+  be matched. Duplicate lookup (`resolve_duplicate`) is library-wide by match key, ignoring
+  `_review/` copies (a decision still waiting on the user). A dry run opens an in-memory copy
+  (`LibraryDB.open(root, in_memory=True)`), so a JSON import or sync it does vanishes.
 - `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
   `-e`/`-q` on the command line so the bundled presets are never edited: if the preset's own
   encoder is available it's used with **no** override at all. Unlike `ffmpeg -encoders`, which
