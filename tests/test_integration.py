@@ -207,6 +207,19 @@ def test_lines_added_mid_run_are_downloaded_with_yes(tmp_path, fake_downloader, 
     assert sorted(p.name for p in work.iterdir()) == ["First.mp4", "Late one.mp4", "urls.txt"]
 
 
+@posix_only
+def test_lines_added_mid_run_are_left_when_nobody_can_answer(tmp_path, fake_downloader, run_cli):
+    # stdin closed (cron, nohup): the prompt must not crash, and silence means "no".
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "urls.txt").write_text("https://example.com/add First\n", encoding="utf-8")
+    result = _run_download(run_cli, work, fake_downloader)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "taking that as no" in result.stdout
+    assert "All done: 1 succeeded" in result.stdout
+    assert (work / "urls.txt").read_text() == "https://example.com/late Late one\n"
+
+
 def test_missing_urls_txt_is_an_error(tmp_path, run_cli):
     result = run_cli("video-download", [], cwd=tmp_path)
     assert result.returncode == 1

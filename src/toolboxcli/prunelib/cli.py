@@ -291,10 +291,14 @@ def delete_selected(root: Path, selected: list[Candidate], permanent: bool) -> s
 
     n = len(plan.items)
     if permanent:
-        reply = console.input(
-            f"[yellow][?][/yellow] This can't be undone. Type [bold]{n}[/bold] to delete "
-            f"{n} item(s), anything else to cancel: "
-        ).strip()
+        try:
+            reply = console.input(
+                f"[yellow][?][/yellow] This can't be undone. Type [bold]{n}[/bold] to delete "
+                f"{n} item(s), anything else to cancel: "
+            ).strip()
+        except EOFError:  # input closed: nobody typed the count, so nothing is deleted
+            console.print()
+            reply = ""
         if reply != str(n):
             info("Cancelled — nothing deleted.")
             return set()
