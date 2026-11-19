@@ -5,12 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 A collection of CLI tools for media processing, file organization, and game modding, all
-written in Python and packaged as a single pipx-installable distribution
+written in Python and packaged as a single distribution installed with uv
 (`shubhs-toolbox`, importable as `toolboxcli`). There is no build step beyond standard Python
 packaging and no test suite.
 
 Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
-`pipx install -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
+`uv tool install --managed-python -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
 `check-deps`, `compressvid`, `concatvid`, `convertimg`, `cutvid`, `cybermod`,
 `downscalevid`, `finddupes`, `flatten`, `flipvid`, `jellyname`, `kavitaname`,
 `mergemanga`, `optimiselib`, `prunelib`, `sortmedia`, `toolbox`, `video-download`, `wallready` —
@@ -20,11 +20,13 @@ unrelated to the Python package.
 ## Commands
 
 ```bash
-# Install/reinstall after changes to pyproject.toml (dependencies, entry points)
-pipx install -e . --force
+# Install (editable, on a uv-managed Python), or reinstall after pyproject.toml changes
+# (dependencies, entry points). Source edits need no reinstall.
+uv tool install --managed-python -e . --reinstall
 
 # Run a script directly during development, without going through the installed entry point
-python -m toolboxcli.<script>.cli --help
+# (uses the project's own .venv, created from uv.lock on first use)
+uv run python -m toolboxcli.<script>.cli --help
 
 # Smoke-test everything after a change
 for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cybermod \
@@ -76,7 +78,7 @@ split for any future script whose logic grows beyond simple argument-parsing-and
 **Bundled data**: `compressvid`'s HandBrake presets and `mergemanga`'s volume map are package
 data (declared in `pyproject.toml`'s `[tool.setuptools.package-data]`), resolved at runtime via
 `importlib.resources.files(...)` — **never** `Path(__file__).resolve().parent`-relative
-lookups, since `__file__` points into the pipx-managed venv's site-packages, not the repo.
+lookups, since `__file__` points into an installed environment's site-packages, not the repo.
 `kavitaname`'s optional volume-map file is a *user-supplied* path (prompted interactively), not
 bundled data — no `importlib.resources` involved there.
 
@@ -148,7 +150,7 @@ Progress *factories* themselves) were extracted from it.
   behavior). Don't reintroduce a 7z dependency there.
 - `cybermod`'s Cyberpunk install directory is resolved in this order: `-g/--game-dir` flag →
   `CYBERMOD_GAME_DIR` env var → hardcoded default. There's no "edit the script" story anymore
-  since it's installed via pipx into site-packages — new configurable paths in any script
+  since it's installed as a package into site-packages — new configurable paths in any script
   should follow this flag → env var → default pattern rather than a hardcoded constant.
 - `cybermod`'s `InstallStatus` (IntEnum: `SUCCESS`/`FAILED`/`SKIPPED`) and `ModRoot` (dataclass:
   `kind` + `path`) replace the original bash script's magic-number return codes and
