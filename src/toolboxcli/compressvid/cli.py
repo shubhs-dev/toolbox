@@ -29,9 +29,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+from rich import box
 from rich.panel import Panel
 from rich.table import Table
-from rich import box
 
 from toolboxcli._common.console import console, die
 from toolboxcli._common.handbrake import (

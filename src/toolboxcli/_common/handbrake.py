@@ -16,8 +16,8 @@ import time
 from importlib.resources import files as _resource_files
 from pathlib import Path
 
-from rich.table import Table
 from rich import box
+from rich.table import Table
 
 from toolboxcli._common.console import console, die
 from toolboxcli._common.tooling import detached_kwargs

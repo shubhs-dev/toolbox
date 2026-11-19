@@ -34,7 +34,6 @@ import subprocess
 from pathlib import Path
 
 from toolboxcli._common.console import die, info, ok, warn
-from toolboxcli._common.ffprobe import probe
 from toolboxcli._common.encoders import (
     CODECS,
     GPU_CHOICES,
@@ -43,6 +42,7 @@ from toolboxcli._common.encoders import (
     gpu_preference,
     select_encoder,
 )
+from toolboxcli._common.ffprobe import probe
 from toolboxcli._common.output import atomic_output, check_output_path
 from toolboxcli._common.streams import keep_all_streams_args, main_video_streams
 from toolboxcli._common.tooling import require_tool

@@ -19,7 +19,6 @@ import argparse
 import os
 import re
 import shutil
-import sys
 from pathlib import Path
 
 from toolboxcli._common.confirm import confirm

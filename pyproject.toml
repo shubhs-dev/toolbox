@@ -45,3 +45,24 @@ where = ["src"]
 [tool.setuptools.package-data]
 "toolboxcli.compressvid" = ["data/handbrake-presets/*.json"]
 "toolboxcli.mergemanga" = ["data/*.json"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16",
+]
+
+[tool.ruff]
+src = ["src"]
+target-version = "py39"   # matches requires-python
+line-length = 100
+
+[tool.ruff.lint]
+# Correctness-focused: pyflakes, pycodestyle, bugbear, import order, pyupgrade, pylint errors.
+# Deliberately no complexity/style opinions (too-many-branches, magic numbers, pathlib-only).
+select = ["E", "W", "F", "B", "I", "UP", "PLE"]
+ignore = [
+    "E501",   # long help strings and regexes are deliberate; there's no formatter to wrap them
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true

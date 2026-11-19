@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache
 
 from toolboxcli._common.console import die
 
@@ -91,7 +91,7 @@ def _backend_encoder(backend: str, codec: str) -> Encoder:
     )
 
 
-@lru_cache(maxsize=None)
+@cache
 def _encoder_works(name: str, args: tuple[str, ...]) -> bool:
     """Encode one throwaway frame to check the GPU actually accepts these settings.
 

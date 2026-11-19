@@ -68,6 +68,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from rich import box
 from rich.console import Group
 from rich.live import Live
 from rich.markup import escape
@@ -81,7 +82,6 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.table import Table
-from rich import box
 
 from toolboxcli._common import ffprobe as ffprobe_common
 from toolboxcli._common.confirm import confirm
@@ -97,7 +97,6 @@ from toolboxcli._common.humanize import human_size as fmt_size
 from toolboxcli._common.progress import bar as progress_bar
 from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
-
 from toolboxcli.optimiselib import core
 
 VIDEO_EXTS = {
