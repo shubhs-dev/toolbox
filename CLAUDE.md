@@ -406,6 +406,16 @@ Progress *factories* themselves) were extracted from it.
   for a TV show only, its year, rendered `Fargo (2014)` as Jellyfin names shows. Neither
   applies to the first token, so a show *called* `Us` or `1923` keeps its name. `MediaTags.hdr`
   is a list, like `audio`: `DV.HDR10` is both, and keeping only the last one lost Dolby Vision.
+- `videodownload/core.py` turns a pasted page title into a `People - Title - Collection`
+  name (for the TUI). `tokenize` splits on whitespace; `| – — · •` split anywhere,
+  `: / ( ) [ ]` only at a word's edge (so `12:30`, `AC/DC` survive), a dash only standing
+  alone; `& and , x +` are connectors. Each token carries a *set* of labels (`Labels`):
+  `auto_label` moves a known name out of the title when it leads the title or is its own
+  segment, but keeps it in the title too (`people`+`title`) mid-sentence, so the title still
+  reads; everything after the last `|` is a site name and skipped; one collection only.
+  `NameParts.problems()` checks the result with optimiselib's own `parse_name`, so the two
+  scripts can't drift. `tests/fixtures/videodownload_titles.json` is the spec — change a rule
+  by changing the code and the affected rows.
 - `prunelib` deletes files the user *picked*, rather than files it
   produced, so everything it removes is listed and confirmed first, and it trashes by default
   (`-p/--permanent` requires typing the item count, not a y/n keypress). Sidecars are files
