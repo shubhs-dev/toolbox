@@ -677,7 +677,7 @@ file is overwritten.
 | `-n, --dry-run` | off | Show planned rename, destination and duplicate verdict; change nothing |
 | `-r, --report` | off | List files below 1080p and the review queue, then exit |
 | `-l, --list` | off | List every video in the library alphabetically, then exit; with a `FILE` argument, write the list there instead of printing it |
-| `-R, --reconcile` | off | **Temporary.** Log every video in the library's folders that the log doesn't have yet, as already optimised, then exit; `-n` previews it |
+| `-R, --reconcile` | off | **Temporary.** Log every video in the library that the log doesn't have yet as already compressed, then exit; `-n` previews it |
 | `-F, --force` | off | Re-process files the log already marked done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |
@@ -692,14 +692,15 @@ file is overwritten.
 | `-s, --subs-only` | off | Merge waiting subtitle files and exit; encode and sort nothing |
 
 **Reconciling (temporary)** — `-R/--reconcile` brings files compressed by hand (e.g. with
-`compressvid`) into the log. It walks every folder in the library — not the root, which is the
-pipeline's pending input, and not `_review/` — and adds each video the log doesn't know yet as
-though optimiselib had sorted it there, probing it for resolution, bit depth, duration and
-subtitles. Nothing is renamed, moved or re-encoded. Files already in the log are left as they
-are, and since the log is keyed by file name, only the first of two unlogged files sharing a
-name is added (the other is reported). Stop a running watcher first: it holds the log in memory
-and would overwrite the new entries the next time it saves. This option will be removed once
-the library is reconciled.
+`compressvid`) into the log. It adds every video in the library — root and trip folders, not
+`_review/` — that the log doesn't know yet as already compressed, probing it for resolution, bit
+depth, duration and subtitles. `-R` itself renames, moves and re-encodes nothing. Reconciled
+files are never encoded afterwards either: one sitting in the root (or moved back there later)
+is only tagged, deduplicated and sorted on the next poll, and `-F` is the way to force an
+encode. Files already in the log are left as they are, and since the log is keyed by file name,
+only the first of two unlogged files sharing a name is added (the other is reported). Stop a
+running watcher first: it holds the log in memory and would overwrite the new entries the next
+time it saves. This option will be removed once the library is reconciled.
 
 **Encoder** — the bundled presets specify AMD's `vce_h265`, but the encoder is chosen at
 runtime: if the preset's own encoder is available it's used untouched, otherwise HandBrake's
