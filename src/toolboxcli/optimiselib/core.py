@@ -1,7 +1,8 @@
 """Filename parsing, encoder selection and duplicate verdicts for optimiselib (no filesystem I/O).
 
 Every function here is pure so the dry-run output and the real run are driven by exactly the
-same logic — with no test framework in this repo, `optimiselib -n` is the way these get checked.
+same logic. They're covered by tests/test_optimiselib_core.py; `optimiselib -n` shows them
+applied to a real library.
 """
 
 from __future__ import annotations

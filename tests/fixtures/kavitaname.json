@@ -1,0 +1,352 @@
+[
+  {
+    "input": "One Piece v01 c001",
+    "parsed": {
+      "series": "One Piece",
+      "volume": "01",
+      "chapter": "001",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "One Piece c001 (v01).cbz"
+  },
+  {
+    "input": "One Piece - Chapter 1045",
+    "parsed": {
+      "series": "One Piece",
+      "volume": "",
+      "chapter": "1045",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "One Piece c1045.cbz"
+  },
+  {
+    "input": "One Piece v01 Omake",
+    "parsed": {
+      "series": "One Piece",
+      "volume": "01",
+      "chapter": "",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": "Omake"
+    },
+    "dir": ".",
+    "name": "One Piece v01 - Omake.cbz"
+  },
+  {
+    "input": "One Piece SP01 Cover Story",
+    "parsed": {
+      "series": "One Piece",
+      "volume": "",
+      "chapter": "",
+      "is_special": true,
+      "special_index": 1,
+      "special_title": "Cover Story",
+      "descriptor": ""
+    },
+    "dir": "Specials",
+    "name": "One Piece SP01 - Cover Story.cbz"
+  },
+  {
+    "input": "Berserk Vol. 10 Ch. 85",
+    "parsed": {
+      "series": "Berserk",
+      "volume": "10",
+      "chapter": "85",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Berserk c085 (v10).cbz"
+  },
+  {
+    "input": "Berserk Volume 10",
+    "parsed": {
+      "series": "Berserk",
+      "volume": "10",
+      "chapter": "",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Berserk v10.cbz"
+  },
+  {
+    "input": "Chainsaw Man c097.5",
+    "parsed": {
+      "series": "Chainsaw Man",
+      "volume": "",
+      "chapter": "097.5",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Chainsaw Man c097.5.cbz"
+  },
+  {
+    "input": "Chainsaw Man Ch.97.5 [Digital] (LuCaZ)",
+    "parsed": {
+      "series": "Chainsaw Man",
+      "volume": "",
+      "chapter": "97.5",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Chainsaw Man c097.5.cbz"
+  },
+  {
+    "input": "86 - Eighty Six v03",
+    "parsed": {
+      "series": "86 - Eighty Six",
+      "volume": "03",
+      "chapter": "",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "86 - Eighty Six v03.cbz"
+  },
+  {
+    "input": "Goblin Slayer Side Story - Year One 025.5",
+    "parsed": {
+      "series": "Goblin Slayer Side Story - Year One",
+      "volume": "",
+      "chapter": "025.5",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Goblin Slayer Side Story - Year One c025.5.cbz"
+  },
+  {
+    "input": "Hinowa ga CRUSH! 018",
+    "parsed": {
+      "series": "Hinowa ga CRUSH!",
+      "volume": "",
+      "chapter": "018",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Hinowa ga CRUSH! c018.cbz"
+  },
+  {
+    "input": "Rent-a-Girlfriend c150",
+    "parsed": {
+      "series": "Rent-a-Girlfriend",
+      "volume": "",
+      "chapter": "150",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Rent-a-Girlfriend c150.cbz"
+  },
+  {
+    "input": "Kingdom v20 c171-180 Omake",
+    "parsed": {
+      "series": "Kingdom",
+      "volume": "20",
+      "chapter": "171-180",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": "Omake"
+    },
+    "dir": ".",
+    "name": "Kingdom c171-180 (v20) - Omake.cbz"
+  },
+  {
+    "input": "Vagabond v01-v02",
+    "parsed": {
+      "series": "Vagabond",
+      "volume": "01-v02",
+      "chapter": "",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Vagabond v01-02.cbz"
+  },
+  {
+    "input": "Vagabond c001-c006",
+    "parsed": {
+      "series": "Vagabond",
+      "volume": "",
+      "chapter": "001-c006",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Vagabond c001-006.cbz"
+  },
+  {
+    "input": "Solo Leveling Vol.1 Ch.1 Vol.2",
+    "parsed": {
+      "series": "Solo Leveling",
+      "volume": "1",
+      "chapter": "1",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Solo Leveling c001 (v01).cbz"
+  },
+  {
+    "input": "Tower of God S2 Ch. 10",
+    "parsed": {
+      "series": "Tower of God",
+      "volume": "2",
+      "chapter": "10",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Tower of God c010 (v02).cbz"
+  },
+  {
+    "input": "Tokyo Ghoul re Prologue",
+    "parsed": {
+      "series": "Tokyo Ghoul re",
+      "volume": "",
+      "chapter": "0",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Tokyo Ghoul re c000.cbz"
+  },
+  {
+    "input": "Monster Extra",
+    "parsed": {
+      "series": "Monster",
+      "volume": "",
+      "chapter": "",
+      "is_special": true,
+      "special_index": 0,
+      "special_title": "Extra",
+      "descriptor": ""
+    },
+    "dir": "Specials",
+    "name": "Monster SP01 - Extra.cbz"
+  },
+  {
+    "input": "第3巻",
+    "parsed": {
+      "series": "",
+      "volume": "3",
+      "chapter": "",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Series v03.cbz"
+  },
+  {
+    "input": "Spy x Family Ch 001",
+    "parsed": {
+      "series": "Spy x Family",
+      "volume": "",
+      "chapter": "001",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Spy x Family c001.cbz"
+  },
+  {
+    "input": "Dandadan #12",
+    "parsed": {
+      "series": "Dandadan",
+      "volume": "",
+      "chapter": "12",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Dandadan c012.cbz"
+  },
+  {
+    "input": "Some Series Oneshot",
+    "parsed": {
+      "series": "Some Series",
+      "volume": "",
+      "chapter": "",
+      "is_special": true,
+      "special_index": 0,
+      "special_title": "Oneshot",
+      "descriptor": ""
+    },
+    "dir": "Specials",
+    "name": "Some Series SP02 - Oneshot.cbz"
+  },
+  {
+    "input": "Mob Psycho 100 v01",
+    "parsed": {
+      "series": "Mob Psycho 100",
+      "volume": "01",
+      "chapter": "",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Mob Psycho 100 v01.cbz"
+  },
+  {
+    "input": "Frieren 001",
+    "parsed": {
+      "series": "Frieren",
+      "volume": "",
+      "chapter": "001",
+      "is_special": false,
+      "special_index": 0,
+      "special_title": "",
+      "descriptor": ""
+    },
+    "dir": ".",
+    "name": "Frieren c001.cbz"
+  }
+]

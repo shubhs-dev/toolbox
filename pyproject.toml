@@ -48,8 +48,14 @@ where = ["src"]
 
 [dependency-groups]
 dev = [
+    "pytest>=8",
     "ruff>=0.16",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]   # so test modules can `from conftest import ...`
+addopts = ["-ra"]
 
 [tool.ruff]
 src = ["src"]

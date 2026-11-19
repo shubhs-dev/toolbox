@@ -1,0 +1,102 @@
+[
+  {
+    "input": "The.Matrix.1999.1080p.BluRay.x264-GROUP.mkv",
+    "dir": "The Matrix (1999)",
+    "name": "The Matrix (1999) [BluRay x264] - 1080p.mkv"
+  },
+  {
+    "input": "Blade Runner 2049 (2017) 2160p UHD BluRay x265 10bit HDR DTS-HD.mkv",
+    "dir": "Blade Runner 2049 (2017)",
+    "name": "Blade Runner 2049 (2017) [BluRay x265 10bit HDR DTS] - 2160p.mkv"
+  },
+  {
+    "input": "2001.A.Space.Odyssey.1968.REMASTERED.1080p.BluRay.H.264.AAC.mp4",
+    "dir": "2001 A Space Odyssey (1968)",
+    "name": "2001 A Space Odyssey (1968) [BluRay REMASTERED x264 AAC] - 1080p.mp4"
+  },
+  {
+    "input": "Inception (2010) [1080p] [BluRay] [5.1] [YTS.MX].mp4",
+    "dir": "Inception (2010)",
+    "name": "Inception (2010) [BluRay] - 1080p.mp4"
+  },
+  {
+    "input": "1917.2019.720p.WEB-DL.DDP5.1.H264.mkv",
+    "dir": "1917 (2019)",
+    "name": "1917 (2019) [WEB-DL x264 DDP5.1] - 720p.mkv"
+  },
+  {
+    "input": "Dune.Part.Two.2024.IMAX.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR10.H.265-FLUX.mkv",
+    "dir": "Dune Part Two (2024)",
+    "name": "Dune Part Two (2024) [WEB-DL IMAX x265 HDR10 DDP5.1 Atmos] - 2160p.mkv"
+  },
+  {
+    "input": "Spirited Away.mkv",
+    "dir": "Spirited Away",
+    "name": "Spirited Away.mkv"
+  },
+  {
+    "input": "Movie Title [BluRay x265 10bit AAC] - 1080p.mkv",
+    "dir": "Movie Title",
+    "name": "Movie Title [BluRay x265 10bit AAC] - 1080p.mkv"
+  },
+  {
+    "input": "Oppenheimer.2023.PROPER.REPACK.1080p.WEBRip.x265.mkv",
+    "dir": "Oppenheimer (2023)",
+    "name": "Oppenheimer (2023) [WEBRip PROPER REPACK x265] - 1080p.mkv"
+  },
+  {
+    "input": "Blade Runner (1982) The Final Cut 1080p.mkv",
+    "dir": "Blade Runner (1982)",
+    "name": "Blade Runner (1982) - 1080p.mkv"
+  },
+  {
+    "input": "Breaking.Bad.S01E01.Pilot.720p.BluRay.x264.mkv",
+    "dir": "Breaking Bad/Season 01",
+    "name": "Breaking Bad S01E01 Pilot [BluRay x264] - 720p.mkv"
+  },
+  {
+    "input": "The Office (US) - S02E05 - Halloween [1080p WEB-DL AAC].mkv",
+    "dir": "The Office/Season 02",
+    "name": "The Office S02E05 Halloween [WEB-DL AAC] - 1080p.mkv"
+  },
+  {
+    "input": "Severance.S02E01-E02.2160p.ATVP.WEB-DL.DDP5.1.HEVC.mkv",
+    "dir": "Severance/Season 02",
+    "name": "Severance S02E01-E02 [WEB-DL HEVC DDP5.1] - 2160p.mkv"
+  },
+  {
+    "input": "Severance.S02E01E02.1080p.mkv",
+    "dir": "Severance/Season 02",
+    "name": "Severance S02E01-E02 - 1080p.mkv"
+  },
+  {
+    "input": "Doctor Who 7x05 The Angels Take Manhattan.avi",
+    "dir": "Doctor Who/Season 07",
+    "name": "Doctor Who S07E05 The Angels Take Manhattan.avi"
+  },
+  {
+    "input": "[SubsPlease] Frieren - S01E03 (1080p) [ABCD1234].mkv",
+    "dir": "Frieren/Season 01",
+    "name": "Frieren S01E03 - 1080p.mkv"
+  },
+  {
+    "input": "show.s1e2.mkv",
+    "dir": "show/Season 01",
+    "name": "show S01E02.mkv"
+  },
+  {
+    "input": "S01E01.mkv",
+    "dir": null,
+    "name": null
+  },
+  {
+    "input": "Fargo.2014.S03E04.1080p.mkv",
+    "dir": "Fargo 2014/Season 03",
+    "name": "Fargo 2014 S03E04 - 1080p.mkv"
+  },
+  {
+    "input": "The Bear S03E01 Tomorrow 1080p DSNP WEB-DL DDP5 1 H 264.mkv",
+    "dir": "The Bear/Season 03",
+    "name": "The Bear S03E01 Tomorrow [DSNP WEB-DL x264 DDP5.1] - 1080p.mkv"
+  }
+]
