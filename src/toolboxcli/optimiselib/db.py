@@ -33,7 +33,10 @@ JSON_LOG_NAME = ".optimiselib.json"
 MIGRATED_SUFFIX = ".migrated"
 REVIEW_DIR = "_review"
 
-SCHEMA_VERSION = 1
+# 1: initial. 2: names that don't follow People - Title - Collection are no longer split
+# into fields (core.VideoName.complete); upgrading re-derives every row and drops the
+# people that only those mis-split names had created.
+SCHEMA_VERSION = 2
 
 # Statuses a row can have. "compressed" is a known, already-compressed file that hasn't been
 # sorted yet (the old log's "reconciled"); "missing" is a row whose file has disappeared.
@@ -194,7 +197,16 @@ class LibraryDB:
             with self.conn:
                 self.conn.executescript(_SCHEMA)
                 self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        elif version > SCHEMA_VERSION:
+            return
+        if version < 2:
+            # Same tables; only the name-derived columns change meaning. Re-writing each
+            # row recomputes them from its path under the current rules.
+            for video in self.all(include_missing=True):
+                self.upsert(video)
+            self.prune_people()
+            with self.conn:
+                self.conn.execute("PRAGMA user_version = 2")
+        if version > SCHEMA_VERSION:
             raise RuntimeError(
                 f"{self.path.name} was written by a newer optimiselib (schema {version}); "
                 "update the toolbox before using it"
@@ -205,7 +217,7 @@ class LibraryDB:
     def upsert(self, video: Video) -> None:
         """Insert or replace the row for video.path, and its people and tags."""
         name = video.name
-        people_key, title_key, collection_key = name.key
+        people_key, title_key, collection_key = name.key or ("", "", "")
         values = {c: getattr(video, c) for c in _VIDEO_COLUMNS}
         values["has_sub"] = int(video.has_sub)
         values["updated_at"] = video.updated_at or _now()
@@ -266,6 +278,14 @@ class LibraryDB:
     def remove(self, path: str) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM videos WHERE path = ?", (path,))
+        self.prune_people()
+
+    def prune_people(self) -> None:
+        """Drop people no video mentions any more (renamed away, removed)."""
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM people WHERE id NOT IN (SELECT person_id FROM video_people)"
+            )
 
     def log_event(self, path: str, action: str, detail: str = "") -> None:
         with self.conn:
@@ -293,9 +313,10 @@ class LibraryDB:
     def same_video(self, stem: str, exclude_path: str | None = None) -> list[Video]:
         """Every known copy of the video a filename stem names (same people, title and
         collection, whatever the order, case or tags), wherever it is in the library."""
-        people_key, title_key, collection_key = core.parse_name(stem).key
-        if not title_key:
+        key = core.parse_name(stem).key
+        if key is None:
             return []
+        people_key, title_key, collection_key = key
         return self._rows(
             "WHERE people_key = ? AND title_key = ? AND collection_key = ? "
             "AND status NOT IN ('missing', 'failed') AND path != ?",
@@ -308,10 +329,14 @@ class LibraryDB:
         return self._rows("WHERE size = ? AND abs(mtime - ?) < 0.001", (size, mtime))
 
     def search(self, person: str | None = None, collection: str | None = None,
-               resolution: str | None = None, tag: str | None = None) -> list[Video]:
+               resolution: str | None = None, tag: str | None = None,
+               unnamed: bool = False) -> list[Video]:
         """Videos matching every filter given. Text filters are case-insensitive and match
         part of a value ("ali" finds Alice); resolution matches the rung ("720" = "720p")."""
         clauses = ["status != 'missing'"]
+        if unnamed:
+            # Names that don't follow People - Title - Collection have an empty match key.
+            clauses.append("title_key = ''")
         params: list[object] = []
         if person:
             clauses.append(

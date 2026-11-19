@@ -50,13 +50,27 @@ def test_different_video(a, b):
     assert core.parse_name(a).key != core.parse_name(b).key
 
 
+@pytest.mark.parametrize("stem, title", [
+    ("Movie - Director's Cut", "Movie - Director's Cut"),   # no person called "Movie"
+    ("Alice - Swim [720p]", "Alice - Swim"),
+    ("Just a clip [1080p]", "Just a clip"),
+    ("IMG_1234", "IMG_1234"),
+    (" - Title - Lakes", "- Title - Lakes"),                # empty People field
+    ("Alice -  - Lakes", "Alice -  - Lakes"),               # empty Title field
+])
+def test_names_not_following_the_convention_are_not_split(stem, title):
+    name = core.parse_name(stem)
+    assert name.people == () and name.collection == "" and not name.complete
+    assert core.normalize(name.title) == core.normalize(title)
+    assert name.key is None
+
+
 def test_parse_name_fields():
     name = core.parse_name("Alice and Bob - Day 1 - Part 2 - Lakes [Restored 1080p]")
     assert name.people == ("Alice", "Bob")
     assert name.title == "Day 1 - Part 2"
     assert name.collection == "Lakes"
     assert name.tags == ("Restored", "1080p")
-    assert core.parse_name("Alice - Swim").collection == ""
     assert core.parse_name("Just a title") == core.VideoName((), "Just a title", "", ())
 
 
@@ -158,6 +172,43 @@ def test_people_are_stored_once_and_unlinked_on_remove(db):
     db.remove("Alice - X - C.mp4")
     links = db.conn.execute("SELECT count(*) FROM video_people").fetchone()[0]
     assert links == 2
+
+
+def test_unnamed_files_are_listable_but_never_duplicates(db):
+    db.upsert(Video(path="Holiday [720p].mp4", height=720))
+    db.upsert(Video(path="Old/Holiday [1080p].mp4", height=1080))
+    db.upsert(Video(path="Movie - Director's Cut.mp4"))
+    db.upsert(Video(path="Lakes/Alice - Day 1 - Lakes.mp4"))
+    assert db.duplicate_groups() == []
+    assert db.same_video("Holiday") == []
+    assert sorted(v.filename for v in db.search(unnamed=True)) == [
+        "Holiday [1080p].mp4", "Holiday [720p].mp4", "Movie - Director's Cut.mp4"]
+    people = {r["key"] for r in db.conn.execute("SELECT key FROM people")}
+    assert people == {"alice"}                                  # no "movie"
+
+
+def test_upgrading_a_v1_database_re_derives_names_and_drops_junk_people(tmp_path):
+    # A database written by the first version, which split every " - " name into fields.
+    with LibraryDB.open(tmp_path) as db:
+        db.upsert(Video(path="Lakes/Alice - Day 1 - Lakes.mp4"))
+        db.upsert(Video(path="Movie - Director's Cut.mp4"))
+        cut = db.conn.execute("SELECT id FROM videos WHERE path LIKE 'Movie%'").fetchone()[0]
+        db.conn.execute("UPDATE videos SET people_key='movie', title_key=\"director's cut\" "
+                        "WHERE id = ?", (cut,))
+        db.conn.execute("INSERT INTO people (name, key) VALUES ('Movie', 'movie')")
+        db.conn.execute("INSERT INTO video_people SELECT ?, id FROM people WHERE key='movie'",
+                        (cut,))
+        db.conn.execute("PRAGMA user_version = 1")
+        db.conn.commit()
+
+    with LibraryDB.open(tmp_path) as db:
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        row = db.conn.execute("SELECT people_key, title, title_key FROM videos "
+                              "WHERE path LIKE 'Movie%'").fetchone()
+        assert tuple(row) == ("", "Movie - Director's Cut", "")
+        people = {r["key"] for r in db.conn.execute("SELECT key FROM people")}
+        assert people == {"alice"}
+        assert len(db.search(person="alice")) == 1
 
 
 def test_reopening_keeps_data_and_rejects_a_newer_schema(tmp_path):

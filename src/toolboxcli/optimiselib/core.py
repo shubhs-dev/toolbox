@@ -165,10 +165,15 @@ def people_key(people: list[str] | tuple[str, ...]) -> str:
 class VideoName:
     """A filename read as the library's naming convention: People - Title - Collection [tags].
 
-    A title may itself contain " - " ("Day 1 - Part 2"): People is the first field, Collection
-    the last, and everything between is the title. Two fields are People - Title with no
-    collection; one field is just a title. A trailing "Sub" field (addsub -u's marker) is
-    ignored, as ParsedStem.trip ignores it.
+    Only a name with all three parts is read that way. A title may itself contain " - "
+    ("Day 1 - Part 2"): People is the first field, Collection the last, and everything
+    between is the title. A trailing "Sub" field (addsub -u's marker) is ignored, as
+    ParsedStem.trip ignores it.
+
+    A name with fewer parts isn't guessed at — "Movie - Director's Cut" has no person called
+    Movie. It gets no people and no collection, its whole base name as the title, and
+    `complete` False, which keeps it out of people/collection searches and out of duplicate
+    matching altogether.
     """
 
     people: tuple[str, ...]
@@ -177,25 +182,30 @@ class VideoName:
     tags: tuple[str, ...]
 
     @property
-    def key(self) -> tuple[str, str, str]:
-        """(people, title, collection), normalised: equal keys mean the same video."""
+    def complete(self) -> bool:
+        return bool(self.people and self.title and self.collection)
+
+    @property
+    def key(self) -> tuple[str, str, str] | None:
+        """(people, title, collection), normalised: equal keys mean the same video. None for
+        a name that doesn't follow the convention — it can't be matched to anything."""
+        if not self.complete:
+            return None
         return people_key(self.people), normalize(self.title), normalize(self.collection)
 
 
 def parse_name(stem: str) -> VideoName:
     parsed = parse_stem(stem)
+    tags = tuple(parsed.tags)
     fields = parsed.fields
     if fields and fields[-1].lower() == SUB_FIELD:
         fields = fields[:-1]
     if len(fields) >= 3:
-        people, title, collection = fields[0], FIELD_SEP.join(fields[1:-1]), fields[-1]
-    elif len(fields) == 2:
-        people, title, collection = fields[0], fields[1], ""
-    elif fields:
-        people, title, collection = "", fields[0], ""
-    else:
-        people, title, collection = "", "", ""
-    return VideoName(tuple(split_people(people)), title, collection, tuple(parsed.tags))
+        name = VideoName(tuple(split_people(fields[0])), FIELD_SEP.join(fields[1:-1]),
+                         fields[-1], tags)
+        if name.complete:
+            return name
+    return VideoName((), re.sub(r"\s+", " ", parsed.base).strip(), "", tags)
 
 
 # ── Subtitle matching ────────────────────────────────────────────────

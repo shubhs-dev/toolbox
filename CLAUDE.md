@@ -267,7 +267,12 @@ Progress *factories* themselves) were extracted from it.
   unreliable). It identifies a video by `core.parse_name(...).key` — the *set* of people
   (split on commas, `&` and the whole word `and`, any case), the title and the collection,
   all case- and spacing-insensitive, tags ignored — so reordered people or a different tag
-  group don't make a known video look new. Name-derived columns are recomputed from the path
+  group don't make a known video look new. Only a *complete* name (all three parts, none
+  empty) is split into fields: anything else gets no people, no collection, its whole base
+  name as the title and `key is None`, so it never creates a person, matches a duplicate or
+  shows up in a person/collection search (`-U` lists them). Schema v1 split every `" - "`
+  name, which filled `people` with junk like "Movie"; the v2 step re-derives every row and
+  prunes people no video mentions (`prune_people`, also run at the end of each sync). Name-derived columns are recomputed from the path
   on every write and never set directly. The schema is versioned with `PRAGMA user_version`:
   a change to it needs a migration step in `_migrate_schema`, not an edit to `_SCHEMA`.
   `import_json_log` migrates the old `.optimiselib.json` once (renaming it `.migrated`).

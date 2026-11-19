@@ -186,6 +186,7 @@ def _listed(stdout: str) -> set[str]:
     (["-c", "peaks", "-T", "restored"], {"Carol - Summit"}),
     (["-a", "alice", "-R", "1080p"], {"Alice, Bob - Day 1"}),
     (["-a", "nobody"], set()),
+    (["-U"], set()),                                   # every catalogue name is complete
 ])
 def test_list_filters(catalogue, run_cli, filters, expected):
     # Filters on their own imply -l.
@@ -193,6 +194,21 @@ def test_list_filters(catalogue, run_cli, filters, expected):
     assert result.returncode == 0, result.stderr
     assert _listed(result.stdout) == expected
     assert f"{len(expected)} file" in result.stdout
+
+
+@needs("ffmpeg", "ffprobe")
+def test_unnamed_files_are_listed_and_counted(tmp_path, make_video, run_cli):
+    root = tmp_path / "lib"
+    make_video(root / "Lakes" / "Alice - Day 1 - Lakes.mp4", "640x480")
+    make_video(root / "Lakes" / "Movie - Directors Cut.mp4", "640x480")
+    make_video(root / "Misc" / "IMG_1234.mp4", "640x480")
+    listed = run_cli("optimiselib", [str(root), "-U"])
+    assert listed.returncode == 0, listed.stderr
+    assert "Movie - Directors Cut.mp4" in listed.stdout and "IMG_1234.mp4" in listed.stdout
+    assert "Alice - Day 1" not in listed.stdout
+    assert "2 files matching not named People - Title - Collection" in listed.stdout
+    report = run_cli("optimiselib", [str(root), "-r"])
+    assert "2 file(s) aren't named People - Title - Collection" in report.stdout
 
 
 @needs("ffmpeg", "ffprobe")

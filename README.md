@@ -635,6 +635,7 @@ optimiselib -l library.txt            # write that list to library.txt instead
 optimiselib -a alice                  # everything with Alice in it
 optimiselib -R 720p -c Lakes          # filters combine: 720p videos in Lakes
 optimiselib -T Restored               # by [tag]
+optimiselib -U                        # files not named People - Title - Collection
 optimiselib -D                        # videos the library holds more than once
 optimiselib -s                        # merge waiting subtitles only, then exit
 optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
@@ -654,7 +655,9 @@ For every video that appears **directly in the library root**:
 3. **Deduplicate** — a copy of the same video anywhere in the library is found: the same people,
    title and collection, whatever the order or case and whatever the tags, so
    `Alice, Bob - Day 1 - Lakes [1080p]` and `bob and alice - day 1 - lakes` are one video.
-   People may be separated by commas, `&` or `and`. A higher-resolution or more complete copy
+   People may be separated by commas, `&` or `and`. Only names with all three parts take part:
+   a file named any other way (`Movie - Director's Cut`, `IMG_1234`) is never matched as a
+   duplicate, and `-U` lists those files so you can rename them. A higher-resolution or more complete copy
    replaces the one already in the library (the old one goes to the Recycle Bin). Anything
    ambiguous — higher res but shorter, longer but lower res — is parked in `_review/` rather
    than decided unattended.
@@ -692,6 +695,9 @@ folders included; `_review/` and files that have gone are left out. Narrow it wi
 - `-c/--collection NAME` — videos in that collection
 - `-R/--resolution RES` — videos at that resolution (`720p` or just `720`)
 - `-T/--tag TAG` — videos carrying that `[tag]`
+- `-U/--unnamed` — videos whose names don't follow `People - Title - Collection`. They get no
+  people or collection, so person/collection searches and duplicate matching skip them; the
+  `-r` report says how many there are
 
 All are case-insensitive, and every text filter matches part of a value. A filter on its own
 implies `-l`, so `optimiselib -a alice` is enough. Pass a filename (`-l library.txt`) to write the
@@ -713,6 +719,7 @@ size and folder. It's a report only: nothing is moved or deleted.
 | `-c, --collection` | — | With `-l`: only videos in this collection (case-insensitive, partial) |
 | `-R, --resolution` | — | With `-l`: only videos at this resolution, e.g. `720p` or `720` |
 | `-T, --tag` | — | With `-l`: only videos carrying this `[tag]` (case-insensitive, partial) |
+| `-U, --unnamed` | off | With `-l`: only videos not named `People - Title - Collection` |
 | `-D, --duplicates` | off | List videos the library holds more than once, then exit (report only) |
 | `-F, --force` | off | Re-process files the library database already knows as done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
