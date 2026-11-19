@@ -621,6 +621,7 @@ optimiselib -l                        # list every video in the library, alphabe
 optimiselib -l library.txt            # write that list to library.txt instead
 optimiselib -s                        # merge waiting subtitles only, then exit
 optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
+optimiselib -R                        # TEMPORARY: log videos compressed by hand
 ```
 
 For every video that appears **directly in the library root**:
@@ -676,6 +677,7 @@ file is overwritten.
 | `-n, --dry-run` | off | Show planned rename, destination and duplicate verdict; change nothing |
 | `-r, --report` | off | List files below 1080p and the review queue, then exit |
 | `-l, --list` | off | List every video in the library alphabetically, then exit; with a `FILE` argument, write the list there instead of printing it |
+| `-R, --reconcile` | off | **Temporary.** Log every video in the library's folders that the log doesn't have yet, as already optimised, then exit; `-n` previews it |
 | `-F, --force` | off | Re-process files the log already marked done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |
@@ -688,6 +690,16 @@ file is overwritten.
 | `-q, --preset-720` | `hw-720` | Preset for sources at 720p or below |
 | `-S, --no-subs` | off | Don't scan for or merge matching subtitle files |
 | `-s, --subs-only` | off | Merge waiting subtitle files and exit; encode and sort nothing |
+
+**Reconciling (temporary)** — `-R/--reconcile` brings files compressed by hand (e.g. with
+`compressvid`) into the log. It walks every folder in the library — not the root, which is the
+pipeline's pending input, and not `_review/` — and adds each video the log doesn't know yet as
+though optimiselib had sorted it there, probing it for resolution, bit depth, duration and
+subtitles. Nothing is renamed, moved or re-encoded. Files already in the log are left as they
+are, and since the log is keyed by file name, only the first of two unlogged files sharing a
+name is added (the other is reported). Stop a running watcher first: it holds the log in memory
+and would overwrite the new entries the next time it saves. This option will be removed once
+the library is reconciled.
 
 **Encoder** — the bundled presets specify AMD's `vce_h265`, but the encoder is chosen at
 runtime: if the preset's own encoder is available it's used untouched, otherwise HandBrake's

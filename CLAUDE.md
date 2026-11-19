@@ -213,6 +213,10 @@ Progress *factories* themselves) were extracted from it.
   for being larger, the tag reverts to the original's real depth rather than the intent. It also
   treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
   that guard those files sort into a folder called `Sub`.
+- `optimiselib -R/--reconcile` is a **temporary** migration aid, to be removed once the owner's
+  library is reconciled: it logs every unlogged video in the library's folders (never the
+  root or `_review/`) as `sorted`, from a probe, without renaming or moving anything. Entries
+  carry `"reconciled": true`. Don't build anything else on it.
 - `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
   `-e`/`-q` on the command line so the bundled presets are never edited: if the preset's own
   encoder is available it's used with **no** override at all. Unlike `ffmpeg -encoders`, which
