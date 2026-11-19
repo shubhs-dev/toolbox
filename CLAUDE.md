@@ -28,7 +28,8 @@ uv tool install --managed-python -e . --reinstall
 # (uses the project's own .venv, created from uv.lock on first use)
 uv run python -m toolboxcli.<script>.cli --help
 
-# Smoke-test everything after a change
+# Smoke-test the *installed* commands after a change to pyproject.toml's entry points
+# (tests/test_project.py already runs every command's --help from source)
 for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cybermod \
            downscalevid finddupes flatten flipvid jellyname kavitaname mergemanga \
            optimiselib prunelib sortmedia toolbox video-download wallready; do
@@ -40,6 +41,12 @@ uv run ruff check src tests
 uv run pyright
 uv run pytest
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same three on every push to `main` and every PR:
+ruff + pyright once, and pytest on Linux, macOS and Windows × Python 3.9 (the
+`requires-python` floor) and 3.14 (what `uv tool install --managed-python` picks). Only
+Linux installs HandBrakeCLI, so the encode/sort integration tests run there and skip
+elsewhere. Don't merge a PR with a red check; don't skip or disable a test to get green.
 
 ruff is a linter only: `ruff format` is deliberately not used, because it would explode
 the paired argument layouts (`"-o", template,` on one line) that make the subprocess
@@ -434,5 +441,8 @@ Standing permission from the repo owner — don't ask each time:
 - Keep the module docstring in sync with the actual argparse flags, since it doubles as
   `--help` output.
 - Keep `toolbox/cli.py`'s `SCRIPTS` list, `pyproject.toml`'s `[project.scripts]`, and the
-  README's scripts table all in sync when adding or removing a script.
-- Test on Windows (Git Bash) where possible — the repo is primarily used there.
+  README's scripts table all in sync when adding or removing a script —
+  `tests/test_project.py` fails when they drift.
+- Test on Windows (Git Bash) where possible — the repo is primarily used there. CI runs the
+  suite on Windows, but in PowerShell rather than Git Bash/mintty, so terminal behaviour
+  (single-keypress prompts, live progress) still needs checking there by hand.
