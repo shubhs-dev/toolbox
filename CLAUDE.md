@@ -257,14 +257,12 @@ Progress *factories* themselves) were extracted from it.
   for being larger, the tag reverts to the original's real depth rather than the intent. It also
   treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
   that guard those files sort into a folder called `Sub`.
-- `optimiselib -R/--reconcile` is a **temporary** migration aid, to be removed once the owner's
-  library is reconciled: it logs every unlogged video in the library (not `_review/`) from a
-  probe, without renaming or moving anything — folder files as `sorted`, root files as
-  `reconciled`. Entries carry `"reconciled": true`, which `process()` treats as "already
-  compressed": the file is tagged, deduplicated and sorted but never encoded (unless `-F`),
-  because a compressvid output's name has no resolution tag for `already_optimised()` to see.
-  `_finish()` keeps the marker and moves the entry to the tagged name. Remove all of it
-  together. Don't build anything else on it.
+- Log entries marked `"reconciled": true` were written by a since-removed `-R/--reconcile`
+  migration that logged files compressed by hand with compressvid. `process()` still treats
+  the marker as "already compressed" — tagged, deduplicated and sorted, never encoded (unless
+  `-F`) — because a compressvid output's name has no resolution tag for `already_optimised()`
+  to see, and `_finish()` keeps the marker when it moves the entry to the tagged name. It goes
+  when the log is replaced; don't build anything else on it.
 - `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
   `-e`/`-q` on the command line so the bundled presets are never edited: if the preset's own
   encoder is available it's used with **no** override at all. Unlike `ffmpeg -encoders`, which
