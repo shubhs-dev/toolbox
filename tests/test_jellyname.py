@@ -81,8 +81,16 @@ def test_probed_tags_detect_dolby_vision_and_interlacing():
 
 
 def test_apply_probed_tags_never_overrides_the_filename():
-    tags = MediaTags(resolution="720p", audio=["AAC"])
-    apply_probed_tags(tags, {"resolution": "1080p", "audio": "EAC3", "video_codec": "HEVC"})
+    tags = MediaTags(resolution="720p", audio=["AAC"], hdr=["Dolby Vision", "HDR10"])
+    apply_probed_tags(tags, {"resolution": "1080p", "audio": "EAC3", "video_codec": "HEVC",
+                             "hdr": "HDR10"})
     assert tags.resolution == "720p"
     assert tags.audio == ["AAC"]
+    assert tags.hdr == ["Dolby Vision", "HDR10"]
     assert tags.video_codec == "HEVC"
+
+
+def test_apply_probed_tags_fills_missing_hdr():
+    tags = MediaTags()
+    apply_probed_tags(tags, {"hdr": "HDR10"})
+    assert tags.hdr == ["HDR10"]

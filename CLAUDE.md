@@ -374,6 +374,12 @@ Progress *factories* themselves) were extracted from it.
   fansub tags) are dropped. When extending the tag vocabularies or anchor-detection regexes,
   verify against real filename fixtures (`tests/fixtures/jellyname.json`) rather than
   reasoning about the regex in isolation — this is still the most fragile/fiddly logic here.
+- jellyname keeps two kinds of qualifier in a title instead of dropping them as noise
+  (`_title_qualifier`): a country code from `REGION_CODES` — `(US)` anywhere, or bare and
+  upper-case just before the anchor as scene names write it (`The.Office.US.S02E05`) — and,
+  for a TV show only, its year, rendered `Fargo (2014)` as Jellyfin names shows. Neither
+  applies to the first token, so a show *called* `Us` or `1923` keeps its name. `MediaTags.hdr`
+  is a list, like `audio`: `DV.HDR10` is both, and keeping only the last one lost Dolby Vision.
 - `prunelib` deletes files the user *picked*, rather than files it
   produced, so everything it removes is listed and confirmed first, and it trashes by default
   (`-p/--permanent` requires typing the item count, not a y/n keypress). Sidecars are files

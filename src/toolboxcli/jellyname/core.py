@@ -95,14 +95,18 @@ class MediaTags:
     resolution: str = ""
     video_codec: str = ""
     bit_depth: str = ""
-    hdr: str = ""
+    # A list, like audio: a Dolby Vision release usually carries an HDR10 base layer
+    # too ("DV.HDR10"), and both are worth knowing.
+    hdr: list[str] = field(default_factory=list[str])
     audio: list[str] = field(default_factory=list[str])
     source: list[str] = field(default_factory=list[str])
     edition: list[str] = field(default_factory=list[str])
 
     def add(self, category: str, value: str) -> None:
-        if category in ("audio", "source", "edition"):
-            getattr(self, category).append(value)
+        if category in ("hdr", "audio", "source", "edition"):
+            values: list[str] = getattr(self, category)
+            if category != "hdr" or value not in values:
+                values.append(value)
         else:
             setattr(self, category, value)
 
@@ -114,8 +118,7 @@ class MediaTags:
             parts.append(self.video_codec)
         if self.bit_depth:
             parts.append(self.bit_depth)
-        if self.hdr:
-            parts.append(self.hdr)
+        parts.extend(self.hdr)
         parts.extend(self.audio)
         return f" [{' '.join(parts)}]" if parts else ""
 
@@ -211,9 +214,12 @@ def probed_tags(payload: dict[str, Any]) -> dict[str, str | list[str]]:
 def apply_probed_tags(tags: MediaTags, probed: dict[str, str | list[str]]) -> None:
     """Fills only the MediaTags fields still empty; a tag already present from
     the filename is never overwritten."""
-    for field_name in ("resolution", "video_codec", "bit_depth", "hdr"):
+    for field_name in ("resolution", "video_codec", "bit_depth"):
         if not getattr(tags, field_name) and probed.get(field_name):
             setattr(tags, field_name, probed[field_name])
+    hdr = probed.get("hdr")
+    if not tags.hdr and isinstance(hdr, str) and hdr:
+        tags.hdr.append(hdr)
     audio = probed.get("audio")
     if not tags.audio and isinstance(audio, str) and audio:
         tags.audio.append(audio)
@@ -282,11 +288,48 @@ def _classify_token(token: str, tags: MediaTags) -> bool | None:
     return False
 
 
-def _classify_leading(tokens: list[str], tags: MediaTags) -> str:
+# Country qualifiers that tell same-named titles apart — "The Office (US)" and
+# "The Office (UK)" are different shows, and Jellyfin keeps the "(US)" in the name.
+REGION_CODES = {
+    "US", "UK", "GB", "AU", "NZ", "CA", "IE", "IN", "JP", "KR", "CN", "FR", "DE",
+    "ES", "IT", "NL", "BE", "SE", "NO", "DK", "FI", "BR", "MX", "AR",
+}
+
+
+def _title_qualifier(token: str, index: int, last: int, show_year: bool) -> str:
+    """The "(US)" / "(2014)" form of a token that qualifies a title, or "" if it isn't one.
+
+    Never the first token, so a title that *is* a code or a year ("Us", "1923") survives.
+    A country code counts in parentheses anywhere, or bare and in capitals just before
+    the anchor — scene names write "The.Office.US.S02E05". A show's year (`show_year`)
+    counts the same way: Jellyfin names a show "Fargo (2014)", and without the year a
+    remake files into the original's folder.
+    """
+    if index == 0:
+        return ""
+    wrapped_in_parens = token.startswith("(") and token.endswith(")")
+    inner = _unwrap(token)
+    if inner.upper() in REGION_CODES and (
+        wrapped_in_parens or (index == last and inner.isupper())
+    ):
+        return f"({inner.upper()})"
+    if show_year and YEAR_RE.match(inner) and (wrapped_in_parens or index == last):
+        return f"({inner})"
+    return ""
+
+
+def _classify_leading(tokens: list[str], tags: MediaTags, show_year: bool = False) -> str:
     """Tokens before the anchor: matched tags are extracted; the remaining
-    tokens, joined, are the title/show name."""
-    leftover = [tok for tok in tokens if _classify_token(tok, tags) is False]
-    return sanitize_for_path(" ".join(leftover))
+    tokens, joined, are the title/show name. Country codes (and, for a show, its
+    year) are kept as parenthesised qualifiers instead of being dropped."""
+    kept: list[str] = []
+    for i, tok in enumerate(tokens):
+        qualifier = _title_qualifier(tok, i, len(tokens) - 1, show_year)
+        if qualifier:
+            kept.append(qualifier)
+        elif _classify_token(tok, tags) is False:
+            kept.append(tok)
+    return sanitize_for_path(" ".join(kept))
 
 
 def _classify_trailing(tokens: list[str], tags: MediaTags) -> str:
@@ -345,7 +388,7 @@ def parse_tv(stem: str) -> tuple[str, str, str, str, str, MediaTags] | None:
     idx, season, episode, episode_end = anchor
 
     tags = MediaTags()
-    show_name = _classify_leading(tokens[:idx], tags)
+    show_name = _classify_leading(tokens[:idx], tags, show_year=True)
     episode_title = _classify_trailing(tokens[idx + 1:], tags)
     return show_name, season, episode, episode_end, episode_title, tags
 

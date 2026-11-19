@@ -27,7 +27,7 @@
   {
     "input": "Dune.Part.Two.2024.IMAX.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR10.H.265-FLUX.mkv",
     "dir": "Dune Part Two (2024)",
-    "name": "Dune Part Two (2024) [WEB-DL IMAX x265 HDR10 DDP5.1 Atmos] - 2160p.mkv"
+    "name": "Dune Part Two (2024) [WEB-DL IMAX x265 Dolby Vision HDR10 DDP5.1 Atmos] - 2160p.mkv"
   },
   {
     "input": "Spirited Away.mkv",
@@ -56,8 +56,8 @@
   },
   {
     "input": "The Office (US) - S02E05 - Halloween [1080p WEB-DL AAC].mkv",
-    "dir": "The Office/Season 02",
-    "name": "The Office S02E05 Halloween [WEB-DL AAC] - 1080p.mkv"
+    "dir": "The Office (US)/Season 02",
+    "name": "The Office (US) S02E05 Halloween [WEB-DL AAC] - 1080p.mkv"
   },
   {
     "input": "Severance.S02E01-E02.2160p.ATVP.WEB-DL.DDP5.1.HEVC.mkv",
@@ -91,12 +91,57 @@
   },
   {
     "input": "Fargo.2014.S03E04.1080p.mkv",
-    "dir": "Fargo 2014/Season 03",
-    "name": "Fargo 2014 S03E04 - 1080p.mkv"
+    "dir": "Fargo (2014)/Season 03",
+    "name": "Fargo (2014) S03E04 - 1080p.mkv"
   },
   {
     "input": "The Bear S03E01 Tomorrow 1080p DSNP WEB-DL DDP5 1 H 264.mkv",
     "dir": "The Bear/Season 03",
     "name": "The Bear S03E01 Tomorrow [DSNP WEB-DL x264 DDP5.1] - 1080p.mkv"
+  },
+  {
+    "input": "The.Office.US.S02E05.720p.mkv",
+    "dir": "The Office (US)/Season 02",
+    "name": "The Office (US) S02E05 - 720p.mkv"
+  },
+  {
+    "input": "The Office (UK) S01E01.mkv",
+    "dir": "The Office (UK)/Season 01",
+    "name": "The Office (UK) S01E01.mkv"
+  },
+  {
+    "input": "Doctor Who (2005) S01E01 Rose.mkv",
+    "dir": "Doctor Who (2005)/Season 01",
+    "name": "Doctor Who (2005) S01E01 Rose.mkv"
+  },
+  {
+    "input": "1923.S01E01.1080p.mkv",
+    "dir": "1923/Season 01",
+    "name": "1923 S01E01 - 1080p.mkv"
+  },
+  {
+    "input": "Us.S01E01.mkv",
+    "dir": "Us/Season 01",
+    "name": "Us S01E01.mkv"
+  },
+  {
+    "input": "Pieces of us S01E01.mkv",
+    "dir": "Pieces of us/Season 01",
+    "name": "Pieces of us S01E01.mkv"
+  },
+  {
+    "input": "House of Cards (US) (2013) S01E01.mkv",
+    "dir": "House of Cards (US) (2013)/Season 01",
+    "name": "House of Cards (US) (2013) S01E01.mkv"
+  },
+  {
+    "input": "Some.Movie.2021.2160p.DV.WEB-DL.mkv",
+    "dir": "Some Movie (2021)",
+    "name": "Some Movie (2021) [WEB-DL Dolby Vision] - 2160p.mkv"
+  },
+  {
+    "input": "Some.Movie.2021.2160p.HDR10.DV.HDR10.mkv",
+    "dir": "Some Movie (2021)",
+    "name": "Some Movie (2021) [HDR10 Dolby Vision] - 2160p.mkv"
   }
 ]
