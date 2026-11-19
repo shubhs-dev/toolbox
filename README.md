@@ -1,7 +1,7 @@
 # Toolbox
 
 A collection of CLI tools for media processing, file organization, and game modding, written
-in Python and installed as a single pipx package.
+in Python and installed as a single package with [uv](https://docs.astral.sh/uv/).
 
 ## Scripts
 
@@ -38,8 +38,10 @@ materials — just open it in a browser, no install needed.
 
 ### Prerequisites
 
-- **Python 3.9+**
-- **[pipx](https://pipx.pypa.io/)** — installs each command as an isolated, real executable on your PATH
+- **[uv](https://docs.astral.sh/uv/)** — installs every command as a real executable on your
+  PATH, running on a Python that uv downloads and manages itself. You don't need Python
+  installed separately, and upgrading the system Python (Homebrew, the Windows installer) can't
+  break the install.
 - Per-script external tools (only needed for the scripts you actually use):
 
 | Tool | Required by |
@@ -55,33 +57,44 @@ materials — just open it in a browser, no install needed.
 ### macOS
 
 ```bash
-brew install pipx
-pipx ensurepath
-```
-
-```bash
-git clone git@github.com:shubhs-dev/toolbox.git
-cd toolbox
-pipx install -e .
+brew install uv
+uv tool update-shell      # puts ~/.local/bin on your PATH; restart the shell afterwards
 ```
 
 ### Windows (Git Bash)
 
 ```bash
-python -m pip install --user pipx
-python -m pipx ensurepath
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-Restart your shell, then:
+(`winget install astral-sh.uv` works too.) The installer adds `~/.local/bin` — where both `uv`
+and the toolbox commands live — to your PATH; restart Git Bash so it picks that up. If a later
+`uv tool install` warns that the folder isn't on your PATH, run `uv tool update-shell` and
+restart again.
+
+### Install
+
+The same on both platforms:
 
 ```bash
 git clone git@github.com:shubhs-dev/toolbox.git
 cd toolbox
-pipx install -e .
+uv tool install --managed-python -e .
 ```
 
 This gives you real commands on your PATH — identically on Windows Git Bash and macOS. No
-symlinking, no manual `PATH` exports.
+symlinking, no manual `PATH` exports. `--managed-python` makes uv use its own Python (it
+downloads one the first time), never the system's.
+
+### Moving from pipx
+
+If you installed with pipx before, remove that install first so the two don't fight over the
+same command names:
+
+```bash
+pipx uninstall shubhs-toolbox
+uv tool install --managed-python -e .
+```
 
 ### Upgrading
 
@@ -90,13 +103,13 @@ under `src/toolboxcli/` take effect immediately. If `pyproject.toml` itself chan
 dependency, new script), re-run:
 
 ```bash
-pipx install -e . --force
+uv tool install --managed-python -e . --reinstall
 ```
 
 ### Uninstall
 
 ```bash
-pipx uninstall shubhs-toolbox
+uv tool uninstall shubhs-toolbox
 ```
 
 ---
