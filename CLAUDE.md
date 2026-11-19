@@ -107,7 +107,7 @@ src/toolboxcli/
 ├── jellyname/{cli.py, core.py}
 ├── kavitaname/cli.py
 ├── mergemanga/{cli.py, data/volume_map.json}
-├── optimiselib/{cli.py, core.py}
+├── optimiselib/{cli.py, core.py, db.py}
 ├── prunelib/{cli.py, core.py}
 ├── sortmedia/cli.py
 ├── toolbox/cli.py
@@ -262,6 +262,16 @@ Progress *factories* themselves) were extracted from it.
   for being larger, the tag reverts to the original's real depth rather than the intent. It also
   treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
   that guard those files sort into a folder called `Sub`.
+- `optimiselib/db.py` is the library database (`.optimiselib.db`, stdlib `sqlite3`, WAL; the
+  library is always on a local disk, never a network share, where SQLite's locking is
+  unreliable). It identifies a video by `core.parse_name(...).key` — the *set* of people
+  (split on commas, `&` and the whole word `and`, any case), the title and the collection,
+  all case- and spacing-insensitive, tags ignored — so reordered people or a different tag
+  group don't make a known video look new. Name-derived columns are recomputed from the path
+  on every write and never set directly. The schema is versioned with `PRAGMA user_version`:
+  a change to it needs a migration step in `_migrate_schema`, not an edit to `_SCHEMA`.
+  `import_json_log` migrates the old `.optimiselib.json` once (renaming it `.migrated`).
+  Until the pipeline is switched over, cli.py still reads and writes the JSON log.
 - Log entries marked `"reconciled": true` were written by a since-removed `-R/--reconcile`
   migration that logged files compressed by hand with compressvid. `process()` still treats
   the marker as "already compressed" — tagged, deduplicated and sorted, never encoded (unless

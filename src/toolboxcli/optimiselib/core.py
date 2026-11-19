@@ -134,6 +134,70 @@ def apply_tags(stem: str, height: int, depth: int = 8, has_sub: bool = False) ->
     return parsed.render()
 
 
+# ── Library identity ──────────────────────────────────────────────────
+#
+# What makes two files "the same video" for duplicate detection: the same set of people,
+# title and collection. People are a *set* — reordering them, or writing "and" instead of a
+# comma, doesn't make a new video — and everything is compared without case or spacing.
+# Tags never take part: they describe the file (resolution, depth, subtitle), not the video.
+
+# Commas, "&", and the whole word "and" in any case ("Alice, Bob And Carol"). Whole-word, so
+# names that merely contain "and" (Andrew, Sandy) are never split.
+_PEOPLE_SPLIT_RE = re.compile(r"\s*(?:,|&|\band\b)\s*", re.IGNORECASE)
+
+
+def normalize(text: str) -> str:
+    """Case- and spacing-insensitive form of a name, title or collection, for comparing."""
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def split_people(field: str) -> list[str]:
+    """The names in a People field, as written: "Alice, Bob and Carol" → [Alice, Bob, Carol]."""
+    return [name.strip() for name in _PEOPLE_SPLIT_RE.split(field) if name.strip()]
+
+
+def people_key(people: list[str] | tuple[str, ...]) -> str:
+    """Order-, case- and duplicate-insensitive key for a set of people."""
+    return ", ".join(sorted({normalize(p) for p in people if p.strip()}))
+
+
+@dataclass(frozen=True)
+class VideoName:
+    """A filename read as the library's naming convention: People - Title - Collection [tags].
+
+    A title may itself contain " - " ("Day 1 - Part 2"): People is the first field, Collection
+    the last, and everything between is the title. Two fields are People - Title with no
+    collection; one field is just a title. A trailing "Sub" field (addsub -u's marker) is
+    ignored, as ParsedStem.trip ignores it.
+    """
+
+    people: tuple[str, ...]
+    title: str
+    collection: str
+    tags: tuple[str, ...]
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        """(people, title, collection), normalised: equal keys mean the same video."""
+        return people_key(self.people), normalize(self.title), normalize(self.collection)
+
+
+def parse_name(stem: str) -> VideoName:
+    parsed = parse_stem(stem)
+    fields = parsed.fields
+    if fields and fields[-1].lower() == SUB_FIELD:
+        fields = fields[:-1]
+    if len(fields) >= 3:
+        people, title, collection = fields[0], FIELD_SEP.join(fields[1:-1]), fields[-1]
+    elif len(fields) == 2:
+        people, title, collection = fields[0], fields[1], ""
+    elif fields:
+        people, title, collection = "", fields[0], ""
+    else:
+        people, title, collection = "", "", ""
+    return VideoName(tuple(split_people(people)), title, collection, tuple(parsed.tags))
+
+
 # ── Subtitle matching ────────────────────────────────────────────────
 
 def first_field(stem: str) -> str:
