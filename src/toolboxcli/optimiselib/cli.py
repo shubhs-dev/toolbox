@@ -76,6 +76,7 @@ from rich.panel import Panel
 from rich.progress import (
     BarColumn,
     Progress,
+    TaskID,
     TaskProgressColumn,
     TextColumn,
     TimeElapsedColumn,
@@ -188,14 +189,14 @@ class BatchDisplay:
                  for status, label in _TALLY if self.counts.get(status)]
         return text + (f"  {'  '.join(tally)}" if tally else "")
 
-    def encode_task(self, description: str) -> tuple[_EncodeProgress, int]:
+    def encode_task(self, description: str) -> tuple[_EncodeProgress, TaskID]:
         """A (progress, task_id) pair to hand to transcode(). Its percentage updates the
         file's own bar and move the overall bar along with it, so the ETA reflects work
         inside a long encode rather than only jumping once per finished file."""
         task_id = self.files.add_task(description, total=100)
         return _EncodeProgress(self, task_id), task_id
 
-    def end_encode(self, task_id: int) -> None:
+    def end_encode(self, task_id: TaskID) -> None:
         self.files.remove_task(task_id)
 
     def file_fraction(self, fraction: float) -> None:
@@ -212,11 +213,11 @@ class _EncodeProgress:
     """Stands in for the Progress that transcode() reports to — it only ever calls
     `update(task_id, completed=pct)` — and forwards each percentage to the batch too."""
 
-    def __init__(self, display: BatchDisplay, task_id: int) -> None:
+    def __init__(self, display: BatchDisplay, task_id: TaskID) -> None:
         self.display = display
         self.task_id = task_id
 
-    def update(self, task_id: int, completed: float) -> None:
+    def update(self, task_id: TaskID, completed: float) -> None:
         self.display.files.update(task_id, completed=completed)
         self.display.file_fraction(completed / 100)
 
@@ -490,10 +491,11 @@ def plan_destination(root: Path, stem: str) -> tuple[str, Path | None]:
 
 
 def resolve_duplicate(root: Path, video: Path, height: int, duration: float,
-                      dest_folder: Path | None, log: dict, policy: str):
+                      dest_folder: Path | None, log: dict, policy: str,
+                      ) -> tuple[str | None, Path | None]:
     """Compare *video* with any copy already filed under *dest_folder*.
 
-    Returns (verdict, existing_path) — verdict is None when there's nothing to compare.
+    Returns (verdict, existing_path) — both None when there's nothing to compare.
     """
     if dest_folder is None:
         return None, None
@@ -530,7 +532,7 @@ def park_for_review(root: Path, video: Path, reason: str) -> Path:
     return dest
 
 
-def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
+def process(video: Path, root: Path, log: dict, plan: EncoderPlan | None, args,
             seen: set[str], display: BatchDisplay) -> dict:
     """Optimise, tag and sort one file. Returns a result row for the summary table."""
     name = video.name
@@ -581,7 +583,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
     verdict, existing = resolve_duplicate(
         root, video, src_height, src_duration, dest_folder, log, args.on_duplicate,
     )
-    if verdict == core.DOWNGRADE and args.on_duplicate != "ignore":
+    if verdict == core.DOWNGRADE and existing is not None and args.on_duplicate != "ignore":
         if args.dry_run:
             info(f"{name}: downgrade of {existing.name} — would park in {REVIEW_DIR}/")
         else:
@@ -607,7 +609,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
             dest_desc = f"{dest_folder.relative_to(root)}/  [dim](existing)[/]"
         else:
             dest_desc = f"{trip}/  [yellow](would be created)[/]"
-        extra = f"  [{verdict} vs {existing.name}]" if verdict else ""
+        extra = f"  [{verdict} vs {existing.name}]" if verdict and existing else ""
         depth_note = (
             f", {src_depth}-bit source, encoder not checked"
             if plan is None
@@ -625,6 +627,10 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
             f"    move to  {dest_desc}{extra}"
         )
         return {"file": name, "status": "dry-run"}
+
+    # Past here the run is real, and a real run requires HandBrake — main() only leaves
+    # plan unset for a dry run on a machine without it.
+    assert plan is not None
 
     if skip_encode:
         # Seen before and already carrying the right tag — go straight to sorting.
@@ -771,7 +777,7 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
         root, final, out_height, out_duration, dest_folder, log, args.on_duplicate,
     )
 
-    if verdict and not core.wins(verdict) and args.on_duplicate != "ignore":
+    if verdict and existing and not core.wins(verdict) and args.on_duplicate != "ignore":
         park_for_review(root, final, f"{verdict} vs {existing.name}")
         entry.update(status="review", reason=verdict, compared_with=existing.name)
         update_log(root, log, final.name, entry)
@@ -791,7 +797,7 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
         dest_folder = root / trip
         dest_folder.mkdir(parents=True, exist_ok=True)
 
-    if verdict and core.wins(verdict):
+    if verdict and existing and core.wins(verdict):
         move_to_trash(str(existing))
         ok(f"Replaced {existing.name} ({verdict})")
         entry["replaced"] = existing.name
@@ -891,7 +897,7 @@ def _merge_one(root: Path, video: Path, sub: Path, log: dict, args) -> dict:
         video.rename(renamed)
         final = renamed
 
-    updates = {"has_sub": has_sub}
+    updates: dict[str, object] = {"has_sub": has_sub}
     if video.name in log and "dest" in log[video.name]:
         updates["dest"] = str(final.relative_to(root))
     rekey_log(root, log, video.name, final.name, updates)
@@ -1249,7 +1255,7 @@ def main() -> None:
     try:
         first_scan = True
         while True:
-            if not core.within_hours(window):
+            if window is not None and not core.within_hours(window):
                 delay = core.seconds_until(window)
                 info(f"Outside the encode window — sleeping {delay // 60} min")
                 time.sleep(min(delay, 3600))

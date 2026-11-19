@@ -5,8 +5,10 @@ prompting and deleting and hands plain values in."""
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any, cast
 
 VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
@@ -106,7 +108,7 @@ def atime_looks_unrecorded(cands: list[Candidate]) -> bool:
 
 # ── History ──────────────────────────────────────────────────────────
 
-def parse_history(text: str) -> dict[str, dict]:
+def parse_history(text: str) -> dict[str, dict[str, Any]]:
     """Return the ``reviewed`` map from a history file's text; empty on anything
     unreadable, so a corrupt file costs repeat suggestions rather than a crash."""
     try:
@@ -115,13 +117,15 @@ def parse_history(text: str) -> dict[str, dict]:
         return {}
     if not isinstance(data, dict):
         return {}
-    reviewed = data.get("reviewed")
+    # JSON object keys are always strings, so these casts only name what json gave us.
+    reviewed: object = cast("dict[str, Any]", data).get("reviewed")
     if not isinstance(reviewed, dict):
         return {}
-    return {k: v for k, v in reviewed.items() if isinstance(v, dict)}
+    entries = cast("dict[str, object]", reviewed)
+    return {k: cast("dict[str, Any]", v) for k, v in entries.items() if isinstance(v, dict)}
 
 
-def dump_history(reviewed: dict[str, dict]) -> str:
+def dump_history(reviewed: dict[str, dict[str, Any]]) -> str:
     return json.dumps(
         {"version": HISTORY_VERSION, "reviewed": dict(sorted(reviewed.items()))},
         indent=2,
@@ -129,7 +133,7 @@ def dump_history(reviewed: dict[str, dict]) -> str:
     ) + "\n"
 
 
-def is_reviewed(reviewed: dict[str, dict], c: Candidate) -> bool:
+def is_reviewed(reviewed: dict[str, dict[str, Any]], c: Candidate) -> bool:
     """A file counts as reviewed only while it's unchanged since — a file re-encoded in
     place (optimiselib) or replaced by a new release comes back for review."""
     entry = reviewed.get(c.rel)
@@ -138,7 +142,7 @@ def is_reviewed(reviewed: dict[str, dict], c: Candidate) -> bool:
     return entry.get("size") == c.size and abs(entry.get("mtime", 0) - c.mtime) <= MTIME_TOLERANCE
 
 
-def mark_reviewed(reviewed: dict[str, dict], cands: list[Candidate], today: str) -> dict[str, dict]:
+def mark_reviewed(reviewed: dict[str, dict[str, Any]], cands: list[Candidate], today: str) -> dict[str, dict[str, Any]]:
     out = dict(reviewed)
     for c in cands:
         out[c.rel] = {"size": c.size, "mtime": c.mtime, "reviewed": today}
@@ -175,7 +179,8 @@ def _stem_matches(name: str, stem: str) -> bool:
     return name.startswith(stem + ".") or name.startswith(stem + "-")
 
 
-def sidecar_names(video_name: str, sibling_names: list[str], is_dir) -> list[str]:
+def sidecar_names(video_name: str, sibling_names: list[str],
+                  is_dir: Callable[[str], bool]) -> list[str]:
     """Names among ``sibling_names`` (same folder) that belong to ``video_name``:
     ``Movie.en.srt``, ``Movie.nfo``, ``Movie-thumb.jpg``, ``Movie.trickplay``.
     ``is_dir(name)`` says whether a sibling is a folder.
@@ -189,7 +194,7 @@ def sidecar_names(video_name: str, sibling_names: list[str], is_dir) -> list[str
     stem = PurePosixPath(video_name).stem
     videos = [s for s in sibling_names if PurePosixPath(s).suffix.lower() in VIDEO_EXTS]
     video_stems = [PurePosixPath(v).stem for v in videos]
-    out = []
+    out: list[str] = []
     for name in sibling_names:
         if name == video_name or name in videos or not _stem_matches(name, stem):
             continue

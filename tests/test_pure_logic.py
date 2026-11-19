@@ -245,6 +245,17 @@ def test_audio_only_mismatch_copies_the_video():
     assert cmd[cmd.index("-b:a") + 1] == "192k"
 
 
+def test_audio_reencode_tolerates_missing_channels_and_rate():
+    # ffprobe can omit sample_rate/channels; that used to crash (96 * None) or hand
+    # ffmpeg "-ac None".
+    target = concat.choose_target([concat.parse_streams(_probe(acodec="ac3", rate=None, ch=None))])
+    part = concat.parse_streams(_probe(acodec="mp3", rate=None, ch=None))
+    cmd = concat.normalize_command(Path("in.mp4"), Path("out.mp4"), part, target, encoder=None)
+    assert "None" not in cmd
+    assert "-ac" not in cmd and "-ar" not in cmd
+    assert cmd[cmd.index("-b:a") + 1] == "192k"
+
+
 def test_video_reencode_without_an_encoder_is_refused():
     target = concat.choose_target([concat.parse_streams(_probe(w=1280, h=720))])
     part = concat.parse_streams(_probe())

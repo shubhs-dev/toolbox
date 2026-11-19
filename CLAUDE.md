@@ -35,8 +35,9 @@ for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cyb
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 
-# Lint and test (config in pyproject.toml); both must pass before a change is committed
+# Lint, type-check and test (config in pyproject.toml); all must pass before a change is committed
 uv run ruff check src tests
+uv run pyright
 uv run pytest
 ```
 
@@ -45,6 +46,17 @@ the paired argument layouts (`"-o", template,` on one line) that make the subpro
 command lists readable. The rule set is correctness-focused (pyflakes, pycodestyle,
 bugbear, import order, pyupgrade, pylint errors); don't add complexity/style rule families
 without a reason.
+
+### Types
+
+pyright runs in **basic** mode over `src/`, and **strict** for the `*/core.py` modules
+(`[tool.pyright]` in pyproject.toml) — those hold the parsing and decision logic and take
+plain values, so full types are cheap there. `pythonVersion = "3.9"` matches
+`requires-python`, so a stdlib call newer than 3.9 is flagged. ffprobe/JSON payloads are
+dynamic: annotate them `dict[str, Any]` / `list[dict[str, Any]]` rather than bare `dict`,
+which strict mode reports as unknown. When pyright can't see an invariant the code relies on
+(e.g. `plan` is only None in a dry run), narrow with an `assert` that states it, rather than
+a `# type: ignore`.
 
 ### Tests
 

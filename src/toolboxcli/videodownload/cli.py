@@ -48,6 +48,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from rich.markup import escape
 
@@ -205,7 +206,9 @@ def _shorten(text: str, width: int = STATUS_WIDTH) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
-SKIPPED = object()  # worker sentinel: the line was deleted from urls.txt before it started
+# Worker result: (yt-dlp exit code, last lines of output), or None when the line was
+# deleted from urls.txt before the download started.
+Outcome = Optional[tuple[int, list[str]]]
 
 
 def run_parallel(downloads: list[Download], workers: int, urls: UrlsFile, results: Results) -> None:
@@ -214,9 +217,9 @@ def run_parallel(downloads: list[Download], workers: int, urls: UrlsFile, result
 
     with spinner() as progress:
 
-        def worker(dl: Download) -> tuple[int, list[str]] | object:
+        def worker(dl: Download) -> Outcome:
             if not urls.contains(dl):
-                return SKIPPED
+                return None
             label = escape(_shorten(dl.label, 40))
             task = progress.add_task(label, total=None)
             tail: deque[str] = deque(maxlen=FAIL_TAIL_LINES)
@@ -255,7 +258,7 @@ def run_parallel(downloads: list[Download], workers: int, urls: UrlsFile, result
                     outcome = future.result()
                 except Exception as exc:  # e.g. OSError launching yt-dlp
                     outcome = (-1, [str(exc)])
-                if outcome is SKIPPED:
+                if outcome is None:
                     results.skipped += 1
                     info(f"{escape(dl.label)} — no longer in {urls.path.name}, skipping")
                     continue

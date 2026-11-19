@@ -81,14 +81,17 @@ def list_presets():
     tbl.add_column("Preset name (use with -p)", style="green")
     tbl.add_column("HandBrake label")
 
-    for f in sorted(directory.glob("*.json")):
+    # iterdir(), not glob(): presets_dir() may be an importlib.resources Traversable,
+    # which only promises iterdir/name/open — glob() works on a plain install by luck.
+    for f in sorted((p for p in directory.iterdir() if p.name.endswith(".json")),
+                    key=lambda p: p.name):
         try:
             with f.open() as fp:
                 d = json.load(fp)
             label = d["PresetList"][0]["PresetName"]
         except (json.JSONDecodeError, KeyError, IndexError):
             label = "[dim](unreadable)[/]"
-        tbl.add_row(f.stem if hasattr(f, "stem") else f.name.rsplit(".", 1)[0], label)
+        tbl.add_row(f.name.removesuffix(".json"), label)
 
     console.print(tbl)
 
