@@ -16,6 +16,7 @@ jobs:
   lint:
     name: ruff + pyright
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -28,6 +29,8 @@ jobs:
   test:
     name: tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    # A whole run takes a couple of minutes; anything near this is a hang, not slowness.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -43,14 +46,21 @@ jobs:
 
       # ffmpeg everywhere, for the integration tests' generated videos. HandBrakeCLI only
       # on Linux, where it's a quick apt install: the encode/sort tests skip elsewhere.
+      # Package mirrors occasionally stall mid-download and hang the step; a timeout turns
+      # that into a quick, re-runnable failure instead of a PR stuck "in progress".
       - name: Install ffmpeg + HandBrakeCLI (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg handbrake-cli
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update -q
+          sudo apt-get -o Acquire::Retries=3 install -y -q ffmpeg handbrake-cli
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'
+        timeout-minutes: 10
         run: brew install ffmpeg
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
+        timeout-minutes: 10
         run: choco install ffmpeg -y --no-progress
 
       - run: uv sync --locked

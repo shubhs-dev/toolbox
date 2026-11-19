@@ -54,6 +54,7 @@ Usage:
     optimiselib -a alice                  # everything with Alice in it
     optimiselib -R 720p -c Lakes          # filters combine: 720p videos in Lakes
     optimiselib -T Restored               # by [tag]
+    optimiselib -U                        # files not named People - Title - Collection
     optimiselib -D                        # videos the library holds more than once
     optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
     optimiselib -S                        # don't scan for or merge subtitle files
@@ -189,6 +190,8 @@ def sync_library(root: Path, db: LibraryDB) -> None:
             row.status = "missing"
             db.upsert(row)
             db.log_event(row.path, "missing")
+
+    db.prune_people()   # people only a renamed-away name had mentioned
 
     if not unknown_in_folders:
         return
@@ -979,6 +982,11 @@ def show_report(root: Path, db: LibraryDB) -> None:
     else:
         info("Nothing below 1080p on record.")
 
+    unnamed = [v for v in db.search(unnamed=True) if v.status != "review"]
+    if unnamed:
+        warn(f"{len(unnamed)} file(s) aren't named People - Title - Collection, so they can't be "
+             "matched as duplicates or searched by person/collection — `optimiselib -U` lists them")
+
     review = root / REVIEW_DIR
     parked = sorted(review.iterdir()) if review.is_dir() else []
     parked = [p for p in parked if p.is_file() and p.suffix.lower() in VIDEO_EXTS]
@@ -1002,6 +1010,8 @@ def _filters_desc(args) -> str:
         ("person", args.person), ("collection", args.collection),
         ("resolution", args.resolution), ("tag", args.tag),
     ) if value]
+    if args.unnamed:
+        parts.insert(0, "not named People - Title - Collection")
     return ", ".join(parts)
 
 
@@ -1020,7 +1030,7 @@ def list_library(root: Path, db: LibraryDB, args) -> None:
     """
     videos = [
         v for v in db.search(person=args.person, collection=args.collection,
-                             resolution=args.resolution, tag=args.tag)
+                             resolution=args.resolution, tag=args.tag, unnamed=args.unnamed)
         if v.status != "review"
     ]
     videos.sort(key=lambda v: v.filename.lower())
@@ -1132,6 +1142,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="With -l: only videos at this resolution, e.g. 720p or 720")
     ap.add_argument("-T", "--tag", metavar="TAG",
                     help="With -l: only videos carrying this [tag] (case-insensitive, partial)")
+    ap.add_argument("-U", "--unnamed", action="store_true",
+                    help="With -l: only videos whose names don't follow "
+                         "People - Title - Collection (so can't be matched as duplicates)")
     ap.add_argument("-D", "--duplicates", action="store_true",
                     help="List videos the library holds more than once, then exit "
                          "(report only; nothing is moved)")
@@ -1173,7 +1186,7 @@ def main() -> None:
 
     # Any filter means "list": `optimiselib -a alice` is `optimiselib -l -a alice`.
     if args.list_files is None and (args.person or args.collection or args.resolution
-                                    or args.tag):
+                                    or args.tag or args.unnamed):
         args.list_files = ""
 
     if args.subs_only and args.no_subs:
