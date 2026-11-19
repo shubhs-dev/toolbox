@@ -51,6 +51,10 @@ Usage:
     optimiselib -r                        # report sub-1080p files and the review queue
     optimiselib -l                        # list every video in the library, alphabetically
     optimiselib -l library.txt            # write that list to library.txt instead
+    optimiselib -a alice                  # everything with Alice in it
+    optimiselib -R 720p -c Lakes          # filters combine: 720p videos in Lakes
+    optimiselib -T Restored               # by [tag]
+    optimiselib -D                        # videos the library holds more than once
     optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
     optimiselib -S                        # don't scan for or merge subtitle files
     optimiselib -s                        # merge waiting subtitles only, then exit
@@ -993,32 +997,91 @@ def show_report(root: Path, db: LibraryDB) -> None:
         console.print(tbl)
 
 
-def list_library(root: Path, dest: str | None) -> None:
-    """Print every video in the library in alphabetical order, or write it to *dest*.
+def _filters_desc(args) -> str:
+    parts = [f"{label} '{value}'" for label, value in (
+        ("person", args.person), ("collection", args.collection),
+        ("resolution", args.resolution), ("tag", args.tag),
+    ) if value]
+    return ", ".join(parts)
 
-    The whole library, not just the root — trip folders included, `_review/` excluded, same
-    view of "in the library" that subtitle matching already uses. Names only: the point is a
-    list you can read or diff, not a directory tree.
+
+def _location(video: Video) -> str:
+    folder = str(PurePosixPath(video.path).parent)
+    return "(root)" if folder == "." else folder
+
+
+def list_library(root: Path, db: LibraryDB, args) -> None:
+    """Print the library's videos — all of them, or those matching -a/-c/-R/-T — as a table,
+    or write their names to the -l FILE.
+
+    The whole library, trip folders included; `_review/` (a decision still waiting on you)
+    and files that have gone are left out. Filters combine, and are case-insensitive; text
+    filters match part of a value, so `-a ali` finds Alice.
     """
-    names = sorted((v.name for v in all_videos(root)), key=str.lower)
+    videos = [
+        v for v in db.search(person=args.person, collection=args.collection,
+                             resolution=args.resolution, tag=args.tag)
+        if v.status != "review"
+    ]
+    videos.sort(key=lambda v: v.filename.lower())
+    desc = _filters_desc(args)
+    count = f"{len(videos)} file{'' if len(videos) == 1 else 's'}"
 
-    if dest is None:
-        for name in names:
-            # markup=False: a [1080p] tag would otherwise be parsed as rich markup.
-            console.print(name, markup=False, highlight=False, soft_wrap=True)
-        console.print()
-        info(f"{len(names)} file{'' if len(names) == 1 else 's'} in {root}")
+    if not args.list_files:
+        if videos:
+            tbl = Table(box=box.SIMPLE_HEAD, show_edge=False)
+            tbl.add_column("File", style="cyan", overflow="fold")
+            tbl.add_column("Resolution", justify="center")
+            tbl.add_column("Depth", justify="center")
+            tbl.add_column("Location", overflow="fold")
+            for v in videos:
+                tbl.add_row(escape(v.filename), v.resolution or "?", f"{v.bit_depth}-bit",
+                            escape(_location(v)))
+            console.print(tbl)
+        info(f"{count} {'matching ' + desc if desc else 'in ' + str(root)}")
         return
 
-    out = Path(dest).expanduser()
+    out = Path(args.list_files).expanduser()
     if out.exists() and confirm(f"{out} exists — overwrite?", default="n") != "y":
         info("Cancelled")
         return
+    names = [v.filename for v in videos]
     try:
         out.write_text("\n".join(names) + ("\n" if names else ""), encoding="utf-8")
     except OSError as e:
         die(f"Couldn't write {out}: {e}")
-    ok(f"{len(names)} file{'' if len(names) == 1 else 's'} → {out}")
+    ok(f"{count} → {out}")
+
+
+def show_duplicates(db: LibraryDB) -> None:
+    """Every group of files the library holds more than once — the same people, title and
+    collection, whatever the order, case or tags. A report only: nothing is moved."""
+    groups = db.duplicate_groups()
+    if not groups:
+        ok("No duplicates in the library.")
+        return
+    for group in groups:
+        name = group[0].name
+        people = ", ".join(name.people) or "—"
+        tbl = Table(
+            title=escape(f"{people} · {name.title} · {name.collection or '(no collection)'}"),
+            title_justify="left", title_style="bold yellow", box=box.SIMPLE_HEAD,
+            show_edge=False,
+        )
+        tbl.add_column("File", style="cyan", overflow="fold")
+        tbl.add_column("Resolution", justify="center")
+        tbl.add_column("Duration", justify="right")
+        tbl.add_column("Size", justify="right")
+        tbl.add_column("Location", overflow="fold")
+        for v in group:
+            minutes, seconds = divmod(int(v.duration), 60)
+            tbl.add_row(escape(v.filename), v.resolution or "?",
+                        f"{minutes}:{seconds:02d}" if v.duration else "?",
+                        fmt_size(v.size) if v.size else "?", escape(_location(v)))
+        console.print(tbl)
+        console.print()
+    files = sum(len(g) for g in groups)
+    warn(f"{len(groups)} video(s) held more than once ({files} files) — nothing was changed")
 
 
 def show_summary(results: list[dict]) -> None:
@@ -1059,8 +1122,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="List files below 1080p and the review queue, then exit")
     ap.add_argument("-l", "--list", nargs="?", const="", default=None, metavar="FILE",
                     dest="list_files",
-                    help="List every video in the library alphabetically and exit; with a "
-                         "FILE, write the list there instead of printing it")
+                    help="List the library's videos and exit (narrowed by -a/-c/-R/-T); with "
+                         "a FILE, write their names there instead of printing a table")
+    ap.add_argument("-a", "--person", metavar="NAME",
+                    help="With -l: only videos with this person (case-insensitive, partial)")
+    ap.add_argument("-c", "--collection", metavar="NAME",
+                    help="With -l: only videos in this collection (case-insensitive, partial)")
+    ap.add_argument("-R", "--resolution", metavar="RES",
+                    help="With -l: only videos at this resolution, e.g. 720p or 720")
+    ap.add_argument("-T", "--tag", metavar="TAG",
+                    help="With -l: only videos carrying this [tag] (case-insensitive, partial)")
+    ap.add_argument("-D", "--duplicates", action="store_true",
+                    help="List videos the library holds more than once, then exit "
+                         "(report only; nothing is moved)")
     ap.add_argument("-F", "--force", action="store_true",
                     help="Re-process files the library database already knows as done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
@@ -1097,9 +1171,10 @@ def main() -> None:
     if not root.is_dir():
         die(f"Not a directory: {root}")
 
-    if args.list_files is not None:
-        list_library(root, args.list_files or None)
-        return
+    # Any filter means "list": `optimiselib -a alice` is `optimiselib -l -a alice`.
+    if args.list_files is None and (args.person or args.collection or args.resolution
+                                    or args.tag):
+        args.list_files = ""
 
     if args.subs_only and args.no_subs:
         die("--subs-only and --no-subs contradict each other")
@@ -1121,8 +1196,18 @@ def main() -> None:
 
 
 def run(root: Path, db: LibraryDB, args) -> None:
-    # Reports and subtitle merges read the database, so bring it in line with the disk
-    # first — otherwise a file moved by hand since the last poll shows where it used to be.
+    # Reports, queries and subtitle merges read the database, so bring it in line with the
+    # disk first — otherwise a file moved by hand since the last poll shows where it used to be.
+    if args.list_files is not None:
+        sync_library(root, db)
+        list_library(root, db, args)
+        return
+
+    if args.duplicates:
+        sync_library(root, db)
+        show_duplicates(db)
+        return
+
     if args.report:
         sync_library(root, db)
         show_report(root, db)

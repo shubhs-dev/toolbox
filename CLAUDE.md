@@ -282,6 +282,10 @@ Progress *factories* themselves) were extracted from it.
   be matched. Duplicate lookup (`resolve_duplicate`) is library-wide by match key, ignoring
   `_review/` copies (a decision still waiting on the user). A dry run opens an in-memory copy
   (`LibraryDB.open(root, in_memory=True)`), so a JSON import or sync it does vanishes.
+- `optimiselib`'s queries (`-l` with `-a/-c/-R/-T`, `-D`) read the database after a
+  `sync_library()`, never the filesystem, so they see people/collection/tags as parsed and
+  matched by the same rules duplicate detection uses. A filter alone implies `-l`. `-D` is a
+  report only — unlike the pipeline's own duplicate handling it never moves or trashes.
 - `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
   `-e`/`-q` on the command line so the bundled presets are never edited: if the preset's own
   encoder is available it's used with **no** override at all. Unlike `ffmpeg -encoders`, which

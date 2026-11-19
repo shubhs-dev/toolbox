@@ -632,6 +632,10 @@ optimiselib -n                        # dry run: show what would happen
 optimiselib -r                        # report sub-1080p files and the review queue
 optimiselib -l                        # list every video in the library, alphabetically
 optimiselib -l library.txt            # write that list to library.txt instead
+optimiselib -a alice                  # everything with Alice in it
+optimiselib -R 720p -c Lakes          # filters combine: 720p videos in Lakes
+optimiselib -T Restored               # by [tag]
+optimiselib -D                        # videos the library holds more than once
 optimiselib -s                        # merge waiting subtitles only, then exit
 optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
 ```
@@ -680,11 +684,23 @@ disabled rather than blocking the rest of the pipeline. Disable it with `-S/--no
 nothing. It needs just `addsub` and `ffprobe`, and is dispatched before the HandBrake check and
 the encoder probe, so it stays quick and works on a machine that can't encode at all.
 
-**Listing** — `-l/--list` prints every video in the library in alphabetical order (case-insensitive)
-and exits. Unlike the pipeline itself this covers the *whole* library, trip folders included; only
-`_review/` and non-video files are left out. Filenames only, one per line — pass a filename
-(`-l library.txt`) to write it out instead of printing it, and you'll be asked before an existing
+**Querying** — `-l/--list` prints the library's videos as a table (file, resolution, bit depth,
+folder), alphabetically, and exits. Unlike the pipeline this covers the *whole* library, trip
+folders included; `_review/` and files that have gone are left out. Narrow it with any mix of:
+
+- `-a/--person NAME` — videos with that person (`-a ali` finds Alice)
+- `-c/--collection NAME` — videos in that collection
+- `-R/--resolution RES` — videos at that resolution (`720p` or just `720`)
+- `-T/--tag TAG` — videos carrying that `[tag]`
+
+All are case-insensitive, and every text filter matches part of a value. A filter on its own
+implies `-l`, so `optimiselib -a alice` is enough. Pass a filename (`-l library.txt`) to write the
+matching names there, one per line, instead of printing a table; you're asked before an existing
 file is overwritten.
+
+`-D/--duplicates` lists every video the library holds more than once — the same people, title and
+collection, in any order or case and whatever the tags — with each copy's resolution, duration,
+size and folder. It's a report only: nothing is moved or deleted.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
@@ -692,7 +708,12 @@ file is overwritten.
 | `-O, --once` | off | Process existing files and exit |
 | `-n, --dry-run` | off | Show planned rename, destination and duplicate verdict; change nothing |
 | `-r, --report` | off | List files below 1080p and the review queue, then exit |
-| `-l, --list` | off | List every video in the library alphabetically, then exit; with a `FILE` argument, write the list there instead of printing it |
+| `-l, --list` | off | List the library's videos as a table, then exit; with a `FILE` argument, write their names there instead |
+| `-a, --person` | — | With `-l`: only videos with this person (case-insensitive, partial) |
+| `-c, --collection` | — | With `-l`: only videos in this collection (case-insensitive, partial) |
+| `-R, --resolution` | — | With `-l`: only videos at this resolution, e.g. `720p` or `720` |
+| `-T, --tag` | — | With `-l`: only videos carrying this `[tag]` (case-insensitive, partial) |
+| `-D, --duplicates` | off | List videos the library holds more than once, then exit (report only) |
 | `-F, --force` | off | Re-process files the library database already knows as done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |

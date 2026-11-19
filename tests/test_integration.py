@@ -161,6 +161,70 @@ def test_sync_follows_moves_records_folders_and_marks_missing(tmp_path):
         assert bob is not None and bob.status == "sorted"
 
 
+@pytest.fixture
+def catalogue(tmp_path, make_video):
+    """A sorted library to query: a reordered-people duplicate pair, and a tagged file."""
+    root = tmp_path / "lib"
+    make_video(root / "Lakes" / "Alice, Bob - Day 1 - Lakes [1080p].mp4", "1920x1080")
+    make_video(root / "Lakes" / "Bob and Alice - Day 1 - Lakes [720p].mp4", "1280x720")
+    make_video(root / "Peaks" / "Carol - Summit - Peaks [720p Restored].mp4", "1280x720")
+    make_video(root / "_review" / "Alice - Parked - Lakes.mp4", "640x480")
+    return root
+
+
+def _listed(stdout: str) -> set[str]:
+    names = ("Alice, Bob - Day 1", "Bob and Alice - Day 1", "Carol - Summit", "Alice - Parked")
+    return {n for n in names if n in stdout}
+
+
+@needs("ffmpeg", "ffprobe")
+@pytest.mark.parametrize("filters, expected", [
+    ([], {"Alice, Bob - Day 1", "Bob and Alice - Day 1", "Carol - Summit"}),  # not _review/
+    (["-a", "ALICE"], {"Alice, Bob - Day 1", "Bob and Alice - Day 1"}),
+    (["-a", "car"], {"Carol - Summit"}),
+    (["-R", "720"], {"Bob and Alice - Day 1", "Carol - Summit"}),
+    (["-c", "peaks", "-T", "restored"], {"Carol - Summit"}),
+    (["-a", "alice", "-R", "1080p"], {"Alice, Bob - Day 1"}),
+    (["-a", "nobody"], set()),
+])
+def test_list_filters(catalogue, run_cli, filters, expected):
+    # Filters on their own imply -l.
+    result = run_cli("optimiselib", [str(catalogue), *filters] if filters else [str(catalogue), "-l"])
+    assert result.returncode == 0, result.stderr
+    assert _listed(result.stdout) == expected
+    assert f"{len(expected)} file" in result.stdout
+
+
+@needs("ffmpeg", "ffprobe")
+def test_list_to_a_file_writes_plain_names(catalogue, run_cli, tmp_path):
+    out = tmp_path / "list.txt"
+    result = run_cli("optimiselib", [str(catalogue), "-l", str(out), "-R", "720p"])
+    assert result.returncode == 0, result.stderr
+    assert out.read_text(encoding="utf-8").splitlines() == [
+        "Bob and Alice - Day 1 - Lakes [720p].mp4",
+        "Carol - Summit - Peaks [720p Restored].mp4",
+    ]
+
+
+@needs("ffmpeg", "ffprobe")
+def test_duplicates_report_groups_reordered_people(catalogue, run_cli):
+    before = _files(catalogue)
+    result = run_cli("optimiselib", [str(catalogue), "-D"])
+    assert result.returncode == 0, result.stderr
+    assert _listed(result.stdout) == {"Alice, Bob - Day 1", "Bob and Alice - Day 1"}
+    assert "1 video(s) held more than once (2 files)" in result.stdout
+    assert _files(catalogue) == before                       # a report only
+
+
+@needs("ffmpeg", "ffprobe")
+def test_duplicates_report_when_there_are_none(tmp_path, make_video, run_cli):
+    root = tmp_path / "lib"
+    make_video(root / "Lakes" / "Alice - Day 1 - Lakes.mp4", "640x480")
+    result = run_cli("optimiselib", [str(root), "-D"])
+    assert result.returncode == 0, result.stderr
+    assert "No duplicates" in result.stdout
+
+
 def test_recover_interrupted_restores_sources_and_drops_temp_output(tmp_path):
     (tmp_path / "Clip.mkv.processing").write_bytes(b"source")
     (tmp_path / "Clip [720p].mp4.tmp").write_bytes(b"partial")
