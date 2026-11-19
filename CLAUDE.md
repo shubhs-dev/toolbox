@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A collection of CLI tools for media processing, file organization, and game modding, all
 written in Python and packaged as a single distribution installed with uv
 (`shubhs-toolbox`, importable as `toolboxcli`). There is no build step beyond standard Python
-packaging and no test suite.
+packaging. Tests live in `tests/` (pytest).
 
 Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
 `uv tool install --managed-python -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
@@ -35,15 +35,31 @@ for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cyb
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 
-# Lint (config in pyproject.toml); must pass before a change is committed
-uv run ruff check src
+# Lint and test (config in pyproject.toml); both must pass before a change is committed
+uv run ruff check src tests
+uv run pytest
 ```
 
 ruff is a linter only: `ruff format` is deliberately not used, because it would explode
 the paired argument layouts (`"-o", template,` on one line) that make the subprocess
 command lists readable. The rule set is correctness-focused (pyflakes, pycodestyle,
 bugbear, import order, pyupgrade, pylint errors); don't add complexity/style rule families
-without a reason. No test runner exists yet.
+without a reason.
+
+### Tests
+
+- `tests/fixtures/*.json` hold real-world filenames → expected results for the filename
+  parsers (`jellyname.json`, `kavitaname.json`). When a new naming pattern turns up, add a
+  row there rather than reasoning about the regexes in isolation; the parametrized tests
+  pick it up. Both parsers are also checked to be no-ops on their own output, and
+  kavitaname's output to parse back to the same numbers.
+- The fixtures pin *current* behaviour. A row whose expected value looks wrong is a bug to
+  fix in the code (then update the row), not a test to delete.
+- `tests/test_integration.py` runs the real commands as subprocesses on throwaway folders
+  (`run_cli`, `make_video` and `sandbox_env` in `conftest.py`): videos are generated with
+  ffmpeg, HOME points into the test's tmp dir so trashed files never reach the real Trash,
+  and tests needing a missing binary (`ffmpeg`, `HandBrakeCLI`) are skipped via `needs()`.
+  video-download is driven by a fake `yt-dlp` script (POSIX only), never the network.
 
 ## Architecture
 
@@ -291,6 +307,9 @@ Progress *factories* themselves) were extracted from it.
   filename it **emits** must be what Kavita reads back. Verify both directions against real
   fixtures — parse correctness and re-parse through Kavita's `MangaVolumeRegex`/
   `MangaChapterRegex` — rather than reasoning about the regexes in isolation.
+  `tests/test_kavitaname.py` covers the first direction and re-parses output through
+  kavitaname's *own* parser; it does not run Kavita's regexes, so a change to the output
+  vocabulary still needs checking against Kavita itself.
 - The output vocabulary is deliberately much narrower than the input vocabulary: only
   `c{ch:03d}`, `(v{vol:02d})`, `v{vol:02d}` and `SP{NN}` are ever produced, because those are
   the forms verified to survive Kavita's re-parse. Don't widen it to "preserve" an input
@@ -334,7 +353,7 @@ Progress *factories* themselves) were extracted from it.
   dataclass. Unlike the old version, matched tags are *preserved* in a bracketed filename
   suffix instead of being discarded — only unrecognized tokens (release-group names, hashes,
   fansub tags) are dropped. When extending the tag vocabularies or anchor-detection regexes,
-  verify against real filename fixtures (still no test framework in this repo) rather than
+  verify against real filename fixtures (`tests/fixtures/jellyname.json`) rather than
   reasoning about the regex in isolation — this is still the most fragile/fiddly logic here.
 - `prunelib` deletes files the user *picked*, rather than files it
   produced, so everything it removes is listed and confirmed first, and it trashes by default
