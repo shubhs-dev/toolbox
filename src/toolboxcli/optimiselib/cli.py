@@ -48,11 +48,12 @@ Usage:
     optimiselib -s                        # merge waiting subtitles only, then exit
     optimiselib -R                        # TEMPORARY: log videos compressed by hand
 
--R/--reconcile is a temporary migration aid: it walks every folder in the library (not the
-root, not _review/), and adds each video the log doesn't know about yet as if optimiselib had
-sorted it there — probed for resolution, depth, duration and subtitles, but renamed, moved
-and re-encoded not at all. Stop a running watcher first: it holds the log in memory and
-would overwrite the new entries the next time it saves.
+-R/--reconcile is a temporary migration aid: it adds every video in the library (root and
+folders, not _review/) that the log doesn't know about yet, as already compressed — probed
+for resolution, depth, duration and subtitles, and renamed, moved and re-encoded not at all.
+Reconciled files are never encoded afterwards either (unless -F): one in the root, or moved
+back there later, is only tagged, deduplicated and sorted on the next poll. Stop a running
+watcher first: it holds the log in memory and would overwrite the new entries when it saves.
 """
 
 from __future__ import annotations
@@ -541,6 +542,11 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
         return {"file": name, "status": "skipped", "reason": "unreadable"}
     src_height, src_duration, src_depth, src_has_sub = probed
 
+    # Logged by -R/--reconcile: already compressed (by compressvid), so never re-encoded —
+    # only tagged, deduplicated and sorted. Its name usually carries no resolution tag, so
+    # already_optimised() can't recognise it. -F still forces an encode.
+    reconciled = not args.force and bool(log.get(name, {}).get("reconciled"))
+
     # 10-bit tracks the source by default, so HDR and 10-bit grades aren't flattened to
     # 8-bit — but a backend without a 10-bit encoder quietly stays 8-bit rather than
     # jumping to different hardware, so say when that happens. Decided before anything
@@ -551,20 +557,25 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
     else:
         ten_bit = plan.wants_10bit(src_depth)
         if ten_bit and not plan.has_10bit():
-            warn(
-                f"{name}: {src_depth}-bit source but {plan.backend.name} has no 10-bit "
-                f"encoder here — encoding 8-bit"
-            )
+            if not reconciled:   # nothing will be encoded, so nothing to warn about
+                warn(
+                    f"{name}: {src_depth}-bit source but {plan.backend.name} has no 10-bit "
+                    f"encoder here — encoding 8-bit"
+                )
             ten_bit = False
     target_depth = 10 if ten_bit else 8
 
     # Compared against what *this* invocation would produce, not against the file's own
     # content — so `-B 8` re-encodes a file already tagged 10bit instead of calling it done.
-    skip_encode = not args.force and already_optimised(
+    skip_encode = reconciled or (not args.force and already_optimised(
         video, src_height, target_depth, src_has_sub, seen,
-    )
+    ))
 
-    tagged_stem = core.apply_tags(video.stem, src_height, target_depth, src_has_sub)
+    # A file that isn't encoded keeps its own depth, so its tag must describe that — the
+    # same depth _finish() retags it with.
+    tagged_stem = core.apply_tags(
+        video.stem, src_height, src_depth if skip_encode else target_depth, src_has_sub,
+    )
     trip, dest_folder = plan_destination(root, tagged_stem)
 
     # Pre-flight: reject a clear downgrade before spending an hour encoding it.
@@ -581,6 +592,8 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
                 "resolution": core.resolution_label(src_height),
                 "source_height": src_height, "duration": src_duration,
                 "compared_with": existing.name, "ts": datetime.now().isoformat(),
+                # Kept so it still isn't re-encoded if it's moved back from _review/.
+                **({"reconciled": True} if reconciled else {}),
             })
         return {"file": name, "status": "review", "reason": "downgrade"}
 
@@ -622,7 +635,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
         info(f"{name}  [dim]already optimised — sorting only[/]")
         return _finish(video, final, root, log, plan, args,
                        orig_size, comp_size, src_height, out_height, out_duration,
-                       src_depth, src_has_sub)
+                       src_depth, src_has_sub, reconciled=reconciled)
 
     # ── Encode ────────────────────────────────────────────────────
     if not wait_stable(video):
@@ -717,7 +730,7 @@ def process(video: Path, root: Path, log: dict, plan: EncoderPlan, args,
 def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, args,
             orig_size: int, comp_size: int, src_height: int,
             out_height: int, out_duration: float, out_depth: int = 8,
-            has_sub: bool = False) -> dict:
+            has_sub: bool = False, reconciled: bool = False) -> dict:
     """Retag to the measured resolution, resolve duplicates, and sort.
 
     Shared by the encode path and the already-optimised path so a file that comes back to
@@ -743,6 +756,15 @@ def _finish(video: Path, final: Path, root: Path, log: dict, plan: EncoderPlan, 
         "compressed_size": comp_size,
         "ts": datetime.now().isoformat(),
     }
+    if reconciled:
+        # Never encoded here, so no backend to credit. The marker is kept so the file is
+        # still recognised as compressed if it ever comes back to the root, and the entry
+        # moves to the tagged name — every branch below saves the log.
+        del entry["backend"]
+        entry["reconciled"] = True
+        if final.name != name:
+            with _log_lock:
+                log.pop(name, None)
 
     # ── Duplicate resolution, re-decided on the finished file ─────
     trip, dest_folder = plan_destination(root, final.stem)
@@ -972,27 +994,25 @@ def list_library(root: Path, dest: str | None) -> None:
 
 
 def reconcile(root: Path, log: dict, dry_run: bool) -> None:
-    """Log every video in the library's folders that the log doesn't know about yet, as if
-    optimiselib had sorted it there. TEMPORARY — for bringing files compressed by hand with
-    compressvid into the log; remove once the library is reconciled.
+    """Log every video in the library that the log doesn't know about yet as already
+    compressed. TEMPORARY — for bringing files compressed by hand with compressvid into the
+    log; remove once the library is reconciled.
 
-    Nothing is renamed, moved or re-encoded: each file is probed and recorded as it stands.
-    Root files are left out, since they're the pipeline's pending input rather than finished
-    work, and so is `_review/`. The log is keyed by file name, so a name the log already
-    holds — from any folder — is left alone, and of two unlogged files sharing a name only
-    the first is added.
+    Nothing is renamed, moved or re-encoded here: each file is probed and recorded as it
+    stands. A file in a folder is logged as sorted. A file in the root is logged with status
+    "reconciled": the next poll treats it as compressed (see process()), so it is tagged,
+    deduplicated and sorted but never encoded. `_review/` is left out. The log is keyed by
+    file name, so a name the log already holds — from any folder — is left alone, and of two
+    unlogged files sharing a name only the first is added.
     """
     require_tool("ffprobe", "part of ffmpeg")
 
-    in_folders = sorted(
-        (v for v in all_videos(root) if v.parent != root),
-        key=lambda v: str(v.relative_to(root)).lower(),
-    )
-    missing = [v for v in in_folders if v.name not in log]
-    already = len(in_folders) - len(missing)
+    videos = sorted(all_videos(root), key=lambda v: str(v.relative_to(root)).lower())
+    missing = [v for v in videos if v.name not in log]
+    already = len(videos) - len(missing)
 
     if not missing:
-        info(f"Log already covers all {already} video(s) in the library's folders")
+        info(f"Log already covers all {already} video(s) in the library")
         return
 
     added: dict[str, dict] = {}
@@ -1011,8 +1031,9 @@ def reconcile(root: Path, log: dict, dry_run: bool) -> None:
                         unreadable.append(v)
                     else:
                         height, duration, depth, has_sub = probed
+                        in_root = v.parent == root
                         added[v.name] = {
-                            "status": "sorted",
+                            "status": "reconciled" if in_root else "sorted",
                             "resolution": core.resolution_label(height),
                             # The pre-compression height is unknown; the current one is the
                             # best stand-in resolve_duplicate() will get.
@@ -1021,9 +1042,10 @@ def reconcile(root: Path, log: dict, dry_run: bool) -> None:
                             "bit_depth": depth,
                             "has_sub": has_sub,
                             "compressed_size": v.stat().st_size,
-                            # From the name, as _finish() records it; the folder when the
-                            # name carries no collection field.
-                            "trip": core.parse_stem(v.stem).trip or v.parent.name,
+                            # From the name, as _finish() records it; for a sorted file
+                            # whose name has no collection field, the folder it sits in.
+                            "trip": core.parse_stem(v.stem).trip
+                                    or ("" if in_root else v.parent.name),
                             "dest": str(v.relative_to(root)),
                             "reconciled": True,
                             "ts": datetime.now().isoformat(),
@@ -1106,9 +1128,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="List every video in the library alphabetically and exit; with a "
                          "FILE, write the list there instead of printing it")
     ap.add_argument("-R", "--reconcile", action="store_true",
-                    help="TEMPORARY: log every video in the library's folders that the log "
-                         "doesn't have yet, as already optimised, then exit. Renames and "
-                         "moves nothing; -n previews it")
+                    help="TEMPORARY: log every video in the library that the log doesn't "
+                         "have yet as already compressed, then exit. Renames and moves "
+                         "nothing; later polls sort but never encode them. -n previews it")
     ap.add_argument("-F", "--force", action="store_true",
                     help="Re-process files the log has already marked done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
