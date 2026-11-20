@@ -357,3 +357,43 @@ def known_from_queue(items: list[QueueItem]) -> KnownNames:
             known.people.update(normalize(p) for p in name.people)
             known.collections.add(normalize(name.collection))
     return known
+
+
+# ── Progress lines ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Progress:
+    """Where a running download is, as read from one line of its output."""
+
+    percent: float
+    speed: str = ""     # as the tool printed it: "4.2MiB/s"
+    eta: str = ""       # "00:05", "4m50s"
+
+
+# yt-dlp's own downloader (with --newline):
+#   [download]  45.3% of ~  10.00MiB at    1.23MiB/s ETA 00:05 (frag 3/10)
+_YTDLP_RE = re.compile(
+    r"\[download\]\s+(?P<pct>\d+(?:\.\d+)?)%"
+    r"(?:.*?\bat\s+(?P<speed>\S+/s))?(?:.*?\bETA\s+(?P<eta>[\d:]+))?"
+)
+# aria2c, which yt-dlp hands the download to here:
+#   [#2089b0 400.0KiB/33.2MiB(1%) CN:16 DL:4.2MiB ETA:4m50s]
+_ARIA2C_RE = re.compile(
+    r"\[#\w+\s+\S+?\((?P<pct>\d+(?:\.\d+)?)%\)"
+    r"(?:.*?\bDL:(?P<speed>[\d.]+\w*))?(?:.*?\bETA:(?P<eta>\w+))?"
+)
+
+
+def parse_progress(line: str) -> Progress | None:
+    """A Progress from a yt-dlp or aria2c status line, or None for any other line."""
+    for pattern, per_second in ((_YTDLP_RE, ""), (_ARIA2C_RE, "/s")):
+        m = pattern.search(line)
+        if m:
+            speed = m.group("speed") or ""
+            return Progress(
+                percent=min(float(m.group("pct")), 100.0),
+                speed=f"{speed}{per_second}" if speed and per_second else speed,
+                eta=m.group("eta") or "",
+            )
+    return None
