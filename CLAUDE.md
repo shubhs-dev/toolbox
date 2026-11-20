@@ -111,7 +111,7 @@ src/toolboxcli/
 ├── prunelib/{cli.py, core.py}
 ├── sortmedia/cli.py
 ├── toolbox/cli.py
-├── videodownload/cli.py
+├── videodownload/{cli.py, core.py, engine.py}
 └── wallready/{cli.py, core.py}
 ```
 
@@ -416,6 +416,14 @@ Progress *factories* themselves) were extracted from it.
   `NameParts.problems()` checks the result with optimiselib's own `parse_name`, so the two
   scripts can't drift. `tests/fixtures/videodownload_titles.json` is the spec — change a rule
   by changing the code and the affected rows.
+- `videodownload/engine.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only
+  through callbacks (`on_start`, `on_line` with a parsed `core.Progress`, `on_done`), never
+  printing, so batch mode's rich status lines and the TUI share it. Callbacks run on worker
+  threads: a Textual app must marshal them with `call_from_thread`. `Job.still_wanted` is
+  asked just before a job starts (batch mode: is the line still in urls.txt?). Leaving the
+  `Engine` context on an exception cancels everything, so no yt-dlp outlives a Ctrl+C. The
+  engine passes `--newline` so progress arrives as lines; batch `-j 1` runs yt-dlp straight
+  to the terminal without it, keeping yt-dlp's own in-place display.
 - `prunelib` deletes files the user *picked*, rather than files it
   produced, so everything it removes is listed and confirmed first, and it trashes by default
   (`-p/--permanent` requires typing the item count, not a y/n keypress). Sidecars are files

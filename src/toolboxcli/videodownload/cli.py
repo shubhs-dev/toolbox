@@ -31,7 +31,8 @@ Before finishing, urls.txt is read again; if lines were added during the run,
 you're asked whether to download those too (-y answers yes).
 
 With -j 1, yt-dlp's own output is shown as-is. With more, each running
-download gets one status line showing its latest output, and a failed
+download gets one status line showing its progress (percent, speed, time
+left), and a failed
 download's last lines of output are printed when it finishes. Every aria2c
 opens 16 connections, so -j 4 means up to 64 at once.
 """
@@ -44,17 +45,19 @@ import os
 import subprocess
 import sys
 import threading
-from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.markup import escape
+from rich.progress import TaskID
 
 from toolboxcli._common.confirm import confirm
 from toolboxcli._common.console import console, die, error, info, ok, warn
 from toolboxcli._common.progress import spinner
 from toolboxcli._common.tooling import require_tool
+from toolboxcli.videodownload import engine
+from toolboxcli.videodownload.core import Progress
 
 URLS_FILE = "urls.txt"
 ARIA2C_ARGS = "-x 16 -k 1M"
@@ -152,21 +155,11 @@ class UrlsFile:
 
 
 def output_template(name: str | None) -> str:
-    if name is None:
-        return "%(title)s.%(ext)s"
-    # -o is a yt-dlp template: a literal % in a user-supplied name must be
-    # doubled, or "100% Done" would be read as a (broken) template field.
-    return name.replace("%", "%%") + ".%(ext)s"
+    return engine.output_template(name)
 
 
-def build_command(dl: Download) -> list[str]:
-    return [
-        "yt-dlp",
-        "--external-downloader", "aria2c",
-        "--external-downloader-args", ARIA2C_ARGS,
-        "-o", output_template(dl.name),
-        dl.url,
-    ]
+def build_command(dl: Download, newline: bool = True) -> list[str]:
+    return engine.build_command(dl.url, dl.name, newline=newline)
 
 
 @dataclass
@@ -193,7 +186,7 @@ def run_sequential(downloads: list[Download], urls: UrlsFile, results: Results) 
             results.skipped += 1
             continue
         info(f"[{i}/{total}] {escape(dl.label)}")
-        result = subprocess.run(build_command(dl))
+        result = subprocess.run(build_command(dl, newline=False))
         if result.returncode == 0:
             record_success(urls, dl, results)
         else:
@@ -205,85 +198,63 @@ def _shorten(text: str, width: int = STATUS_WIDTH) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
-# Worker result: (yt-dlp exit code, last lines of output), or None when the line was
-# deleted from urls.txt before the download started.
-Outcome = tuple[int, list[str]] | None
+def _status(line: str, progress: Progress | None) -> str:
+    """What a running download's status line shows: its progress when the line carried
+    some, else the line itself."""
+    if progress is None:
+        return _shorten(line)
+    parts = [f"{progress.percent:5.1f}%"]
+    if progress.speed:
+        parts.append(progress.speed)
+    if progress.eta:
+        parts.append(f"ETA {progress.eta}")
+    return "  ".join(parts)
 
 
 def run_parallel(downloads: list[Download], workers: int, urls: UrlsFile, results: Results) -> None:
-    running: set[subprocess.Popen] = set()
-    lock = threading.Lock()
-
     with spinner() as progress:
+        tasks: dict[int, TaskID] = {}
 
-        def worker(dl: Download) -> Outcome:
-            if not urls.contains(dl):
-                return None
-            label = escape(_shorten(dl.label, 40))
-            task = progress.add_task(label, total=None)
-            tail: deque[str] = deque(maxlen=FAIL_TAIL_LINES)
-            try:
-                proc = subprocess.Popen(
-                    build_command(dl),
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,  # universal newlines also splits aria2c's \r progress redraws
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                with lock:
-                    running.add(proc)
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    tail.append(line)
-                    progress.update(task, description=f"{label} [dim]{escape(_shorten(line))}[/dim]")
-                returncode = proc.wait()
-                with lock:
-                    running.discard(proc)
-                return returncode, list(tail)
-            finally:
+        def on_line(job: engine.Job, line: str, prog: Progress | None) -> None:
+            assert isinstance(job.id, int)
+            if job.id in tasks:
+                label = escape(_shorten(downloads[job.id].label, 40))
+                progress.update(tasks[job.id],
+                                description=f"{label} [dim]{escape(_status(line, prog))}[/dim]")
+
+        def on_start(job: engine.Job) -> None:
+            assert isinstance(job.id, int)
+            tasks[job.id] = progress.add_task(escape(_shorten(downloads[job.id].label, 40)),
+                                              total=None)
+
+        def on_done(job: engine.Job) -> None:
+            assert isinstance(job.id, int)
+            task = tasks.pop(job.id, None)
+            if task is not None:
                 progress.remove_task(task)
 
-        pool = ThreadPoolExecutor(max_workers=workers)
-        try:
-            futures = {pool.submit(worker, dl): dl for dl in downloads}
+        with engine.Engine(workers, on_line=on_line, on_start=on_start, on_done=on_done) as eng:
+            futures = {
+                # A line deleted from urls.txt before its turn is never started.
+                eng.submit(engine.Job(id=index, url=dl.url, name=dl.name,
+                                      still_wanted=lambda dl=dl: urls.contains(dl))): dl
+                for index, dl in enumerate(downloads)
+            }
             for future in as_completed(futures):
-                dl = futures[future]
-                try:
-                    outcome = future.result()
-                except Exception as exc:  # e.g. OSError launching yt-dlp
-                    outcome = (-1, [str(exc)])
-                if outcome is None:
+                dl, job = futures[future], future.result()
+                if job.cancelled and job.returncode is None:
                     results.skipped += 1
                     info(f"{escape(dl.label)} — no longer in {urls.path.name}, skipping")
-                    continue
-                returncode, tail = outcome
-                if returncode == 0:
+                elif job.returncode == 0:
                     record_success(urls, dl, results)
-                    continue
-                results.failed.append(dl)
-                # Printed through the shared stdout console rather than error(),
-                # which writes to stderr and would tear the live progress display.
-                console.print(
-                    f"[red][ERROR][/red] yt-dlp exited with code {returncode} "
-                    f"for {escape(dl.url)}"
-                )
-                for line in tail:
-                    console.print(f"    [dim]{escape(line)}[/dim]")
-        except KeyboardInterrupt:
-            # Don't start anything still queued, and make sure no yt-dlp is left
-            # running in the background (Ctrl+C doesn't always reach children on
-            # Windows).
-            pool.shutdown(wait=False, cancel_futures=True)
-            with lock:
-                for proc in running:
-                    proc.terminate()
-            raise
-        pool.shutdown(wait=True)
+                else:
+                    results.failed.append(dl)
+                    # Printed through the shared stdout console rather than error(), which
+                    # writes to stderr and would tear the live progress display.
+                    console.print(f"[red][ERROR][/red] yt-dlp exited with code "
+                                  f"{job.returncode} for {escape(dl.url)}")
+                    for line in job.tail:
+                        console.print(f"    [dim]{escape(line)}[/dim]")
 
 
 def positive_int(value: str) -> int:

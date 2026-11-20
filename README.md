@@ -875,7 +875,8 @@ whether to download those too (`-y` answers yes), and this repeats until nothing
 
 Each line runs `yt-dlp --external-downloader aria2c --external-downloader-args "-x 16 -k 1M"
 -o "<name or %(title)s>.%(ext)s" <url>`. With `-j 1` you see yt-dlp's own output; with more,
-each running download gets one status line, and a failed download's last lines of output are
+each running download gets one status line showing its progress (percent, speed, time left), and a
+failed download's last lines of output are
 printed when it finishes. The command exits non-zero if any download failed, listing which (they stay in `urls.txt`).
 Every aria2c opens 16 connections, so `-j 4` means up to 64 at once.
 
