@@ -22,8 +22,19 @@ def run(coro):
 
 
 async def _type(pilot, widget_id: str, text: str) -> None:
+    """Set an input and wait for what it sets off to settle: a title change goes Input.Changed
+    → WordBar.Changed → the fields → their own Input.Changed, more hops than one pause()
+    reliably covers on a slow runner."""
     pilot.app.query_one(f"#{widget_id}").value = text
-    await pilot.pause()
+    last, stable = None, 0
+    for _ in range(200):
+        await pilot.pause(0.01)
+        now = (_fields(pilot.app), _preview(pilot.app))
+        stable = stable + 1 if now == last else 0
+        if stable >= 3:
+            return
+        last = now
+    raise AssertionError("the form never settled")
 
 
 def _fields(app) -> tuple[str, str, str]:
