@@ -419,7 +419,7 @@ Progress *factories* themselves) were extracted from it.
 - `videodownload/engine.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only
   through callbacks (`on_start`, `on_line` with a parsed `core.Progress`, `on_done`), never
   printing, so batch mode's rich status lines and the TUI share it. Callbacks run on worker
-  threads: a Textual app must marshal them with `call_from_thread`. `Job.still_wanted` is
+  threads: a Textual app posts them as messages (see the TUI note below). `Job.still_wanted` is
   asked just before a job starts (batch mode: is the line still in urls.txt?). Leaving the
   `Engine` context on an exception cancels everything, so no yt-dlp outlives a Ctrl+C. The
   engine passes `--newline` so progress arrives as lines; batch `-j 1` runs yt-dlp straight

@@ -5,8 +5,10 @@ and reports through callbacks rather than printing — so the same engine can dr
 status line or a Textual widget. Every output line is passed on; lines that carry progress
 are parsed into a core.Progress first.
 
-Callbacks run on worker threads. A UI must hand them to its own thread (Textual's
-`call_from_thread`); a plain rich Progress is thread-safe and can be updated directly.
+Callbacks run on worker threads. A UI must hand them to its own thread without blocking —
+Textual's thread-safe `post_message`, not `call_from_thread`, which waits on the UI thread and
+can deadlock against a shutdown. A plain rich Progress is thread-safe and can be updated
+directly.
 """
 
 from __future__ import annotations
