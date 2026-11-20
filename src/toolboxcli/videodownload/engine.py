@@ -5,8 +5,10 @@ and reports through callbacks rather than printing — so the same engine can dr
 status line or a Textual widget. Every output line is passed on; lines that carry progress
 are parsed into a core.Progress first.
 
-Callbacks run on worker threads. A UI must hand them to its own thread (Textual's
-`call_from_thread`); a plain rich Progress is thread-safe and can be updated directly.
+Callbacks run on worker threads. A UI must hand them to its own thread without blocking —
+Textual's thread-safe `post_message`, not `call_from_thread`, which waits on the UI thread and
+can deadlock against a shutdown. A plain rich Progress is thread-safe and can be updated
+directly.
 """
 
 from __future__ import annotations
@@ -100,13 +102,16 @@ class Engine:
         if proc is not None:
             proc.terminate()
 
-    def shutdown(self, cancel: bool = False) -> None:
+    def shutdown(self, cancel: bool = False, wait: bool = True) -> None:
+        """Stop taking jobs. With `cancel`, stop the running ones and drop the queued ones.
+        A UI quitting passes wait=False: its worker threads finish on their own as soon as
+        the terminated yt-dlp processes exit, without blocking the UI's event loop."""
         if cancel:
             with self._lock:
                 jobs = list(self._jobs.values())
             for job in jobs:
                 self.cancel(job)
-        self._pool.shutdown(wait=True, cancel_futures=cancel)
+        self._pool.shutdown(wait=wait, cancel_futures=cancel)
 
     def _run(self, job: Job) -> Job:
         if not job.cancelled and job.still_wanted is not None and not job.still_wanted():

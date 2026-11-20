@@ -26,7 +26,7 @@ in Python and installed as a single package with [uv](https://docs.astral.sh/uv/
 | `prunelib` | Review the biggest, oldest or least-watched videos in a library and delete the ones you pick |
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
 | `toolbox` | List all scripts in this repo with a brief description |
-| `video-download` | Download every video listed in `./urls.txt` with yt-dlp + aria2c, optionally in parallel |
+| `video-download` | Download videos with yt-dlp + aria2c from a terminal UI (paste a URL and title, label it People - Title - Collection), or in batch from `./urls.txt` |
 | `wallready` | Prepare a folder of images for wallpaper use: JPG, downscaled and centre-cropped to 4K |
 
 `inventory.html` is a standalone, dependency-free HTML dashboard for tracking Death Stranding
@@ -839,17 +839,73 @@ toolbox
 
 ### video-download
 
-Download every video listed in `urls.txt` (in the current folder) using **yt-dlp**, with
-**aria2c** as the downloader.
+Download videos with **yt-dlp** (using **aria2c** for the transfer), named the way
+`optimiselib` sorts them: `People - Title - Collection`.
 
 ```bash
-video-download              # download one at a time
-video-download -j 3         # run up to 3 downloads in parallel
-video-download -y           # also download lines added mid-run without asking
+video-download                    # open the downloader (a terminal UI)
+video-download -L ~/Library       # …suggesting people/collections from that library
+video-download -b                 # batch: download everything in ./urls.txt
+video-download -b -j 3            # batch, up to 3 downloads in parallel
+video-download -b -y              # batch, also download lines added mid-run without asking
 ```
 
 | Flag | Description |
 |------|-------------|
+| `-b, --batch` | Download everything in `./urls.txt` instead of opening the UI |
+| `-j, --jobs N` | Downloads to run in parallel (default: `1` in batch mode, `2` in the UI) |
+| `-y, --yes` | Batch: download lines added to `urls.txt` during the run without asking |
+| `-L, --library DIR` | optimiselib library whose people and collections the UI suggests (env `VIDEO_DOWNLOAD_LIBRARY`) |
+
+**The downloader** (default) — paste a URL and the page's title. The title is split into words,
+and each word is labelled **people**, **title** or **collection**:
+
+```
+Alice & Bob hike to the lakes – Day 1 (Lakes) | SomeSite
+→ Alice, Bob - hike to the lakes Day 1 - Lakes
+```
+
+The labels start as a guess: names your optimiselib library (`-L`) or your earlier downloads
+already use are recognised, a name at the start of the title or in its own segment (`(Lakes)`) is
+moved out of the title, one mid-sentence (`…with Bob`) stays in it too, and everything after the
+last `|` is skipped as the site name. Correct it in the word bar — `←`/`→` move, `shift+←`/`→`
+select a run, `p` / `t` / `c` toggle people / title / collection, `x` skips — or edit the People,
+Title and Collection fields directly. The preview shows the filename and warns if optimiselib
+couldn't sort it. `ctrl+s` adds it to the queue, and downloads start straight away into the
+current folder.
+
+In the queue, `r` retries a failed or cancelled download, `d` cancels or removes one and `D`
+clears finished ones; failures show yt-dlp's last error. `ctrl+q` quits (press twice if downloads
+are running); anything unfinished resumes next time from `.video-download-queue.json` in the
+folder. Library names are only ever *read* — the library's database is never written. The UI
+works best in a modern terminal (macOS Terminal, iTerm2, Windows Terminal); Git Bash's default
+mintty window doesn't handle its keys well.
+
+**Batch** (`-b`) — `urls.txt` holds one download per line: a URL, then optionally a space and the
+output file name. The name may contain spaces and takes no extension — yt-dlp adds the right one.
+Without a name, the video's title is used. Blank lines and lines starting with `#` are ignored.
+
+```text
+https://example.com/watch?v=abc Trip to the Lakes - Day 1
+https://example.com/watch?v=def
+```
+
+`urls.txt` is kept up to date as the run goes: once a download completes successfully (yt-dlp
+exits 0), its line is removed from the file. The line is looked up again by its URL at that
+moment rather than by line number, so editing the file mid-run is safe — add lines, or delete
+ones you no longer want (a line deleted before its download starts is skipped). Failed or
+interrupted downloads keep their line for the next run. Comments, blank lines, a BOM and CRLF
+line endings are preserved, and the file is rewritten via a temp file so it's never left
+truncated. Before finishing, `urls.txt` is read again: if lines were added during the run, you're
+asked whether to download those too (`-y` answers yes), and this repeats until nothing new
+remains.
+
+With `-j 1` you see yt-dlp's own output; with more, each running download gets one status line
+showing its progress (percent, speed, time left), and a failed download's last lines of output
+are printed when it finishes. The command exits non-zero if any download failed, listing which
+(they stay in `urls.txt`). Every aria2c opens 16 connections, so `-j 4` means up to 64 at once.
+
+------|-------------|
 | `-j, --jobs N` | Number of downloads to run in parallel (default: `1`) |
 | `-y, --yes` | Download lines added to `urls.txt` during the run without asking |
 

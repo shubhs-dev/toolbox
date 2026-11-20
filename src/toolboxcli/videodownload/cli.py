@@ -1,13 +1,32 @@
 """
-video-download — Download every video listed in ./urls.txt using yt-dlp + aria2c.
+video-download — Download videos with yt-dlp + aria2c, named People - Title - Collection.
 
 Requires:
     yt-dlp, aria2c
 
 Usage:
-    video-download              # download one at a time
-    video-download -j 3         # run up to 3 downloads in parallel
-    video-download -y           # also download lines added mid-run without asking
+    video-download                    # open the downloader (a terminal UI)
+    video-download -L ~/Library       # …suggesting people/collections from that library
+    video-download -b                 # batch: download everything in ./urls.txt
+    video-download -b -j 3            # batch, up to 3 downloads in parallel
+    video-download -b -y              # batch, also download lines added mid-run
+
+THE DOWNLOADER (default)
+
+Paste a URL and the page's title. The title is split into words, and each word is
+labelled people, title or collection — guessed from names the library (-L, or env
+VIDEO_DOWNLOAD_LIBRARY: an optimiselib library root) and earlier downloads already use,
+everything after the last "|" skipped as the site name. Correct the guess in the word
+bar: ←/→ move, shift+←/→ select, p / t / c toggle people / title / collection, x skips.
+The People, Title and Collection fields it fills in can also be edited directly. ctrl+s
+queues the download, named "People - Title - Collection"; downloads start straight away,
+-j at a time (default 2), into the current folder.
+
+In the queue: r retries a failed or cancelled download, d cancels or removes one, D clears
+finished ones. ctrl+q quits; anything unfinished resumes next time, from
+.video-download-queue.json in the folder.
+
+BATCH (-b)
 
 urls.txt is read from the current folder, one download per line: a URL, then
 optionally a space and the output file name. The name may contain spaces and
@@ -42,6 +61,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import os
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -56,8 +76,9 @@ from toolboxcli._common.confirm import confirm
 from toolboxcli._common.console import console, die, error, info, ok, warn
 from toolboxcli._common.progress import spinner
 from toolboxcli._common.tooling import require_tool
+from toolboxcli.optimiselib.db import DB_NAME
 from toolboxcli.videodownload import engine
-from toolboxcli.videodownload.core import Progress
+from toolboxcli.videodownload.core import KnownNames, Progress
 
 URLS_FILE = "urls.txt"
 ARIA2C_ARGS = "-x 16 -k 1M"
@@ -273,16 +294,63 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("-j", "--jobs", metavar="N", type=positive_int, default=1,
-                        help="Number of downloads to run in parallel (default: 1)")
+    parser.add_argument("-b", "--batch", action="store_true",
+                        help="Download everything in ./urls.txt instead of opening the UI")
+    parser.add_argument("-j", "--jobs", metavar="N", type=positive_int, default=None,
+                        help="Number of downloads to run in parallel (default: 1 in batch "
+                             "mode, 2 in the UI)")
     parser.add_argument("-y", "--yes", action="store_true",
-                        help="Download lines added to urls.txt during the run without asking")
+                        help="Batch: download lines added to urls.txt during the run "
+                             "without asking")
+    parser.add_argument("-L", "--library", metavar="DIR", default=None,
+                        help="optimiselib library root whose people and collections the UI "
+                             "suggests (default: env VIDEO_DOWNLOAD_LIBRARY)")
     return parser
+
+
+def library_names(library: str | None) -> KnownNames:
+    """People and collections from an optimiselib library's database, read-only — never
+    created, migrated or written. Missing or unreadable means no suggestions, not an error."""
+    folder = library or os.environ.get("VIDEO_DOWNLOAD_LIBRARY")
+    if not folder:
+        return KnownNames()
+    path = Path(folder).expanduser() / DB_NAME
+    if not path.is_file():
+        warn(f"No optimiselib database at {path} — no name suggestions from the library")
+        return KnownNames()
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            people = {r[0] for r in conn.execute("SELECT key FROM people")}
+            collections = {r[0] for r in conn.execute(
+                "SELECT DISTINCT collection_key FROM videos WHERE collection_key != ''")}
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        warn(f"Couldn't read {path}: {exc} — no name suggestions from the library")
+        return KnownNames()
+    return KnownNames(people, collections)
+
+
+def run_tui(args: argparse.Namespace) -> None:
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        die("the downloader needs a terminal — use -b to download ./urls.txt instead")
+    require_tool("yt-dlp")
+    require_tool("aria2c")
+    from toolboxcli.videodownload.tui import DownloadApp  # Textual loads only when needed
+
+    DownloadApp(Path.cwd(), workers=args.jobs or 2, known=library_names(args.library)).run()
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    if not args.batch:
+        run_tui(args)
+        return
+    run_batch(args)
 
+
+def run_batch(args: argparse.Namespace) -> None:
     urls_path = Path.cwd() / URLS_FILE
     if not urls_path.is_file():
         die(f"no {URLS_FILE} found in {Path.cwd()}")
@@ -303,7 +371,7 @@ def main() -> None:
 
     while downloads:
         attempted.update(downloads)
-        workers = min(args.jobs, len(downloads))
+        workers = min(args.jobs or 1, len(downloads))
         info(f"{len(downloads)} download(s) from {URLS_FILE}, {workers} at a time")
 
         try:
