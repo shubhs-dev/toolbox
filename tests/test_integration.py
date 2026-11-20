@@ -324,7 +324,7 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="fake binaries a
 def _run_download(run_cli, work: Path, bin_dir: Path, *args: str):
     import os
     path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
-    return run_cli("video-download", list(args), cwd=work, env_extra={"PATH": path})
+    return run_cli("video-download", ["-b", *args], cwd=work, env_extra={"PATH": path})
 
 
 @posix_only
@@ -374,7 +374,13 @@ def test_lines_added_mid_run_are_left_when_nobody_can_answer(tmp_path, fake_down
     assert (work / "urls.txt").read_text() == "https://example.com/late Late one\n"
 
 
+def test_the_ui_needs_a_terminal(tmp_path, run_cli):
+    result = run_cli("video-download", [], cwd=tmp_path)    # stdin isn't a tty here
+    assert result.returncode == 1
+    assert "use -b" in result.stderr
+
+
 def test_missing_urls_txt_is_an_error(tmp_path, run_cli):
-    result = run_cli("video-download", [], cwd=tmp_path)
+    result = run_cli("video-download", ["-b"], cwd=tmp_path)
     assert result.returncode == 1
     assert "no urls.txt found" in result.stderr

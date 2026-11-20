@@ -111,7 +111,7 @@ src/toolboxcli/
 ├── prunelib/{cli.py, core.py}
 ├── sortmedia/cli.py
 ├── toolbox/cli.py
-├── videodownload/{cli.py, core.py, engine.py}
+├── videodownload/{cli.py, core.py, engine.py, tui.py}
 └── wallready/{cli.py, core.py}
 ```
 
@@ -424,6 +424,15 @@ Progress *factories* themselves) were extracted from it.
   `Engine` context on an exception cancels everything, so no yt-dlp outlives a Ctrl+C. The
   engine passes `--newline` so progress arrives as lines; batch `-j 1` runs yt-dlp straight
   to the terminal without it, keeping yt-dlp's own in-place display.
+- `video-download` with no flags opens `videodownload/tui.py` (Textual); `-b/--batch` is the
+  `urls.txt` mode. Engine callbacks reach the app only as messages (`post_message` is
+  thread-safe and non-blocking) — never `call_from_thread`, which blocks a worker on the UI
+  thread and can deadlock against a shutdown. The queue (`.video-download-queue.json` in the
+  folder) is saved after every change; a `downloading` item loads back as `queued`. The
+  optimiselib library is opened read-only (`mode=ro` URI) for name suggestions, so the UI can
+  never create or migrate a library database. Don't name an App attribute `workers`: that's
+  Textual's worker manager. `tests/test_videodownload_tui.py` drives the app headlessly with
+  Textual's pilot; the downloading tests use a fake `yt-dlp` (POSIX only).
 - `prunelib` deletes files the user *picked*, rather than files it
   produced, so everything it removes is listed and confirmed first, and it trashes by default
   (`-p/--permanent` requires typing the item count, not a y/n keypress). Sidecars are files
@@ -460,7 +469,8 @@ Progress *factories* themselves) were extracted from it.
 
 ### Dependencies
 
-Base dependencies (`rich`, `send2trash`) are required by most scripts — don't add new
+Base dependencies (`rich`, `send2trash`, and `textual` for video-download's TUI — imported only
+when the UI opens) are required by most scripts — don't add new
 third-party libraries without a clear reason: `argparse` (stdlib) is used for all CLI parsing,
 and single-keypress confirmation is hand-rolled via `termios`/`tty`/`msvcrt` in
 `_common/confirm.py` rather than pulling in a library for it. External tools (`ffmpeg`,
