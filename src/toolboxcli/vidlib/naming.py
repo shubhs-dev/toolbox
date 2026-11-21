@@ -304,6 +304,17 @@ def compose(segments: list[Segment], roles: list[Role],
     )
 
 
+UNKNOWN = "Unknown"
+
+
+def fill_unknown(people: str, title: str, collection: str) -> tuple[str, str, str]:
+    """Each blank field as "Unknown" — the user's own fill-in for a part they can't name
+    yet, which still lets the video be sorted. Renaming applies it; a download doesn't."""
+    def fill(field: str) -> str:
+        return field if field.strip() else UNKNOWN
+    return fill(people), fill(title), fill(collection)
+
+
 def from_fields(people: str, title: str, collection: str,
                 vocab: Vocabulary | None = None) -> Draft:
     """The name from hand-edited fields (people separated as split_names reads them)."""

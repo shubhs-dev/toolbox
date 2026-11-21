@@ -452,6 +452,8 @@ Progress *factories* themselves) were extracted from it.
   page only ever applies `title_without` from an answer for the title as it is *now* — a
   pill click clears every pill until the fresh answer arrives, or a quick second click would
   put the first name back. "Unknown"/"Clips" are the user's own fill-ins, fixed in the page.
+  Renaming (not downloading) fills a blank field with "Unknown" (`naming.fill_unknown`, in
+  `Library.rename` and the rename form's preview via `fill_unknown: true`).
   Both naming answers carry `same_as`: library videos with the same match key, i.e. what
   duplicate detection would take for the same video and replace or park.
 - `vidlib/fetcher.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only through

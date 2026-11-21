@@ -232,7 +232,7 @@ class Library:
 
         row, file = self._known(path)
         self._not_busy(row)
-        draft = self._draft(people, title, collection)
+        draft = self._draft(*naming.fill_unknown(people, title, collection))
         assert draft.collection is not None
         tags = row.name.tags
         stem = draft.stem + (f" [{' '.join(tags)}]" if tags else "")

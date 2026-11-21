@@ -140,7 +140,9 @@ def test_pills_fill_the_fields_and_the_dialog_closes_easily(library_url):
         sync_api.expect(page.locator("#rn-people")).to_have_value("Alice")
         sync_api.expect(page.locator("#rn-title")).to_have_value("Bob swimming in the Lakes")
         pills.get_by_role("button", name="Bob").click()
-        sync_api.expect(page.locator("#rn-stem")).to_have_text("Alice, Bob - swimming in the Lakes")
+        # The empty collection previews as "Unknown", which is what Rename would use.
+        sync_api.expect(page.locator("#rn-stem")).to_have_text(
+            "Alice, Bob - swimming in the Lakes - Unknown")
         page.locator("#rn-collection-pills").get_by_role("button", name="Lakes").click()
         sync_api.expect(page.locator("#rn-stem")).to_have_text(
             "Alice, Bob - swimming in the - Lakes")

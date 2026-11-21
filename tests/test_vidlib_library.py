@@ -134,10 +134,11 @@ def test_rename_moves_the_file_and_its_row_keeping_tags(client, library):
         "title": "Summit at dawn", "collection": "New Trip"})
     assert moved["path"] == "New Trip/Carol - Summit at dawn - New Trip [720p Restored].mp4"
 
-    status, err = client("POST", "/api/library/rename", {
+    # A blank field is "Unknown" when renaming.
+    status, moved = client("POST", "/api/library/rename", {
         "path": "Lakes/Bob and Alice - Day 1 - Lakes [720p].mp4", "people": "Alice",
         "title": "Day 1", "collection": ""})
-    assert status == 409 and "no collection" in err["error"]
+    assert status == 200 and moved["path"] == "Unknown/Alice - Day 1 - Unknown [720p].mp4"
 
 
 def test_rename_refuses_to_overwrite(client, library):
@@ -305,3 +306,16 @@ def test_the_hover_filmstrip_is_made_once_and_cached(client, library, make_video
     assert size.strip() == "3840,180"                   # twelve 320-wide frames side by side
     assert client("GET", f"/api/strip?path={path}")[1] == image
     assert client("GET", "/api/strip?path=" + quote("Odd name.mp4"))[0] == 404   # no length
+
+
+def test_renaming_fills_blank_fields_with_unknown(client, library):
+    _, data = client("POST", "/api/name/fields", {
+        "people": "", "title": "Picnic", "collection": " ", "fill_unknown": True,
+        "path": "Odd name.mp4"})
+    assert data["stem"] == "Unknown - Picnic - Unknown" and data["complete"]
+    _, data = client("POST", "/api/name/fields", {"people": "", "title": "Picnic",
+                                                  "collection": ""})
+    assert not data["complete"]                         # a download doesn't fill them in
+    status, moved = client("POST", "/api/library/rename", {
+        "path": "Odd name.mp4", "people": "Carol", "title": "", "collection": "Clips"})
+    assert status == 200 and moved["path"] == "Clips/Carol - Unknown - Clips.mp4"

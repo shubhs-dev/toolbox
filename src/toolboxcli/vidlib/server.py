@@ -211,9 +211,13 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/name/fields":
             body = self._body()
             vocab = mgr.vocabulary()
-            title = str(body.get("title") or "")
-            draft = naming.from_fields(str(body.get("people") or ""), title,
-                                       str(body.get("collection") or ""), vocab)
+            fields = (str(body.get("people") or ""), str(body.get("title") or ""),
+                      str(body.get("collection") or ""))
+            # The rename form previews what a rename will do, blanks filled with "Unknown".
+            if body.get("fill_unknown") is True:
+                fields = naming.fill_unknown(*fields)
+            title = fields[1]
+            draft = naming.from_fields(*fields, vocab)
             data = draft_json(draft)
             # Known people and collections sitting in the title: the rename form offers them.
             data["found"] = _found(title, vocab, [p.text for p in draft.people],

@@ -770,7 +770,8 @@ work of a badly named file whose whole name is its title. The fill-ins **Unknown
 and **Clips** (collection) are there for a field you can't name yet. Both the Add form and the
 Library's rename form have them, and both warn when the name is one the library already has: duplicate
 detection would then treat the two files as the same video and keep only the better copy —
-so two different clips can't both be `Unknown - Unknown - Clips`.
+so two different clips can't both be `Unknown - Unknown - Clips`. When renaming from the Library,
+a field left blank is taken as **Unknown**.
 
 Downloads run `-j` at a time (yt-dlp with aria2c), each in its own folder under `_incoming/`,
 which the pipeline never looks in. A finished download is moved into the root, where the
