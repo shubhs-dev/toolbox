@@ -501,7 +501,7 @@ Progress *factories* themselves) were extracted from it.
   same file. Trash goes through `move_to_trash`. Both refuse the root file the pipeline is
   working on. Thumbnails are one ffmpeg frame at 10% (falling back to the first frame),
   cached in `.vidlib-cache/thumbs/` keyed by path + size + mtime, at most two ffmpeg runs at
-  once. The hover preview is a filmstrip (`filmstrip`): six fast-seek frames tiled
+  once. The hover preview is a filmstrip (`filmstrip`): `STRIP_FRAMES` (12) fast-seek frames tiled
   into one JPEG, cached alongside, stepped through by `background-position` — no video is
   streamed, so any container or codec works and nothing autoplays.
 - `vidlib/server.py` is stdlib `ThreadingHTTPServer` on 127.0.0.1 only, with the page as

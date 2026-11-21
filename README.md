@@ -785,7 +785,7 @@ and refuses requests from other websites.
 by name, filter by person, collection and resolution, or switch to the duplicates, the badly
 named files (`-U`) or what's waiting in `_review/`. Each video has a thumbnail (one frame,
 made with ffmpeg the first time it's shown and cached in `.vidlib-cache/` at the library
-root). Rest the pointer on one for a moment and it steps through a few frames from across the
+root). Rest the pointer on one for a moment and it steps through twelve frames from across the
 video (moving across the picture scrubs them). Click one to **Play** it, **Show in Finder**,
 **Rename** it — the same People / Title /
 Collection fields and suggestions as a download, keeping its `[tags]`, and moved into the new
