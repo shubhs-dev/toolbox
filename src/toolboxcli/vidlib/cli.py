@@ -970,7 +970,10 @@ def run_merge(root: Path, db: LibraryDB, job: MergeJob, status: PipelineStatus) 
     info(f"Merging {len(parts)} parts → {out.name}")
     cmd = [sys.executable, "-m", "toolboxcli.concatvid.cli", *map(str, parts),
            "-o", str(out), "-y"]
-    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"}
+    # UTF-8 output, read back as such: on Windows a piped child otherwise writes in the
+    # legacy code page and concatvid dies printing its first "→".
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200",
+           "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace", env=env,
