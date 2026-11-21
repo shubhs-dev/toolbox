@@ -709,7 +709,7 @@ async function openDetail(path) {
   fact(facts, "Length", v.duration ? duration(v.duration) : "");
   fact(facts, "Size", v.size ? humanSize(v.size) : "");
   if (v.status === "review") fact(facts, "In review", `${v.reason} — compared with ${v.compared_with}`);
-  $("detail-confirm").hidden = true;
+  hideConfirm();
   $("rn-people").value = v.people.join(", ");
   $("rn-title").value = v.title;
   $("rn-collection").value = v.collection;
@@ -1031,15 +1031,19 @@ $("detail-close").addEventListener("click", () => $("detail").close());
 $("detail-play").addEventListener("click", () => detailAction("open"));
 $("detail-reveal").addEventListener("click", () => detailAction("reveal"));
 $("detail-trash").addEventListener("click", () => {
-  $("detail-confirm-text").textContent = `Move ${detail.video.filename} to the Trash?`;
+  $("detail-confirm-text").textContent = "Move this video to the Trash?";   // named in the title
+  $("detail-file-actions").hidden = true;    // the confirmation takes their place in the bar
   $("detail-confirm").hidden = false;
-  $("detail-confirm").scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
-  $("detail-confirm-yes").focus({ preventScroll: true });
+  $("detail-confirm-yes").focus();
 });
 $("rn-close").addEventListener("click", () => $("detail").close());
 // A click on the dimmed backdrop lands on the dialog element itself (its content is inside).
 $("detail").addEventListener("click", (e) => { if (e.target === $("detail")) $("detail").close(); });
-$("detail-confirm-no").addEventListener("click", () => { $("detail-confirm").hidden = true; });
+function hideConfirm() {
+  $("detail-confirm").hidden = true;
+  $("detail-file-actions").hidden = false;
+}
+$("detail-confirm-no").addEventListener("click", hideConfirm);
 $("detail-confirm-yes").addEventListener("click", async () => {
   try {
     await api("POST", "/api/library/trash", { path: detail.path });
