@@ -16,6 +16,7 @@
     <nav class="tabs" aria-label="Pages">
       <a href="#downloads" id="tab-downloads" class="tab">Downloads</a>
       <a href="#library" id="tab-library" class="tab">Library</a>
+      <a href="#review" id="tab-review" class="tab">Review <span class="count" id="review-count" hidden></span></a>
     </nav>
     <div class="overall" id="overall" aria-live="polite">
       <div class="overall-text">
@@ -183,6 +184,14 @@
   <ul class="grid" id="lib-grid"></ul>
   <p class="empty" id="lib-empty" hidden>Nothing matches.</p>
   <button type="button" id="lib-more" hidden>Show more</button>
+</main>
+
+<main class="library review-page" id="view-review" hidden>
+  <p class="hint">Videos the pipeline couldn't decide about: each one is the same video as a copy
+    already in the library, but wasn't clearly better or worse. Keep one, or rename the new one
+    to keep both. A kept file goes back to the library root, and the pipeline files it.</p>
+  <ul class="pairs" id="review-list"></ul>
+  <p class="empty" id="review-empty" hidden>Nothing waiting for review.</p>
 </main>
 
 <dialog class="detail" id="detail" aria-labelledby="detail-title">

@@ -22,7 +22,7 @@ from typing import Any
 
 from toolboxcli._common.tooling import detached_kwargs
 from toolboxcli._common.trash import move_to_trash
-from toolboxcli.vidlib import naming
+from toolboxcli.vidlib import core, naming
 from toolboxcli.vidlib.db import LibraryDB, Video
 from toolboxcli.vidlib.status import PipelineStatus
 
@@ -184,12 +184,7 @@ class Library:
 
         row, file = self._known(path)
         self._not_busy(row)
-        with self.lock:
-            people_list, collections = self.db.spellings()
-        vocab = naming.Vocabulary.from_spellings(people_list, collections)
-        draft = naming.from_fields(people, title, collection, vocab)
-        if draft.problems():
-            raise LibraryError(draft.problems()[0])
+        draft = self._draft(people, title, collection)
         assert draft.collection is not None
         tags = row.name.tags
         stem = draft.stem + (f" [{' '.join(tags)}]" if tags else "")
@@ -221,6 +216,94 @@ class Library:
         with self.lock:
             self.db.remove(row.path)
             self.db.log_event(row.path, "trashed", "from the web page")
+
+    # ── the review queue ──
+
+    def review_count(self) -> int:
+        with self.lock:
+            return self.db.conn.execute(
+                "SELECT count(*) FROM videos WHERE status = 'review'").fetchone()[0]
+
+    def review_items(self) -> list[dict[str, Any]]:
+        """Everything parked in _review/, each with the library copy it was compared with
+        (None when that copy has gone since)."""
+        with self.lock:
+            rows = [v for v in self.db.all() if v.status == "review"]
+            copies = {v.path: self.db.get(v.compared_with) for v in rows if v.compared_with}
+        items: list[dict[str, Any]] = []
+        for row in sorted(rows, key=lambda v: v.filename.casefold()):
+            copy = copies.get(row.path)
+            items.append(_video_json(row) | {
+                "library_copy": _video_json(copy) if copy and copy.status != "missing" else None,
+            })
+        return items
+
+    def decide(self, path: str, keep: str, people: str = "", title: str = "",
+               collection: str = "") -> None:
+        """Settle a parked file against its library copy.
+
+        new   the parked file replaces the library copy (which goes to the Trash)
+        old   the library copy stays; the parked file goes to the Trash
+        both  the parked file is renamed (people/title/collection) so it's no longer the
+              same video, and kept as well
+
+        A kept parked file goes back to the library root, where the pipeline files it — and,
+        if it was parked before ever being encoded (a downgrade caught up front), encodes it
+        first."""
+        row, file = self._known(path)
+        if row.status != "review":
+            raise LibraryError("that file isn't waiting in review")
+        with self.lock:
+            copy = self.db.get(row.compared_with) if row.compared_with else None
+        if keep == "old":
+            move_to_trash(str(file))
+            with self.lock:
+                self.db.remove(row.path)
+                self.db.log_event(row.path, "trashed", "review: kept the library copy")
+            return
+        if keep == "new":
+            stem = file.stem
+        elif keep == "both":
+            draft = self._draft(people, title, collection)
+            if copy is not None and copy.name.key == core.parse_name(draft.stem).key:
+                raise LibraryError("that's still the same video as the library copy — change "
+                                   "the title (or people) to keep both")
+            tags = row.name.tags
+            stem = draft.stem + (f" [{' '.join(tags)}]" if tags else "")
+        else:
+            raise LibraryError("keep is new, old or both")
+        dest = self.root / f"{stem}{file.suffix}"
+        if dest.exists():
+            raise LibraryError(f"{dest.name} is already in the library root")
+        if keep == "new" and copy is not None and copy.status != "missing":
+            old = self.root / copy.path
+            if old.is_file():
+                move_to_trash(str(old))
+            with self.lock:
+                self.db.remove(copy.path)
+                self.db.log_event(copy.path, "replaced", f"by {row.filename} (review)")
+        os.rename(file, dest)
+        new_path = dest.name
+        with self.lock:
+            self.db.move(row.path, new_path)
+            if row.reason == core.DOWNGRADE and not row.backend:
+                # Parked before its encode: forget it, so the pipeline takes it as new input.
+                self.db.remove(new_path)
+            else:
+                moved = self.db.get(new_path)
+                assert moved is not None
+                moved.status, moved.reason, moved.compared_with = "compressed", "", ""
+                self.db.upsert(moved)
+            self.db.log_event(new_path, "released", f"review: kept {keep}")
+
+    def _draft(self, people: str, title: str, collection: str) -> naming.Draft:
+        with self.lock:
+            people_list, collections = self.db.spellings()
+        vocab = naming.Vocabulary.from_spellings(people_list, collections)
+        draft = naming.from_fields(people, title, collection, vocab)
+        if draft.problems():
+            raise LibraryError(draft.problems()[0])
+        return draft
 
     def video(self, path: str) -> dict[str, Any]:
         row, _ = self._known(path)

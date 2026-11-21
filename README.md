@@ -783,6 +783,14 @@ collection's folder with its history — or **Move to Trash** (after a confirmat
 deleted outright). Only files the database knows can be touched, and the file the pipeline is
 working on is left alone.
 
+**Review on the page** — the **Review** tab (with a count when anything is waiting) shows each
+file parked in `_review/` beside the library copy it was compared with — resolution, bit depth,
+length, size, subtitles and tags, the better value highlighted. **Keep this one** sends the
+library's copy to the Trash; **Keep the library's** trashes the parked one; **Keep both** asks
+for a different title (or people) first, since two copies of the same video can't both stay.
+A kept file goes back to the library root and the pipeline files it — encoding it first if it
+was parked before its encode.
+
 **The pipeline on the page** — the page also shows what the pipeline is doing: the file being
 encoded with its preset, encoder, progress and time left; the rest of the batch; and what
 happened to the last few files (sorted into which folder, parked for review, skipped). **Pause**

@@ -87,9 +87,24 @@ a `# type: ignore`.
 
 ## Architecture
 
-`vidlib` (formerly `optimiselib`, and now also what `video-download` was) is being reworked in
-stages into one process that runs the pipeline, downloads videos and serves a web page;
-`docs/vidlib-plan.md` holds the decisions and the stage list. Read it before changing vidlib.
+`vidlib` (formerly `optimiselib`, and also what `video-download` was) is one long-running
+process on the user's MacBook, next to a library on an external disk: the encode pipeline on
+the main thread, and a web page on `127.0.0.1` (stdlib server threads) with Downloads,
+Library and Review tabs. Decisions behind that shape, so they aren't re-litigated:
+
+- One process, so the page reads pipeline state in memory; no IPC, no second daemon.
+- Localhost only, no login: it runs on the same machine as the browser. The Host/Origin/JSON
+  checks in `server.py` are what keep other websites out — don't loosen them.
+- No new dependencies: stdlib HTTP + Server-Sent Events, and a plain HTML/CSS/JS page in
+  `vidlib/data/web/` with no build step. The page holds no naming logic; it asks the server.
+- Downloads are staged in `_incoming/`, which every library walk prunes; download-only mode
+  (`-X DIR`) exists for when the library's disk is full, and its files are imported later
+  from the page.
+- The library disk can be unplugged at any time: nothing may create a missing target's
+  parents (macOS would then mount the real disk under another name), and the loop doesn't
+  sync a missing root.
+- Batch `urls.txt` downloading and the Textual TUI were dropped on purpose; bulk paste on the
+  page replaced them.
 
 ### Package layout
 
@@ -460,6 +475,13 @@ Progress *factories* themselves) were extracted from it.
   would otherwise sync as "every video missing". `_finish` results carry the file's final
   root-relative `path`, which `on_settled` hands to `DownloadManager.video_settled` so an
   imported download follows its video. KeepAwake runs `caffeinate -i -w <pid>` on macOS only.
+- The Review tab (`Library.decide`) settles a file parked in `_review/` against the library
+  copy it was compared with: *new* trashes the copy, *old* trashes the parked file, *both*
+  renames the parked file and requires its match key to differ from the copy's. A kept file
+  goes back to the **root** for the pipeline to file. Its row becomes `compressed` (sort
+  only), except a `downgrade` parked before any encode (`backend` empty), whose row is
+  dropped so the pipeline encodes it as new input — `review` is in `DONE_STATUSES`, so
+  keeping that row would file a raw source unencoded.
 - `vidlib/library.py` is the Library tab's backend. Every action takes a root-relative path
   and first checks the *database* knows it (`_known`), so a crafted path (`../x`) can never
   reach a file outside the library. It shares the download manager's connection and lock.

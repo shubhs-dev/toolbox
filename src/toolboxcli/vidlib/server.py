@@ -287,6 +287,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.NOT_FOUND, str(exc)) from exc
             self._send(HTTPStatus.OK, image, "image/jpeg")
             return
+        if method == "GET" and path == "/api/library/review":
+            self._json({"items": lib.review_items()})
+            return
+        if method == "POST" and path == "/api/library/decide":
+            body = self._body()
+            lib.decide(str(body.get("path") or ""), str(body.get("keep") or ""),
+                       str(body.get("people") or ""), str(body.get("title") or ""),
+                       str(body.get("collection") or ""))
+            self._json({"ok": True})
+            return
         if method == "POST" and path in ("/api/library/open", "/api/library/reveal",
                                          "/api/library/rename", "/api/library/trash"):
             body = self._body()
@@ -345,6 +355,7 @@ class VidlibServer(ThreadingHTTPServer):
         """Everything the page shows: the downloads, and the pipeline when there is one."""
         state = self.manager.snapshot()
         state["pipeline"] = self.pipeline.snapshot() if self.pipeline is not None else None
+        state["review_count"] = self.library.review_count()
         return state
 
     def handle_error(self, request: Any, client_address: Any) -> None:

@@ -59,7 +59,10 @@ recorded in the library database, so the queue survives a restart.
 The page's Library tab browses what the database knows — search, people, collection and
 resolution filters, the duplicates, badly named files and the review queue — with a
 thumbnail for each video, and lets you play it, show it in Finder, rename it (moving it into
-its new collection's folder; its history follows) or move it to the Trash.
+its new collection's folder; its history follows) or move it to the Trash. The Review tab
+shows each file parked in _review/ next to the library copy it was compared with: keep the
+new one (the library's goes to the Trash), keep the library's, or rename the new one to keep
+both. A kept file goes back to the root, and the pipeline files it.
 
 The page also shows the pipeline: the file being encoded (preset, encoder, progress, time
 left), what's next, and what happened to recent files. Pause stops after the current file;
