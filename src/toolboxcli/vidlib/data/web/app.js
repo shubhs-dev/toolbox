@@ -388,7 +388,15 @@ function renderState(state) {
   $("overall-bar").style.width = `${o.percent}%`;
   document.title = o.running ? `vidlib · ${Math.round(o.percent)}%` : "vidlib";
   renderPipeline(state.pipeline);
+  const count = $("review-count");
+  count.hidden = !state.review_count;
+  count.textContent = String(state.review_count || "");
+  if (state.review_count !== lastReviewCount) {
+    if (lastReviewCount !== null && !$("view-review").hidden) loadReview().catch(showReviewError);
+    lastReviewCount = state.review_count;
+  }
 }
+let lastReviewCount = null;
 
 // ── the pipeline ──────────────────────────────────────────────────────
 
@@ -678,19 +686,150 @@ async function detailAction(action) {
   } catch (err) { detailMsg(err.message, true); }
 }
 
+// ── the review queue ──
+
+const VERDICT = {
+  ambiguous: "Same video, and neither copy is clearly better",
+  downgrade: "Lower resolution than the library's copy",
+  upgrade: "Better than the library's copy", more_complete: "Longer than the library's copy",
+};
+
+function sideCard(label, v, other) {
+  const box = document.createElement("div");
+  box.className = "side-card";
+  const lab = document.createElement("span");
+  lab.className = "label";
+  lab.textContent = label;
+  box.append(lab);
+  if (!v) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "Not in the library any more.";
+    box.append(p);
+    return box;
+  }
+  const img = document.createElement("img");
+  img.alt = "";
+  img.loading = "lazy";
+  img.src = thumbUrl(v.path);
+  img.addEventListener("error", () => img.classList.add("none"), { once: true });
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = v.filename;
+  const dl = document.createElement("dl");
+  const row = (term, value, better) => {
+    if (!value) return;
+    const dt = document.createElement("dt");
+    dt.textContent = term;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    if (better) dd.classList.add("better");
+    dl.append(dt, dd);
+  };
+  const o = other || {};
+  row("Resolution", v.resolution || "unknown", other && v.height > o.height);
+  row("Bit depth", `${v.bit_depth}-bit`, other && v.bit_depth > o.bit_depth);
+  row("Length", v.duration ? duration(v.duration) : "", other && v.duration > o.duration + 1);
+  row("Size", v.size ? humanSize(v.size) : "", other && v.size && o.size && v.size < o.size);
+  row("Subtitles", v.has_sub ? "yes" : "no", other && v.has_sub && !o.has_sub);
+  row("Tags", v.tags.join(" "), false);
+  row("Folder", v.folder, false);
+  box.append(img, name, dl);
+  return box;
+}
+
+function pairItem(item) {
+  const li = document.createElement("li");
+  li.className = "pair";
+  const head = document.createElement("div");
+  head.className = "pair-head";
+  const h = document.createElement("strong");
+  h.textContent = item.complete ? `${item.people.join(", ")} — ${item.title}` : item.title;
+  const why = document.createElement("span");
+  why.className = "hint";
+  why.textContent = VERDICT[item.reason] || item.reason;
+  head.append(h, why);
+
+  const sides = document.createElement("div");
+  sides.className = "pair-sides";
+  sides.append(sideCard("Waiting in review", item, item.library_copy),
+               sideCard("In the library", item.library_copy, item));
+
+  const msg = document.createElement("span");
+  msg.className = "form-msg";
+  const decide = async (keep, extra = {}) => {
+    try {
+      await api("POST", "/api/library/decide", { path: item.path, keep, ...extra });
+      loadReview().catch(showReviewError);
+    } catch (err) { msg.textContent = err.message; msg.classList.add("error"); }
+  };
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const keepNew = action(item.library_copy ? "Keep this one, trash the library's" : "Put it in the library",
+                         () => decide("new"), "small primary");
+  const keepOld = action("Keep the library's, trash this one", () => decide("old"));
+  const bothBtn = action("Keep both…", async () => { both.hidden = !both.hidden; });
+  if (!item.library_copy) { keepOld.hidden = true; bothBtn.hidden = true; }
+  actions.append(keepNew, keepOld, bothBtn, msg);
+
+  const both = document.createElement("form");
+  both.className = "both";
+  both.hidden = true;
+  const field = (label, value) => {
+    const wrap = document.createElement("label");
+    wrap.className = "field";
+    const span = document.createElement("span");
+    span.className = "label";
+    span.textContent = label;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = value;
+    wrap.append(span, input);
+    both.append(wrap);
+    return input;
+  };
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Give this copy a different title (or people) so it's a video of its own.";
+  both.append(hint);
+  const fp = field("People", item.people.join(", "));
+  const ft = field("Title", item.title);
+  const fc = field("Collection", item.collection);
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.className = "primary";
+  save.textContent = "Keep both";
+  both.append(save);
+  both.addEventListener("submit", (e) => {
+    e.preventDefault();
+    decide("both", { people: fp.value, title: ft.value, collection: fc.value });
+  });
+
+  li.append(head, sides, actions, both);
+  return li;
+}
+
+async function loadReview() {
+  const data = await api("GET", "/api/library/review");
+  $("review-list").replaceChildren(...data.items.map(pairItem));
+  $("review-empty").hidden = data.items.length > 0;
+}
+function showReviewError(err) { $("review-empty").hidden = false; $("review-empty").textContent = err.message; }
+
 // ── routing ──
 
+const PAGES = ["downloads", "library", "review"];
+
 function route() {
-  const page = location.hash === "#library" ? "library" : "downloads";
-  $("view-downloads").hidden = page !== "downloads";
-  $("view-library").hidden = page !== "library";
-  $("tab-downloads").toggleAttribute("aria-current", page === "downloads");
-  $("tab-library").toggleAttribute("aria-current", page === "library");
-  if (page === "downloads") $("tab-downloads").setAttribute("aria-current", "page");
-  if (page === "library") {
-    $("tab-library").setAttribute("aria-current", "page");
-    loadLibrary().catch(showLibError);
+  const asked = location.hash.slice(1);
+  const page = PAGES.includes(asked) ? asked : "downloads";
+  for (const p of PAGES) {
+    $(`view-${p}`).hidden = p !== page;
+    if (p === page) $(`tab-${p}`).setAttribute("aria-current", "page");
+    else $(`tab-${p}`).removeAttribute("aria-current");
   }
+  if (page === "library") loadLibrary().catch(showLibError);
+  if (page === "review") loadReview().catch(showReviewError);
 }
 
 // ── wiring ────────────────────────────────────────────────────────────

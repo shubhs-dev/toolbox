@@ -186,3 +186,76 @@ def test_thumbnails_are_made_once_and_cached(client, library, make_video):
     assert client("GET", "/api/thumb?path=" + quote("Peaks/Dee - Real - Peaks.mp4"))[1] == image
     # A file ffmpeg can't read gets a 404, not a crash.
     assert client("GET", "/api/thumb?path=" + quote("Odd name.mp4"))[0] == 404
+
+
+# ── the review queue ───────────────────────────────────────────────────
+
+PARKED = "_review/Alice - Parked - Lakes.mp4"
+COPY = "Lakes/Alice, Bob - Day 1 - Lakes [1080p].mp4"
+
+
+def _park(library, name="Alice, Bob - Day 1 - Lakes [720p].mp4", reason="ambiguous",
+          backend="cpu"):
+    """A file the pipeline parked against COPY: after its encode (backend set) by default."""
+    path = f"_review/{name}"
+    (library / path).write_bytes(b"new")
+    with LibraryDB.open(library) as db:
+        db.upsert(Video(path=path, status="review", reason=reason, compared_with=COPY,
+                        height=720, backend=backend))
+    return path
+
+
+def test_the_review_list_pairs_each_file_with_its_library_copy(client, library):
+    _park(library)
+    _, data = client("GET", "/api/library/review")
+    assert [i["filename"] for i in data["items"]] == [
+        "Alice - Parked - Lakes.mp4", "Alice, Bob - Day 1 - Lakes [720p].mp4"]
+    assert all(i["library_copy"]["path"] == COPY for i in data["items"])
+    assert client("GET", "/api/state")[1]["review_count"] == 2
+
+
+def test_keep_new_trashes_the_library_copy_and_releases_the_file(client, library):
+    parked = _park(library)
+    assert client("POST", "/api/library/decide", {"path": parked, "keep": "new"})[0] == 200
+    assert not (library / COPY).exists()
+    assert (library / "Alice, Bob - Day 1 - Lakes [720p].mp4").read_bytes() == b"new"
+    with LibraryDB.open(library) as db:
+        assert db.get(COPY) is None
+        row = db.get("Alice, Bob - Day 1 - Lakes [720p].mp4")
+        # Already encoded: back in the root as compressed, so the pipeline only sorts it.
+        assert row is not None and row.status == "compressed" and row.compared_with == ""
+
+
+def test_keep_new_on_a_never_encoded_downgrade_makes_it_new_input(client, library):
+    assert client("POST", "/api/library/decide", {"path": PARKED, "keep": "new"})[0] == 200
+    assert (library / "Alice - Parked - Lakes.mp4").exists()
+    with LibraryDB.open(library) as db:
+        assert db.get("Alice - Parked - Lakes.mp4") is None      # the pipeline will encode it
+
+
+def test_keep_old_trashes_the_parked_file(client, library):
+    assert client("POST", "/api/library/decide", {"path": PARKED, "keep": "old"})[0] == 200
+    assert not (library / PARKED).exists() and (library / COPY).exists()
+    with LibraryDB.open(library) as db:
+        assert db.get(PARKED) is None
+
+
+def test_keep_both_needs_a_different_video(client, library):
+    parked = _park(library)
+    status, err = client("POST", "/api/library/decide", {
+        "path": parked, "keep": "both", "people": "Bob, Alice", "title": "day 1",
+        "collection": "Lakes"})
+    assert status == 409 and "same video" in err["error"]
+    status, _ = client("POST", "/api/library/decide", {
+        "path": parked, "keep": "both", "people": "Alice, Bob", "title": "Day 1 (Director's cut)",
+        "collection": "Lakes"})
+    assert status == 200
+    assert (library / "Alice, Bob - Day 1 (Director's cut) - Lakes [720p].mp4").exists()
+    assert (library / COPY).exists()
+
+
+def test_deciding_needs_a_review_item(client):
+    status, err = client("POST", "/api/library/decide", {"path": COPY, "keep": "new"})
+    assert status == 409 and "isn't waiting in review" in err["error"]
+    status, err = client("POST", "/api/library/decide", {"path": PARKED, "keep": "maybe"})
+    assert status == 409

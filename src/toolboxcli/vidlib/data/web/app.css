@@ -254,3 +254,21 @@ select { font: inherit; color: var(--fg); background: var(--surface); border: 1p
 .rename { display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
 button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
 .confirm { margin: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; background: var(--bad-bg); border-radius: 6px; }
+
+/* ── review ── */
+.count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 2px; border-radius: 99px; background: var(--warn); color: var(--surface); font-size: 11px; font-weight: 700; }
+.pairs { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.pair { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; display: grid; gap: 12px; }
+.pair-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; align-items: baseline; }
+.pair-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 700px) { .pair-sides { grid-template-columns: minmax(0, 1fr); } }
+.side-card { display: grid; gap: 6px; align-content: start; min-width: 0; }
+.side-card img { width: 100%; max-width: 420px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: var(--sunken); }
+.side-card .name { font-weight: 600; overflow-wrap: anywhere; }
+.side-card .label { color: var(--muted); }
+.side-card dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.side-card dt { color: var(--muted); }
+.side-card dd { margin: 0; }
+.side-card dd.better { color: var(--ok); font-weight: 600; }
+.pair .actions { justify-content: flex-start; }
+.both { display: grid; gap: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
