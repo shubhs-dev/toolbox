@@ -154,3 +154,14 @@ def test_known_names_are_found_in_a_title(title, have, expected):
 def test_a_collection_already_chosen_isnt_suggested_again():
     found = naming.find_in_title("Alice at the Lakes", FIND_VOCAB, [], "lakes")
     assert [f.name for f in found] == ["Alice"]
+
+
+def test_a_difference_only_in_spaces_takes_the_library_spelling_without_asking():
+    vocab = Vocabulary.from_spellings(["DougDoug", "Mary Jane"], ["Lemonade Stand"])
+    assert vocab.collection("LemonadeStand") == naming.Match("exact", "Lemonade Stand")
+    assert vocab.collection("lemonade   stand") == naming.Match("exact", "Lemonade Stand")
+    assert vocab.person("Doug Doug") == naming.Match("exact", "DougDoug")
+    assert vocab.person("maryjane") == naming.Match("exact", "Mary Jane")
+    assert vocab.collection("Lemonade-Stand").kind == "loose"      # punctuation still asks
+    draft = naming.from_fields("doug doug", "Ep", "lemonadestand", vocab)
+    assert draft.stem == "DougDoug - Ep - Lemonade Stand"

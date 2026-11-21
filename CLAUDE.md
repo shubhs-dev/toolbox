@@ -438,7 +438,8 @@ Progress *factories* themselves) were extracted from it.
   collection (`set_role` demotes the previous one to title). `guess_roles` tries the library
   first — a segment whose names are *all* known people, the last segment that is a known
   collection — and only then position. Matching is two-tier: exact (`core.normalize`, as
-  duplicate detection uses) rewrites a name to the library's spelling; loose (`loose_key`:
+  duplicate detection uses, or equal once every space is removed — `LemonadeStand` is
+  `Lemonade Stand`) rewrites a name to the library's spelling without asking; loose (`loose_key`:
   also accents, punctuation and every space) counts for the guess but only offers a
   suggestion, and a loose key two library spellings share suggests nothing. `Draft.problems()`
   checks the result with `parse_name`, so naming and the library can't drift.
@@ -480,7 +481,11 @@ Progress *factories* themselves) were extracted from it.
 - `vidlib/fetcher.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only through
   callbacks (`on_start`, `on_line` with a parsed `Progress`, `on_done`), never printing. Every
   job writes into its own folder, so the finished file is whatever non-partial file is left
-  there — no guessing yt-dlp's extension or the title an unnamed download gets. A job cancelled
+  there — no guessing yt-dlp's extension or the title an unnamed download gets. aria2c gets
+  `--summary-interval=1 --show-console-readout=false` (after yt-dlp's own options, so they
+  win): its live readout is buffered until exit when writing into a pipe, which showed 0%
+  then 100%; the per-second summary line is flushed and parsed, its banner lines dropped
+  from the tail (`_SUMMARY_NOISE`). A job cancelled
   before it starts still calls `on_done`. Leaving the `Engine` context on an exception cancels
   everything, so no yt-dlp outlives a Ctrl+C.
 - `vidlib/downloads.py`'s `DownloadManager` owns the queue: rows in the `downloads` table

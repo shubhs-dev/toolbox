@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -152,3 +153,15 @@ def test_leaving_the_engine_on_an_error_cancels_everything(fake_ytdlp):
         raise KeyboardInterrupt
     assert all(job.cancelled for job in jobs)
     assert jobs[1].returncode is None and jobs[2].returncode is None   # queued: never ran
+
+
+def test_aria2c_reports_progress_every_second_and_its_summary_noise_is_dropped():
+    cmd = engine.build_command("https://x/a", Path("/tmp/x"), "A")
+    args = cmd[cmd.index("--external-downloader-args") + 1]
+    assert args.startswith("aria2c:") and "--summary-interval=1" in args
+    assert "--show-console-readout=false" in args
+    for noise in (" *** Download Progress Summary as of Sat Nov 21 21:59:37 2026 *** ",
+                  "=" * 79, "-" * 79, "FILE: /x/a.mp4.part"):
+        assert engine._SUMMARY_NOISE.match(noise.strip())
+    assert parse_progress("[#54e45f 304KiB/1.9MiB(15%) CN:1 DL:157KiB ETA:10s]") == Progress(
+        15.0, "157KiB/s", "10s")
