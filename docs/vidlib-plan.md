@@ -127,4 +127,7 @@ pass at every stage.
    picked up again on the next poll. The link is the download row's `library_path`
    following the video to its final path.
 4. **Library page.** Queries over HTTP, thumbnails, play / reveal / rename / trash.
+   *As built*: a Library tab (hash `#library`) beside Downloads; views All / Duplicates /
+   Badly named / In review; the detail dialog's rename moves the file into its collection's
+   folder and keeps its `[tags]`.
 5. **Review page.** Side-by-side comparison and the three decisions.

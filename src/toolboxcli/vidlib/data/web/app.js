@@ -214,7 +214,7 @@ function showError(err) { message(err.message || String(err), true); }
 
 const PEOPLE_SEP = /(\s*(?:,|&|\+|\band\b|\bx\b|×)\s*)/i;
 
-function attachSuggest(input, list, kind) {
+function attachSuggest(input, list, kind, onChoose) {
   let items = [];
   let active = -1;
   const close = () => { list.hidden = true; items = []; active = -1; };
@@ -230,8 +230,7 @@ function attachSuggest(input, list, kind) {
     const { head } = current();
     input.value = kind === "people" ? `${head}${value}` : value;
     close();
-    form.mode = "fields";
-    nameFromFields().catch(showError);
+    onChoose();
   };
   const render = () => {
     list.replaceChildren(...items.map((s, i) => {
@@ -491,6 +490,209 @@ function connect() {
   es.onopen = () => { $("conn").title = "Live updates"; };
 }
 
+// ── the library ───────────────────────────────────────────────────────
+
+const lib = { view: "all", offset: 0, total: 0, loaded: false, seq: 0, lastGroup: null };
+
+function humanSize(n) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
+  return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+function libQuery(offset) {
+  const params = new URLSearchParams({
+    view: lib.view, q: $("lib-q").value, person: $("lib-person").value,
+    collection: $("lib-collection").value, resolution: $("lib-resolution").value,
+    offset: String(offset),
+  });
+  return `/api/library?${params}`;
+}
+
+function fillSelect(select, items, allLabel) {
+  const keep = select.value;
+  select.replaceChildren(new Option(allLabel, ""), ...items.map((it) => new Option(`${it.name} (${it.count})`, it.name)));
+  select.value = keep;
+}
+
+function thumbUrl(path) {
+  return `/api/thumb?path=${encodeURIComponent(path)}`;
+}
+
+function card(v) {
+  const li = document.createElement("li");
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "card";
+  const img = document.createElement("img");
+  img.className = "thumb";
+  img.loading = "lazy";
+  img.alt = "";
+  img.src = thumbUrl(v.path);
+  img.addEventListener("error", () => img.classList.add("none"), { once: true });
+  const body = document.createElement("span");
+  body.className = "body";
+  const t = document.createElement("span");
+  t.className = "t";
+  t.textContent = v.complete ? v.title : v.filename;
+  t.title = v.filename;
+  const p = document.createElement("span");
+  p.className = "p";
+  p.textContent = v.people.join(", ");
+  const m = document.createElement("span");
+  m.className = "m";
+  const bits = [];
+  if (v.collection) {
+    const c = document.createElement("span");
+    c.className = "c";
+    c.textContent = v.collection;
+    bits.push(c);
+  }
+  for (const text of [v.resolution, v.bit_depth > 8 ? `${v.bit_depth}-bit` : "",
+                      v.duration ? duration(v.duration) : "", v.size ? humanSize(v.size) : ""]) {
+    if (!text) continue;
+    const s = document.createElement("span");
+    s.textContent = text;
+    bits.push(s);
+  }
+  m.append(...bits);
+  if (v.status === "review") {
+    const pill = document.createElement("span");
+    pill.className = "pill review";
+    pill.textContent = "in review";
+    m.append(pill);
+  }
+  body.append(t, p, m);
+  b.append(img, body);
+  b.addEventListener("click", () => openDetail(v.path));
+  li.append(b);
+  return li;
+}
+
+async function loadLibrary(append = false) {
+  const seq = ++lib.seq;
+  const offset = append ? lib.offset : 0;
+  const data = await api("GET", libQuery(offset));
+  if (seq !== lib.seq) return;
+  lib.loaded = true;
+  fillSelect($("lib-person"), data.people, "Everyone");
+  fillSelect($("lib-collection"), data.collections, "All collections");
+  const grid = $("lib-grid");
+  if (!append) { grid.replaceChildren(); lib.lastGroup = null; }
+  for (const v of data.videos) {
+    if (v.group !== undefined && v.group !== lib.lastGroup) {
+      const sep = document.createElement("li");
+      sep.className = "group-break";
+      sep.textContent = v.complete ? `${v.people.join(", ")} — ${v.title}` : v.title;
+      grid.append(sep);
+      lib.lastGroup = v.group;
+    }
+    grid.append(card(v));
+  }
+  lib.offset = offset + data.videos.length;
+  lib.total = data.total;
+  $("lib-more").hidden = lib.offset >= data.total;
+  $("lib-empty").hidden = data.total > 0;
+  const all = data.library;
+  $("lib-summary").textContent =
+    `${data.total} shown of ${all.videos} videos · ${humanSize(all.size)} in the library`;
+}
+
+const reloadLibrary = debounce(() => loadLibrary().catch(showLibError), 200);
+function showLibError(err) { $("lib-summary").textContent = err.message || String(err); }
+
+// ── one video ──
+
+const detail = { path: null, video: null, seq: 0 };
+
+function fact(dl, label, value) {
+  if (value === "" || value == null) return;
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.textContent = value;
+  dl.append(dt, dd);
+}
+
+function detailMsg(text, isError = false) {
+  const el = $("detail-msg");
+  el.textContent = text;
+  el.classList.toggle("error", isError);
+}
+
+async function openDetail(path) {
+  const v = await api("GET", `/api/library/video?path=${encodeURIComponent(path)}`).catch((err) => {
+    showLibError(err);
+    return null;
+  });
+  if (!v) return;
+  detail.path = v.path;
+  detail.video = v;
+  $("detail-title").textContent = v.filename;
+  const thumb = $("detail-thumb");
+  thumb.classList.remove("none");
+  thumb.onerror = () => thumb.classList.add("none");
+  thumb.src = thumbUrl(v.path);
+  const facts = $("detail-facts");
+  facts.replaceChildren();
+  fact(facts, "Folder", v.folder === "." ? "library root" : v.folder);
+  fact(facts, "People", v.people.join(", "));
+  fact(facts, "Title", v.title);
+  fact(facts, "Collection", v.collection);
+  fact(facts, "Tags", v.tags.join(" "));
+  fact(facts, "Video", [v.resolution, v.bit_depth > 8 ? `${v.bit_depth}-bit` : "", v.has_sub ? "subtitles" : ""].filter(Boolean).join(" · "));
+  fact(facts, "Length", v.duration ? duration(v.duration) : "");
+  fact(facts, "Size", v.size ? humanSize(v.size) : "");
+  if (v.status === "review") fact(facts, "In review", `${v.reason} — compared with ${v.compared_with}`);
+  $("detail-confirm").hidden = true;
+  $("rn-people").value = v.people.join(", ");
+  $("rn-title").value = v.title;
+  $("rn-collection").value = v.collection;
+  detailMsg("");
+  await renamePreview();
+  const dlg = $("detail");
+  if (!dlg.open) dlg.showModal();
+}
+
+async function renamePreview() {
+  const seq = ++detail.seq;
+  const data = await api("POST", "/api/name/fields", {
+    people: $("rn-people").value, title: $("rn-title").value, collection: $("rn-collection").value,
+  });
+  if (seq !== detail.seq) return;
+  const tags = detail.video && detail.video.tags.length ? ` [${detail.video.tags.join(" ")}]` : "";
+  $("rn-stem").textContent = data.stem ? `${data.stem}${tags}` : "";
+  $("rn-problems").replaceChildren(...data.problems.map((p) => {
+    const li = document.createElement("li");
+    li.textContent = p;
+    return li;
+  }));
+  const unchanged = detail.video && `${data.stem}${tags}` === detail.video.filename.replace(/\.[^.]+$/, "");
+  $("rn-save").disabled = !data.complete || unchanged;
+}
+
+async function detailAction(action) {
+  try {
+    await api("POST", `/api/library/${action}`, { path: detail.path });
+  } catch (err) { detailMsg(err.message, true); }
+}
+
+// ── routing ──
+
+function route() {
+  const page = location.hash === "#library" ? "library" : "downloads";
+  $("view-downloads").hidden = page !== "downloads";
+  $("view-library").hidden = page !== "library";
+  $("tab-downloads").toggleAttribute("aria-current", page === "downloads");
+  $("tab-library").toggleAttribute("aria-current", page === "library");
+  if (page === "downloads") $("tab-downloads").setAttribute("aria-current", "page");
+  if (page === "library") {
+    $("tab-library").setAttribute("aria-current", "page");
+    loadLibrary().catch(showLibError);
+  }
+}
+
 // ── wiring ────────────────────────────────────────────────────────────
 
 const titleChanged = debounce(() => {
@@ -532,8 +734,58 @@ $("bulk-add").addEventListener("click", async () => {
 for (const act of ["pause", "stop", "resume"]) {
   $(`pipe-${act}`).addEventListener("click", () => api("POST", `/api/pipeline/${act}`, {}).catch(showError));
 }
-attachSuggest($("people"), $("people-suggest"), "people");
-attachSuggest($("collection"), $("collection-suggest"), "collections");
+const fromFields = () => { form.mode = "fields"; nameFromFields().catch(showError); };
+attachSuggest($("people"), $("people-suggest"), "people", fromFields);
+attachSuggest($("collection"), $("collection-suggest"), "collections", fromFields);
+
+// Library page
+$("lib-q").addEventListener("input", reloadLibrary);
+for (const id of ["lib-person", "lib-collection", "lib-resolution"]) {
+  $(id).addEventListener("change", () => loadLibrary().catch(showLibError));
+}
+for (const b of document.querySelectorAll(".seg button")) {
+  b.addEventListener("click", () => {
+    lib.view = b.dataset.view;
+    for (const other of document.querySelectorAll(".seg button")) {
+      other.setAttribute("aria-pressed", String(other === b));
+    }
+    loadLibrary().catch(showLibError);
+  });
+}
+$("lib-more").addEventListener("click", () => loadLibrary(true).catch(showLibError));
+$("detail-close").addEventListener("click", () => $("detail").close());
+$("detail-play").addEventListener("click", () => detailAction("open"));
+$("detail-reveal").addEventListener("click", () => detailAction("reveal"));
+$("detail-trash").addEventListener("click", () => {
+  $("detail-confirm-text").textContent = `Move ${detail.video.filename} to the Trash?`;
+  $("detail-confirm").hidden = false;
+});
+$("detail-confirm-no").addEventListener("click", () => { $("detail-confirm").hidden = true; });
+$("detail-confirm-yes").addEventListener("click", async () => {
+  try {
+    await api("POST", "/api/library/trash", { path: detail.path });
+    $("detail").close();
+    loadLibrary().catch(showLibError);
+  } catch (err) { detailMsg(err.message, true); }
+});
+const renameChanged = debounce(() => renamePreview().catch((e) => detailMsg(e.message, true)), 150);
+for (const id of ["rn-people", "rn-title", "rn-collection"]) $(id).addEventListener("input", renameChanged);
+attachSuggest($("rn-people"), $("rn-people-suggest"), "people", renameChanged);
+attachSuggest($("rn-collection"), $("rn-collection-suggest"), "collections", renameChanged);
+$("rename-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const moved = await api("POST", "/api/library/rename", {
+      path: detail.path, people: $("rn-people").value, title: $("rn-title").value,
+      collection: $("rn-collection").value,
+    });
+    await openDetail(moved.path);
+    detailMsg(`Renamed — now in ${moved.folder}`);
+    loadLibrary().catch(showLibError);
+  } catch (err) { detailMsg(err.message, true); }
+});
+window.addEventListener("hashchange", route);
+route();
 
 api("GET", "/api/state").then(renderState).catch(showError);
 nameFromFields().catch(showError);

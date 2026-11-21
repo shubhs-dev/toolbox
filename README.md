@@ -773,6 +773,16 @@ and lists them under *Needs naming* to name one by one. The queue is kept in the
 database, so quitting mid-download resumes next time. The page only listens on `127.0.0.1`
 and refuses requests from other websites.
 
+**The library on the page** — the **Library** tab is a browsable view of the database: search
+by name, filter by person, collection and resolution, or switch to the duplicates, the badly
+named files (`-U`) or what's waiting in `_review/`. Each video has a thumbnail (one frame,
+made with ffmpeg the first time it's shown and cached in `.vidlib-cache/` at the library
+root). Click one to **Play** it, **Show in Finder**, **Rename** it — the same People / Title /
+Collection fields and suggestions as a download, keeping its `[tags]`, and moved into the new
+collection's folder with its history — or **Move to Trash** (after a confirmation; never
+deleted outright). Only files the database knows can be touched, and the file the pipeline is
+working on is left alone.
+
 **The pipeline on the page** — the page also shows what the pipeline is doing: the file being
 encoded with its preset, encoder, progress and time left; the rest of the batch; and what
 happened to the last few files (sorted into which folder, parked for review, skipped). **Pause**

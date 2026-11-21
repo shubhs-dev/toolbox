@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlsplit
 from toolboxcli._common.console import warn
 from toolboxcli.vidlib import naming
 from toolboxcli.vidlib.downloads import DownloadManager
+from toolboxcli.vidlib.library import Library, LibraryError
 from toolboxcli.vidlib.status import PipelineStatus
 
 DEFAULT_PORT = 8642
@@ -141,12 +142,18 @@ class Handler(BaseHTTPRequestHandler):
             self._route(method)
         except ApiError as exc:
             self._json({"error": str(exc)}, exc.status)
+        except LibraryError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except KeyError:
             self._json({"error": "no such download"}, HTTPStatus.NOT_FOUND)
         except ValueError as exc:
             self._json({"error": str(exc)}, HTTPStatus.CONFLICT)
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception as exc:  # noqa: BLE001 — the page gets an answer, the loop goes on
+            warn(f"Web page: {method} {self.path}: {type(exc).__name__}: {exc}")
+            self._json({"error": f"{type(exc).__name__}: {exc}"},
+                       HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def do_GET(self) -> None:  # noqa: N802
         self._handle("GET")
@@ -211,6 +218,9 @@ class Handler(BaseHTTPRequestHandler):
             added = mgr.add_bulk([str(u) for u in urls])  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
             self._json({"added": len(added)}, HTTPStatus.CREATED)
             return
+        if path.startswith("/api/library") or path == "/api/thumb":
+            self._library(method, path, query)
+            return
         if method == "POST" and path in ("/api/pipeline/pause", "/api/pipeline/stop",
                                          "/api/pipeline/resume"):
             self._body()
@@ -253,6 +263,48 @@ class Handler(BaseHTTPRequestHandler):
                 return
         raise ApiError(HTTPStatus.NOT_FOUND, f"no such endpoint: {method} {path}")
 
+    def _library(self, method: str, path: str, query: dict[str, list[str]]) -> None:
+        lib = self.server.library
+
+        def arg(name: str) -> str:
+            return (query.get(name) or [""])[0]
+
+        if method == "GET" and path == "/api/library":
+            try:
+                offset = max(0, int(arg("offset") or 0))
+            except ValueError as exc:
+                raise ApiError(HTTPStatus.BAD_REQUEST, "offset is a number") from exc
+            self._json(lib.query(arg("view") or "all", arg("q"), arg("person"),
+                                 arg("collection"), arg("resolution"), arg("tag"), offset))
+            return
+        if method == "GET" and path == "/api/library/video":
+            self._json(lib.video(arg("path")))
+            return
+        if method == "GET" and path == "/api/thumb":
+            try:
+                image = lib.thumbnail(arg("path"))
+            except LibraryError as exc:
+                raise ApiError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+            self._send(HTTPStatus.OK, image, "image/jpeg")
+            return
+        if method == "POST" and path in ("/api/library/open", "/api/library/reveal",
+                                         "/api/library/rename", "/api/library/trash"):
+            body = self._body()
+            target = str(body.get("path") or "")
+            action = path.rsplit("/", 1)[1]
+            if action == "rename":
+                self._json(lib.rename(target, str(body.get("people") or ""),
+                                      str(body.get("title") or ""),
+                                      str(body.get("collection") or "")))
+                return
+            if action == "trash":
+                lib.trash(target)
+            else:
+                lib.open(target, reveal=action == "reveal")
+            self._json({"ok": True})
+            return
+        raise ApiError(HTTPStatus.NOT_FOUND, f"no such endpoint: {method} {path}")
+
     def _events(self) -> None:
         mgr = self.server.manager
         self.send_response(HTTPStatus.OK)
@@ -285,6 +337,7 @@ class VidlibServer(ThreadingHTTPServer):
                  pipeline: PipelineStatus | None = None) -> None:
         self.manager = manager
         self.pipeline = pipeline   # None in download-only mode
+        self.library = Library(manager.library, manager.db, manager.lock, pipeline)
         self.stopping = threading.Event()
         super().__init__(("127.0.0.1", port), Handler)
 
