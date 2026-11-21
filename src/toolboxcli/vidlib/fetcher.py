@@ -213,7 +213,12 @@ class Engine:
             self.on_done(job)   # a job cancelled while it waited still reports its end
             return job
         try:
-            job.folder.mkdir(parents=True, exist_ok=True)
+            # Never parents=True: if the disk holding the target folder has been unplugged,
+            # creating the path would put a stray folder where its mount point was (on macOS
+            # the disk then comes back as "Name 1"). Only _incoming/ and the job folder are
+            # ever created, so a missing target fails the job instead.
+            job.folder.parent.mkdir(exist_ok=True)
+            job.folder.mkdir(exist_ok=True)
             proc = subprocess.Popen(
                 build_command(job.url, job.folder, job.name),
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

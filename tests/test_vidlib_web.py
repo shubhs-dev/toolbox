@@ -386,3 +386,16 @@ def test_a_garbled_request_or_hang_up_prints_no_traceback(serve, capsys):
     time.sleep(0.3)
     assert client.get("/api/state")[0] == 200            # still serving
     assert "Traceback" not in capsys.readouterr().err
+
+
+def test_an_unplugged_target_is_never_recreated(tmp_path):
+    from toolboxcli.vidlib import fetcher
+    gone = tmp_path / "Volumes" / "Media"                  # the disk's mount point, missing
+    with fetcher.Engine(1) as eng:
+        job = eng.submit(fetcher.Job(1, "https://x/a", gone / "_incoming" / "1")).result()
+    assert job.returncode == -1 and not (tmp_path / "Volumes").exists()
+    src = tmp_path / "a.mp4"
+    src.write_text("v")
+    with pytest.raises(FileNotFoundError, match="disk connected"):
+        move_file(src, gone)
+    assert src.exists() and not (tmp_path / "Volumes").exists()

@@ -47,11 +47,14 @@ def move_file(src: Path, dest_dir: Path) -> Path:
 
     On the same disk it's a rename. Across disks it's a copy to a hidden temp name (so the
     library scan never sees a half-copied file), a size check, and only then the rename into
-    place and the source's removal. Raises FileExistsError when the name is taken."""
+    place and the source's removal. Raises FileExistsError when the name is taken, and
+    FileNotFoundError when *dest_dir* doesn't exist — it's never created, since a missing
+    library folder usually means its disk is unplugged."""
     dest = dest_dir / src.name
     if dest.exists():
         raise FileExistsError(f"{dest.name} already exists in {dest_dir}")
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    if not dest_dir.is_dir():
+        raise FileNotFoundError(f"{dest_dir} isn't there — is its disk connected?")
     try:
         if src.stat().st_dev == dest_dir.stat().st_dev:
             os.rename(src, dest)
@@ -404,6 +407,8 @@ class DownloadManager:
             elif job.returncode != 0:
                 dl.status = "failed"
                 dl.error = job.tail[-1] if job.tail else f"yt-dlp exited {job.returncode}"
+                if not self.target.is_dir():
+                    dl.error = f"{self.target} isn't there — is its disk connected?"
             else:
                 self._deliver(dl, job.folder)
             self.db.save_download(dl)
