@@ -1,7 +1,7 @@
-"""Filename parsing, encoder selection and duplicate verdicts for optimiselib (no filesystem I/O).
+"""Filename parsing, encoder selection and duplicate verdicts for vidlib (no filesystem I/O).
 
 Every function here is pure so the dry-run output and the real run are driven by exactly the
-same logic. They're covered by tests/test_optimiselib_core.py; `optimiselib -n` shows them
+same logic. They're covered by tests/test_vidlib_core.py; `vidlib -n` shows them
 applied to a real library.
 """
 
@@ -18,7 +18,7 @@ from datetime import datetime, time as dtime, timedelta
 # so a 4:3 1440x1080 camcorder file reads "1080p" rather than an odd "1080p"-adjacent value.
 RESOLUTION_RUNGS = (2160, 1440, 1080, 720, 576, 480, 360)
 
-# Tokens optimiselib owns in the bracket group and will replace rather than duplicate.
+# Tokens vidlib owns in the bracket group and will replace rather than duplicate.
 RESOLUTION_TOKEN_RE = re.compile(r"^\d{3,4}[pi]$", re.IGNORECASE)
 # "10bit" matches jellyname's BIT_DEPTH_TAGS spelling, so the two scripts agree.
 BIT_DEPTH_TOKEN_RE = re.compile(r"^(?:8|10|12)bit$", re.IGNORECASE)
@@ -108,7 +108,7 @@ def apply_tags(stem: str, height: int, depth: int = 8, has_sub: bool = False) ->
 
     All three tokens are *owned*: an existing one is replaced rather than duplicated, so
     "[Restored 720p]" becomes "[Restored 1080p]" and a file re-encoded down to 8-bit loses
-    a stale "10bit". Tokens optimiselib doesn't own survive verbatim in their original
+    a stale "10bit". Tokens vidlib doesn't own survive verbatim in their original
     order, with the managed ones appended after them.
 
     8-bit carries no token — it's the norm, and tagging every file "8bit" would be noise.

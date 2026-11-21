@@ -51,7 +51,7 @@ def sandbox_env(tmp_path: Path) -> dict[str, str]:
 
 @pytest.fixture
 def run_cli(sandbox_env):
-    """Run a toolbox command's module in a subprocess: run_cli("optimiselib", [...])."""
+    """Run a toolbox command's module in a subprocess: run_cli("vidlib", [...])."""
 
     def run(script: str, args: list[str], cwd: Path | None = None,
             env_extra: dict[str, str] | None = None,

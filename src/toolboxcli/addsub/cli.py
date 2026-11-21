@@ -96,7 +96,7 @@ def _scratch_file(video: Path) -> Path:
     discarded by the cleanup. Writing beside the video keeps that last step an atomic
     same-filesystem rename, and stops the whole file crossing the wire twice.
 
-    The leading dot hides it from optimiselib's scan while ffmpeg is still writing it. A
+    The leading dot hides it from vidlib's scan while ffmpeg is still writing it. A
     parent directory that can't be written to falls back to the system temp dir, where
     _replace()'s cross-device path takes over.
     """

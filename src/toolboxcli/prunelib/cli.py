@@ -39,7 +39,7 @@ number of items to confirm.
 History: files you were shown and kept are recorded in .prunelib-history.json
 in the directory you ran prunelib from, and skipped on later runs, so each run
 moves on to fresh suggestions. A file comes back if its size or modified date
-changes (say, optimiselib re-encoded it). History is only written when you
+changes (say, vidlib re-encoded it). History is only written when you
 finish with q; Ctrl+C leaves it untouched. -r/--reset-history starts over.
 
 By default only video files are considered; -a/--all-files ranks every file.

@@ -1,6 +1,6 @@
 """Shared HandBrakeCLI plumbing: preset lookup, progress-parsing transcode, file settling.
 
-Extracted from compressvid so optimiselib can reuse the same preset resolution and the same
+Extracted from compressvid so vidlib can reuse the same preset resolution and the same
 stderr-scraping progress reporting rather than reimplementing either.
 """
 

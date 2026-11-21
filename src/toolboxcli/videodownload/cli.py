@@ -15,7 +15,7 @@ THE DOWNLOADER (default)
 
 Paste a URL and the page's title. The title is split into words, and each word is
 labelled people, title or collection — guessed from names the library (-L, or env
-VIDEO_DOWNLOAD_LIBRARY: an optimiselib library root) and earlier downloads already use,
+VIDEO_DOWNLOAD_LIBRARY: an vidlib library root) and earlier downloads already use,
 everything after the last "|" skipped as the site name. Correct the guess in the word
 bar: ←/→ move, shift+←/→ select, p / t / c toggle people / title / collection, x skips.
 The People, Title and Collection fields it fills in can also be edited directly. ctrl+s
@@ -76,9 +76,9 @@ from toolboxcli._common.confirm import confirm
 from toolboxcli._common.console import console, die, error, info, ok, warn
 from toolboxcli._common.progress import spinner
 from toolboxcli._common.tooling import require_tool
-from toolboxcli.optimiselib.db import DB_NAME
 from toolboxcli.videodownload import engine
 from toolboxcli.videodownload.core import KnownNames, Progress
+from toolboxcli.vidlib.db import DB_NAME, LEGACY_DB_NAME
 
 URLS_FILE = "urls.txt"
 ARIA2C_ARGS = "-x 16 -k 1M"
@@ -303,20 +303,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Batch: download lines added to urls.txt during the run "
                              "without asking")
     parser.add_argument("-L", "--library", metavar="DIR", default=None,
-                        help="optimiselib library root whose people and collections the UI "
+                        help="vidlib library root whose people and collections the UI "
                              "suggests (default: env VIDEO_DOWNLOAD_LIBRARY)")
     return parser
 
 
 def library_names(library: str | None) -> KnownNames:
-    """People and collections from an optimiselib library's database, read-only — never
+    """People and collections from an vidlib library's database, read-only — never
     created, migrated or written. Missing or unreadable means no suggestions, not an error."""
     folder = library or os.environ.get("VIDEO_DOWNLOAD_LIBRARY")
     if not folder:
         return KnownNames()
     path = Path(folder).expanduser() / DB_NAME
+    if not path.is_file() and path.with_name(LEGACY_DB_NAME).is_file():
+        path = path.with_name(LEGACY_DB_NAME)   # vidlib hasn't renamed it yet
     if not path.is_file():
-        warn(f"No optimiselib database at {path} — no name suggestions from the library")
+        warn(f"No vidlib database at {path} — no name suggestions from the library")
         return KnownNames()
     try:
         conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)

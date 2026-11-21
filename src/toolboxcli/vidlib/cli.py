@@ -1,5 +1,5 @@
 """
-optimiselib — Watch a library root, optimise new videos to 1080p, tag and sort them.
+vidlib — Watch a library root, optimise new videos to 1080p, tag and sort them.
 
 Runs continuously on a media server. For every video that appears directly in the library
 root it will:
@@ -21,6 +21,7 @@ root it will:
 
 Only files sitting directly in the root are touched. Subfolders — including the trip
 folders and any folder you use to stage files by hand — are left completely alone.
+_incoming/ is skipped entirely: it holds downloads that are still being written.
 
 While a batch runs, an overall progress bar is pinned beneath the current file's: files
 done and left, a tally of outcomes (done / review / skipped / failed), elapsed time and ETA.
@@ -33,32 +34,33 @@ an addsub-style " - Sub" filename suffix. This works both for a subtitle already
 to a brand-new video, and for one dropped in later for a video that's already been optimised
 and filed into a trip folder.
 
-Everything optimiselib knows lives in .optimiselib.db, an SQLite file in the library root
+Everything vidlib knows lives in .vidlib.db, an SQLite file in the library root
 (no server). Before each poll it syncs that with the disk: a file you renamed or moved by
 hand keeps its history (so it's never re-encoded), files you add to folders yourself are
 recorded as they are, and files that have gone are marked missing. An old .optimiselib.json
-log is imported on the first run and kept as .optimiselib.json.migrated. A dry run works on
-an in-memory copy, so it changes nothing.
+log is imported on the first run and kept as .optimiselib.json.migrated, and a library last
+used as optimiselib has its .optimiselib.db renamed .vidlib.db. A dry run works on an
+in-memory copy, so it changes nothing.
 
 Requires:
     HandBrakeCLI, ffprobe
     addsub (optional — enables automatic subtitle merging when present)
 
 Usage:
-    optimiselib /srv/library              # watch, poll every 30s
-    optimiselib -O                        # process what's there, then exit
-    optimiselib -n                        # dry run: show what would happen
-    optimiselib -r                        # report sub-1080p files and the review queue
-    optimiselib -l                        # list every video in the library, alphabetically
-    optimiselib -l library.txt            # write that list to library.txt instead
-    optimiselib -a alice                  # everything with Alice in it
-    optimiselib -R 720p -c Lakes          # filters combine: 720p videos in Lakes
-    optimiselib -T Restored               # by [tag]
-    optimiselib -U                        # files not named People - Title - Collection
-    optimiselib -D                        # videos the library holds more than once
-    optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
-    optimiselib -S                        # don't scan for or merge subtitle files
-    optimiselib -s                        # merge waiting subtitles only, then exit
+    vidlib /srv/library                   # watch, poll every 30s
+    vidlib -O                             # process what's there, then exit
+    vidlib -n                             # dry run: show what would happen
+    vidlib -r                             # report sub-1080p files and the review queue
+    vidlib -l                             # list every video in the library, alphabetically
+    vidlib -l library.txt                 # write that list to library.txt instead
+    vidlib -a alice                       # everything with Alice in it
+    vidlib -R 720p -c Lakes               # filters combine: 720p videos in Lakes
+    vidlib -T Restored                    # by [tag]
+    vidlib -U                             # files not named People - Title - Collection
+    vidlib -D                             # videos the library holds more than once
+    vidlib -H 01:00-07:00 -L 4            # only encode off-hours, and back off under load
+    vidlib -S                             # don't scan for or merge subtitle files
+    vidlib -s                             # merge waiting subtitles only, then exit
 """
 
 from __future__ import annotations
@@ -100,15 +102,23 @@ from toolboxcli._common.humanize import human_size as fmt_size
 from toolboxcli._common.progress import bar as progress_bar
 from toolboxcli._common.tooling import require_tool
 from toolboxcli._common.trash import move_to_trash
-from toolboxcli.optimiselib import core
-from toolboxcli.optimiselib.db import REVIEW_DIR, LibraryDB, Video, import_json_log
+from toolboxcli.vidlib import core
+from toolboxcli.vidlib.db import (
+    INCOMING_DIR,
+    LEGACY_DB_NAME,
+    REVIEW_DIR,
+    LibraryDB,
+    Video,
+    import_json_log,
+    legacy_db_conflict,
+)
 
 VIDEO_EXTS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
     ".m4v", ".mpg", ".mpeg", ".ts", ".vob", ".3gp", ".mts",
 }
 
-# Statuses meaning "this file is already compressed": optimiselib wrote it, or recorded it
+# Statuses meaning "this file is already compressed": vidlib wrote it, or recorded it
 # as compressed (a sync of the library's folders, or the old log's reconciled files).
 DONE_STATUSES = {"sorted", "compressed", "awaiting_trip", "skipped", "review"}
 
@@ -140,10 +150,17 @@ def forget(db: LibraryDB, root: Path, *paths: Path) -> None:
             db.remove(rel_path(root, path))
 
 
+def _skip_incoming(root: Path, dirpath: str, dirnames: list[str]) -> None:
+    """Prune _incoming/ (downloads still being written) from an os.walk of the root."""
+    if INCOMING_DIR in dirnames and Path(dirpath) == root:
+        dirnames.remove(INCOMING_DIR)
+
+
 def library_files(root: Path) -> dict[str, os.stat_result]:
-    """Every video under *root*, _review/ included, keyed by rel_path."""
+    """Every video under *root*, _review/ included and _incoming/ not, keyed by rel_path."""
     found: dict[str, os.stat_result] = {}
-    for dirpath, _dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        _skip_incoming(root, dirpath, dirnames)
         for name in filenames:
             path = Path(dirpath) / name
             if _is_video(path):
@@ -158,7 +175,7 @@ def sync_library(root: Path, db: LibraryDB) -> None:
       renamed or moved by hand: its row (and so its history) follows it, so it's never
       mistaken for a new video and re-encoded.
     - A file in a folder (or _review/) that the database doesn't know is recorded as it is:
-      optimiselib never touches subfolders, so whatever is there is already compressed.
+      vidlib never touches subfolders, so whatever is there is already compressed.
     - A file in the root it doesn't know is left alone: that's new input for the pipeline.
     - A row whose file has gone, and wasn't found elsewhere, is marked missing.
     """
@@ -351,10 +368,11 @@ def scan_subs(root: Path):
 
 def all_videos(root: Path) -> list[Path]:
     """Every video file anywhere under *root* — root itself plus every trip folder, _review/
-    excluded — so a subtitle dropped in after its video has already been sorted can still
-    find it, wherever it currently lives."""
+    and _incoming/ excluded — so a subtitle dropped in after its video has already been sorted
+    can still find it, wherever it currently lives."""
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
+        _skip_incoming(root, dirpath, dirnames)
         if REVIEW_DIR in dirnames:
             dirnames.remove(REVIEW_DIR)
         for name in filenames:
@@ -470,7 +488,7 @@ def build_encoder_plan(args, preset_stems: list[str]) -> EncoderPlan:
     # Every preset is authored against the same encoder; the first is representative.
     preset_encoder = presets[preset_stems[0]][0]
 
-    preference = args.gpu or os.environ.get("OPTIMISELIB_GPU", "auto")
+    preference = args.gpu or os.environ.get("VIDLIB_GPU", "auto")
     if preference not in core.GPU_CHOICES:
         die(f"Unknown --gpu value: {preference} (choose from {', '.join(core.GPU_CHOICES)})")
 
@@ -985,7 +1003,7 @@ def show_report(root: Path, db: LibraryDB) -> None:
     unnamed = [v for v in db.search(unnamed=True) if v.status != "review"]
     if unnamed:
         warn(f"{len(unnamed)} file(s) aren't named People - Title - Collection, so they can't be "
-             "matched as duplicates or searched by person/collection — `optimiselib -U` lists them")
+             "matched as duplicates or searched by person/collection — `vidlib -U` lists them")
 
     review = root / REVIEW_DIR
     parked = sorted(review.iterdir()) if review.is_dir() else []
@@ -1117,7 +1135,7 @@ def show_summary(results: list[dict]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        prog="optimiselib",
+        prog="vidlib",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1151,7 +1169,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("-F", "--force", action="store_true",
                     help="Re-process files the library database already knows as done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
-                    help="Encoder backend (default: auto; env OPTIMISELIB_GPU)")
+                    help="Encoder backend (default: auto; env VIDLIB_GPU)")
     ap.add_argument("-Q", "--quality", type=float, default=None,
                     help="Override the preset's quality value")
     ap.add_argument("-B", "--bit-depth", default="auto", choices=core.BIT_DEPTH_CHOICES,
@@ -1184,7 +1202,7 @@ def main() -> None:
     if not root.is_dir():
         die(f"Not a directory: {root}")
 
-    # Any filter means "list": `optimiselib -a alice` is `optimiselib -l -a alice`.
+    # Any filter means "list": `vidlib -a alice` is `vidlib -l -a alice`.
     if args.list_files is None and (args.person or args.collection or args.resolution
                                     or args.tag or args.unnamed):
         args.list_files = ""
@@ -1198,6 +1216,9 @@ def main() -> None:
         db = LibraryDB.open(root, in_memory=args.dry_run)
     except (RuntimeError, OSError) as exc:
         die(f"Can't open the library database: {exc}")
+    if legacy_db_conflict(root):
+        warn(f"Both {LEGACY_DB_NAME} and {db.path.name} are in {root} — using {db.path.name}; "
+             f"the old {LEGACY_DB_NAME} is left untouched")
     with db:
         try:
             migrated = import_json_log(root, db, rename=not args.dry_run)
@@ -1284,7 +1305,7 @@ def run(root: Path, db: LibraryDB, args) -> None:
     if args.dry_run:
         banner.add_row("Dry run", "[yellow]nothing will be changed[/]")
 
-    console.print(Panel(banner, title="[bold cyan]optimiselib[/]",
+    console.print(Panel(banner, title="[bold cyan]vidlib[/]",
                         border_style="cyan", expand=False))
     console.print()
 

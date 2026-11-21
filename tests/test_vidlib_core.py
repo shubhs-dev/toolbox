@@ -1,4 +1,4 @@
-"""optimiselib/core.py: tag management, the Collection (trip) field, subtitle matching,
+"""vidlib/core.py: tag management, the Collection (trip) field, subtitle matching,
 encoder selection, duplicate verdicts and the off-hours window."""
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ from datetime import datetime, time
 
 import pytest
 
-from toolboxcli.optimiselib import core
+from toolboxcli.vidlib import core
 
 
 @pytest.mark.parametrize("height, label", [

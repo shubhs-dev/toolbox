@@ -102,15 +102,15 @@ def test_library_names_are_read_only_and_optional(tmp_path, monkeypatch):
     monkeypatch.delenv("VIDEO_DOWNLOAD_LIBRARY", raising=False)
     assert library_names(None) == KnownNames()
     assert library_names(str(tmp_path)) == KnownNames()           # no database there
-    from toolboxcli.optimiselib.db import LibraryDB, Video
+    from toolboxcli.vidlib.db import LibraryDB, Video
     with LibraryDB.open(tmp_path) as db:
         db.upsert(Video(path="Lakes/Alice, Bob - Day 1 - Lakes.mp4"))
         db.upsert(Video(path="Odd name.mp4"))
-    before = (tmp_path / ".optimiselib.db").stat().st_mtime_ns
+    before = (tmp_path / ".vidlib.db").stat().st_mtime_ns
     monkeypatch.setenv("VIDEO_DOWNLOAD_LIBRARY", str(tmp_path))
     assert library_names(None) == KnownNames({"alice", "bob"}, {"lakes"})
-    assert (tmp_path / ".optimiselib.db").stat().st_mtime_ns == before
-    with sqlite3.connect(tmp_path / ".optimiselib.db") as conn:
+    assert (tmp_path / ".vidlib.db").stat().st_mtime_ns == before
+    with sqlite3.connect(tmp_path / ".vidlib.db") as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] >= 1
 
 
