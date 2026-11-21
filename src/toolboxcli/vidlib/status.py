@@ -15,6 +15,10 @@ The loop's states:
     outside_hours  -H: waiting for the encode window
     high_load      -L: waiting for the load average to drop
     disk_missing   the library root isn't there (its disk is unplugged)
+    merging        joining parts queued from the page (see `merges`)
+
+Merges queue here too, so they run on the pipeline's thread: one heavy job at a time, and
+Pause / Stop now / -H apply to them. They're kept in memory only.
 """
 
 from __future__ import annotations
@@ -27,9 +31,26 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 RECENT = 30
+MERGE_STATES = ("queued", "running", "done", "failed", "unverified", "stopped", "discarded")
+
+
+@dataclass
+class MergeJob:
+    id: int
+    paths: list[str]           # root-relative, in the order to join them
+    stem: str                  # the merged video's name, without extension
+    ext: str
+    state: str = "queued"
+    detail: str = ""
+    output: str = ""           # root-relative path of the joined file, once there is one
+
+    def to_json(self) -> dict[str, Any]:
+        return {"id": self.id, "paths": self.paths, "name": self.stem + self.ext,
+                "state": self.state, "detail": self.detail, "output": self.output}
 
 
 def _noop() -> None:
@@ -52,6 +73,8 @@ class PipelineStatus:
         self.current: dict[str, Any] | None = None
         self.waiting: list[str] = []
         self.recent: deque[dict[str, Any]] = deque(maxlen=RECENT)
+        self.merges: list[MergeJob] = []
+        self._merge_ids = 0
         self.next_poll: float | None = None
 
     def _changed(self) -> None:
@@ -130,6 +153,48 @@ class PipelineStatus:
         with self._lock:
             self.next_poll = None
 
+    # ── merges ──
+
+    def queue_merge(self, paths: list[str], stem: str, ext: str) -> MergeJob:
+        with self._lock:
+            busy = {p for m in self.merges if m.state in ("queued", "running") for p in m.paths}
+            if busy & set(paths):
+                raise ValueError("one of those videos is already being merged")
+            self._merge_ids += 1
+            job = MergeJob(self._merge_ids, list(paths), stem, ext)
+            self.merges.append(job)
+        self._wake.set()            # don't wait for the next poll
+        self._changed()
+        return job
+
+    def next_merge(self) -> MergeJob | None:
+        with self._lock:
+            return next((m for m in self.merges if m.state == "queued"), None)
+
+    def merge(self, job_id: int) -> MergeJob:
+        with self._lock:
+            for m in self.merges:
+                if m.id == job_id:
+                    return m
+        raise KeyError(job_id)
+
+    def update_merge(self, job: MergeJob, state: str | None = None, detail: str | None = None,
+                     output: str | None = None) -> None:
+        with self._lock:
+            if state is not None:
+                job.state = state
+            if detail is not None:
+                job.detail = detail
+            if output is not None:
+                job.output = output
+        self._changed()
+
+    def forget_merge(self, job_id: int) -> None:
+        with self._lock:
+            self.merges = [m for m in self.merges
+                           if m.id != job_id or m.state in ("queued", "running")]
+        self._changed()
+
     # ── the page asks ──
 
     def pause(self) -> None:
@@ -160,11 +225,12 @@ class PipelineStatus:
                 "current": dict(self.current) if self.current else None,
                 "waiting": list(self.waiting), "recent": list(self.recent),
                 "next_poll": self.next_poll, "settings": dict(self.settings),
+                "merges": [m.to_json() for m in self.merges],
             }
 
     @property
     def busy(self) -> bool:
-        return self.state == "encoding"
+        return self.state in ("encoding", "merging")
 
 
 class KeepAwake:

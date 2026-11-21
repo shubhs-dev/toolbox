@@ -787,7 +787,15 @@ by name, filter by person, collection and resolution, or switch to the duplicate
 named files (`-U`), what's waiting in `_review/`, or **Parts**: sets of videos that look like
 parts of one (`P1`, `Part 2`, `Ep 3`, `Part II`, `2/3`, `Part 1-5`…), matched loosely by title
 whatever their people or collection, with gaps and doubled parts flagged and a **Not parts**
-button for a wrong guess. Each video has a thumbnail (one frame,
+button for a wrong guess. **Merge…** opens the merge screen: the parts in order (tick
+what belongs, drag or ↑/↓ to reorder, search to add a missed one), the merged video's name
+(everyone from every part, the most shared collection, the title without the marker — all
+editable), and what it takes: "joined as they are", or which part will be re-encoded or
+downscaled to match. Merges wait for the pipeline (one heavy job at a time; Pause applies)
+and are done by `concatvid`, which only sends the parts to the Trash once the joined video is
+confirmed to be as long as all of them. The result is filed like any new video — encoded
+first unless every part already was. To merge videos the Parts view didn't find, tick them
+in the grid (a checkbox appears on hover) and choose **Merge selected…**. Each video has a thumbnail (one frame,
 made with ffmpeg the first time it's shown and cached in `.vidlib-cache/` at the library
 root). Rest the pointer on one for a moment and it steps through twelve frames from across the
 video (moving across the picture scrubs them). Click one to **Play** it, **Show in Finder**,

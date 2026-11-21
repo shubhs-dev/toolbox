@@ -285,3 +285,16 @@ def find_groups(videos: list[Video], similarity: float = 0.8,
         groups.append(group)
     groups.sort(key=lambda g: (not g.sure, g.title.casefold()))
     return groups
+
+
+def proposal(videos: list[Video]) -> tuple[tuple[str, ...], str, str]:
+    """(people, title, collection) for merging *videos* in this order — the same rules as a
+    found group, for a set picked by hand: everyone named, the most shared collection, and
+    the first title with its marker taken off."""
+    members: list[Member] = []
+    for v in videos:
+        part = parse_part(v.title) or PartTitle(_tidy(v.title) or v.title,
+                                                loose_key(v.title), Marker(0, 0))
+        members.append(Member(v, part))
+    group = Group(members, sure=True)
+    return group.people, group.title, group.collection

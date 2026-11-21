@@ -456,8 +456,7 @@ Progress *factories* themselves) were extracted from it.
   `Library.rename` and the rename form's preview via `fill_unknown: true`).
   Both naming answers carry `same_as`: library videos with the same match key, i.e. what
   duplicate detection would take for the same video and replace or park.
-- `vidlib/parts.py` finds videos that are parts of one (being built in stages:
-  `docs/vidlib-merge-plan.md`). The marker is read from the *title* only, at its start or
+- `vidlib/parts.py` finds videos that are parts of one. The marker is read from the *title* only, at its start or
   end or as a `" - "` segment, in many spellings (`P1`, `Part1`, `Ep 2`, `Part II`, `Part
   Two`, `2/3`, `Part 1-5`); a sentence-opening marker followed by a small word is a title.
   Grouping deliberately ignores people and collection (crossovers) and the library's known
@@ -466,6 +465,17 @@ Progress *factories* themselves) were extracted from it.
   numbers including 1 — two copies of "Day 1" are one video twice.
   `tests/fixtures/vidlib_parts.json` pins the markers. Dismissed sets live in
   `part_dismissals` (schema 4) and stay hidden until a new video joins them.
+- Merging (`Library.merge_plan` / `queue_merge`, `cli.run_merge`) never joins anything
+  itself: it runs the `concatvid` module (`python -m toolboxcli.concatvid.cli`, so no PATH
+  lookup) for its compatibility check, its re-encode-only-what-differs normalization, its
+  length check and its trashing of the parts — the merge screen's notes come from the same
+  `concatvid.core` checks. Merges queue on `PipelineStatus` (in memory) and run on the
+  pipeline's thread between polls, so Pause/Stop now/`-H` apply and there's one heavy job at
+  a time. The join is written to `_incoming/merge-<id>/` and only moved into the root once
+  its parts are gone, i.e. concatvid's length check passed; otherwise it stays there,
+  `unverified`, for the page to discard. In the root it's `compressed` (sort only) when
+  every part has a `backend` (vidlib encoded it), and new input otherwise — merging raw
+  parts must not file them unencoded.
 - `vidlib/fetcher.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only through
   callbacks (`on_start`, `on_line` with a parsed `Progress`, `on_done`), never printing. Every
   job writes into its own folder, so the finished file is whatever non-partial file is left

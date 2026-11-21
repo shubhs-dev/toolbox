@@ -418,6 +418,50 @@ function clock(epoch) {
   return new Date(epoch * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+const MERGE_STATE = {
+  queued: "waiting", running: "merging", done: "merged", failed: "failed",
+  unverified: "not confirmed", stopped: "stopped", discarded: "discarded",
+};
+let mergesDone = 0;
+
+function renderMerges(merges) {
+  $("pipe-merges").replaceChildren(...merges.map((m) => {
+    const li = document.createElement("li");
+    li.className = "row";
+    const main = document.createElement("div");
+    main.className = "row-main";
+    const name = document.createElement("div");
+    name.className = "row-name";
+    name.textContent = `Merge ${m.paths.length} parts → ${m.name}`;
+    const sub = document.createElement("div");
+    sub.className = "row-sub dim";
+    sub.textContent = m.detail;
+    sub.title = m.detail;
+    main.append(name, sub);
+    const side = document.createElement("div");
+    side.className = "row-side";
+    const pill = document.createElement("span");
+    pill.className = `pill ${m.state}`;
+    pill.textContent = MERGE_STATE[m.state] || m.state;
+    const acts = document.createElement("span");
+    acts.className = "row-actions";
+    if (m.state === "unverified") {
+      acts.append(action("Discard the join", () => api("POST", `/api/library/merge/${m.id}/discard`, {})));
+    }
+    if (!["queued", "running"].includes(m.state)) {
+      acts.append(action("Dismiss", () => api("POST", `/api/library/merge/${m.id}/forget`, {})));
+    }
+    side.append(pill, acts);
+    li.append(main, side);
+    return li;
+  }));
+  const done = merges.filter((m) => m.state === "done").length;
+  if (done !== mergesDone) {
+    mergesDone = done;
+    if (!$("view-library").hidden) loadLibrary().catch(showLibError);
+  }
+}
+
 function renderPipeline(p) {
   $("pipeline").hidden = !p;
   if (!p) return;
@@ -478,6 +522,8 @@ function renderPipeline(p) {
     return li;
   }));
 
+  renderMerges(p.merges || []);
+
   const st = p.settings || {};
   const bits = [`every ${st.interval}s`, `encoder ${st.gpu}`];
   if (st.hours) bits.push(`hours ${st.hours}`);
@@ -497,7 +543,16 @@ function connect() {
 
 // ── the library ───────────────────────────────────────────────────────
 
-const lib = { view: "all", offset: 0, total: 0, loaded: false, seq: 0, lastGroup: null };
+const lib = { view: "all", offset: 0, total: 0, loaded: false, seq: 0, lastGroup: null,
+              selected: new Map() };   // id → video, picked to merge by hand
+
+function renderSelection() {
+  const n = lib.selected.size;
+  $("select-bar").hidden = n === 0 || lib.view === "parts";
+  $("select-count").textContent = `${n} selected`;
+  $("select-merge").disabled = n < 2;
+  $("lib-grid").classList.toggle("selecting", n > 0);
+}
 
 function humanSize(n) {
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -594,6 +649,21 @@ function card(v) {
   const wrap = document.createElement("span");
   wrap.className = "thumbwrap";
   wrap.append(img);
+  if (v.id != null && lib.view !== "parts") {
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.className = "pick";
+    pick.checked = lib.selected.has(v.id);
+    pick.setAttribute("aria-label", `Select ${v.filename} to merge`);
+    pick.addEventListener("click", (e) => e.stopPropagation());
+    pick.addEventListener("change", () => {
+      if (pick.checked) lib.selected.set(v.id, v); else lib.selected.delete(v.id);
+      b.classList.toggle("picked", pick.checked);
+      renderSelection();
+    });
+    if (pick.checked) b.classList.add("picked");
+    wrap.append(pick);
+  }
   attachPreview(b, wrap, v);
   const body = document.createElement("span");
   body.className = "body";
@@ -639,6 +709,7 @@ async function loadLibrary(append = false) {
   $("lib-grid").hidden = partsView;
   $("lib-parts").hidden = !partsView;
   for (const id of ["lib-q", "lib-person", "lib-collection", "lib-resolution"]) $(id).disabled = partsView;
+  renderSelection();
   if (partsView) { $("lib-more").hidden = true; return loadParts(); }
   const seq = ++lib.seq;
   const offset = append ? lib.offset : 0;
@@ -701,7 +772,12 @@ function partGroup(g) {
   pill.textContent = g.sure ? "same title" : "similar titles";
   pill.title = g.sure ? "The titles match apart from the part numbers"
                       : "Most of the words match — check these really belong together";
-  side.append(pill, action("Not parts", async () => {
+  const mergeBtn = action("Merge…", async () => openMerge(g), "small primary");
+  if (g.doubled.length) {
+    mergeBtn.disabled = true;
+    mergeBtn.title = "A part appears twice — sort out the duplicate first";
+  }
+  side.append(pill, mergeBtn, action("Not parts", async () => {
     await api("POST", "/api/library/parts/dismiss", { ids: g.ids });
     li.remove();
     if (!$("lib-parts").children.length) $("lib-empty").hidden = false;
@@ -746,6 +822,181 @@ async function loadParts() {
     ? `${data.groups.length} set(s) of parts — ${sure} with matching titles, ${data.groups.length - sure} with similar ones`
     : "";
 }
+
+// ── merging ──
+
+const MERGE_FIELDS = {
+  people: "mg-people", title: "mg-title", collection: "mg-collection",
+  peoplePills: "mg-people-pills", titlePills: "mg-title-pills", collectionPills: "mg-collection-pills",
+};
+const merge = { items: [], seq: 0, previewSeq: 0, named: false, blocking: false, nameOk: false };
+
+function mergeIds() {
+  return merge.items.filter((it) => it.include).map((it) => it.video.id);
+}
+
+function mergePartRow(it, index) {
+  const li = document.createElement("li");
+  li.className = `merge-part${it.include ? "" : " off"}`;
+  li.draggable = true;
+  const grip = document.createElement("span");
+  grip.className = "grip";
+  grip.textContent = "⠿";
+  grip.title = "Drag to reorder";
+  const check = document.createElement("input");
+  check.type = "checkbox";
+  check.checked = it.include;
+  check.setAttribute("aria-label", `Include ${it.video.filename}`);
+  check.addEventListener("change", () => { it.include = check.checked; mergeChanged(); });
+  const lead = document.createElement("span");
+  lead.className = "move";
+  lead.append(grip, check);
+  const img = document.createElement("img");
+  img.alt = "";
+  img.loading = "lazy";
+  img.src = thumbUrl(it.video.path);
+  img.addEventListener("error", () => img.classList.add("none"), { once: true });
+  const what = document.createElement("span");
+  what.className = "what";
+  const b = document.createElement("b");
+  b.textContent = it.video.filename;
+  b.title = it.video.path;
+  const meta = document.createElement("span");
+  meta.textContent = [it.video.first ? partLabel(it.video) : "", it.video.resolution,
+                      it.video.duration ? duration(it.video.duration) : "",
+                      it.video.folder === "." ? "library root" : it.video.folder].filter(Boolean).join(" · ");
+  what.append(b, meta);
+  const move = document.createElement("span");
+  move.className = "move";
+  const up = action("↑", async () => moveItem(index, index - 1));
+  up.setAttribute("aria-label", `Move ${it.video.filename} up`);
+  up.disabled = index === 0;
+  const down = action("↓", async () => moveItem(index, index + 1));
+  down.setAttribute("aria-label", `Move ${it.video.filename} down`);
+  down.disabled = index === merge.items.length - 1;
+  move.append(up, down);
+  li.append(lead, img, what, move);
+  li.addEventListener("dragstart", (e) => {
+    e.dataTransfer.setData("text/plain", String(index));
+    li.classList.add("dragging");
+  });
+  li.addEventListener("dragend", () => li.classList.remove("dragging"));
+  li.addEventListener("dragover", (e) => { e.preventDefault(); li.classList.add("drop-before"); });
+  li.addEventListener("dragleave", () => li.classList.remove("drop-before"));
+  li.addEventListener("drop", (e) => {
+    e.preventDefault();
+    li.classList.remove("drop-before");
+    const from = Number(e.dataTransfer.getData("text/plain"));
+    if (!Number.isNaN(from) && from !== index) moveItem(from, from < index ? index - 1 : index);
+  });
+  return li;
+}
+
+function moveItem(from, to) {
+  if (to < 0 || to >= merge.items.length) return;
+  const [it] = merge.items.splice(from, 1);
+  merge.items.splice(to, 0, it);
+  mergeChanged();
+}
+
+function renderMergeParts() {
+  $("mg-parts").replaceChildren(...merge.items.map(mergePartRow));
+}
+
+function mergeMsg(text, isError = false) {
+  $("mg-msg").textContent = text;
+  $("mg-msg").classList.toggle("error", isError);
+}
+
+// The plan: what concatvid would have to do for the ticked parts, in this order. The
+// first answer also fills the name fields; later ones leave your edits alone.
+async function loadMergePlan() {
+  const seq = ++merge.seq;
+  const ids = mergeIds();
+  if (ids.length < 2) {
+    $("mg-notes").replaceChildren();
+    merge.blocking = true;
+    updateMergeButton();
+    return;
+  }
+  const plan = await api("POST", "/api/library/merge/plan", { ids });
+  if (seq !== merge.seq) return;
+  if (!merge.named) {
+    $("mg-people").value = plan.name.people;
+    $("mg-title").value = plan.name.title;
+    $("mg-collection").value = plan.name.collection;
+    merge.named = true;
+    await mergePreview();
+  }
+  merge.blocking = plan.blocking;
+  $("mg-notes").replaceChildren(...plan.notes.map((n) => {
+    const li = document.createElement("li");
+    li.className = n.level;
+    li.textContent = n.text;
+    return li;
+  }));
+  updateMergeButton();
+}
+
+async function mergePreview() {
+  const seq = ++merge.previewSeq;
+  const data = await api("POST", "/api/name/fields", {
+    people: $("mg-people").value, title: $("mg-title").value,
+    collection: $("mg-collection").value, fill_unknown: true,
+  });
+  if (seq !== merge.previewSeq) return;
+  $("mg-stem").textContent = data.stem;
+  $("mg-problems").replaceChildren(...problemItems(data));
+  renderPills(data, MERGE_FIELDS, mergeNameChanged);
+  merge.nameOk = data.complete;
+  updateMergeButton();
+}
+
+function updateMergeButton() {
+  const gapsOk = $("mg-gap").hidden || $("mg-gap-ok").checked;
+  $("mg-go").disabled = merge.blocking || !merge.nameOk || mergeIds().length < 2 || !gapsOk;
+}
+
+const mergeNameChanged = debounce(() => mergePreview().catch((e) => mergeMsg(e.message, true)), 150);
+
+function mergeChanged() {
+  renderMergeParts();
+  loadMergePlan().catch((e) => mergeMsg(e.message, true));
+}
+
+async function openMerge(group) {
+  merge.items = group.members.map((m) => ({ video: m, include: true }));
+  merge.named = false;
+  merge.nameOk = false;
+  merge.blocking = false;
+  mergeMsg("");
+  $("mg-search").value = "";
+  $("mg-results").replaceChildren();
+  const gaps = group.gaps || [];
+  $("mg-gap").hidden = gaps.length === 0;
+  $("mg-gap-ok").checked = false;
+  $("mg-gap-text").textContent = `Merge anyway — Part ${gaps.join(", ")} is missing`;
+  renderMergeParts();
+  $("merge").showModal();
+  await loadMergePlan();
+}
+
+const searchToAdd = debounce(async () => {
+  const q = $("mg-search").value.trim();
+  if (!q) { $("mg-results").replaceChildren(); return; }
+  const data = await api("GET", `/api/library?${new URLSearchParams({ q, view: "all" })}`);
+  const have = new Set(merge.items.map((it) => it.video.path));
+  $("mg-results").replaceChildren(...data.videos.filter((v) => !have.has(v.path)).slice(0, 8)
+    .map((v) => {
+      const li = document.createElement("li");
+      li.append(action(`+ ${v.filename}`, async () => {
+        merge.items.push({ video: v, include: true });
+        li.remove();
+        mergeChanged();
+      }));
+      return li;
+    }));
+}, 200);
 
 // ── one video ──
 
@@ -1109,6 +1360,39 @@ for (const b of document.querySelectorAll(".seg button")) {
 }
 $("lib-more").addEventListener("click", () => loadLibrary(true).catch(showLibError));
 $("detail-close").addEventListener("click", () => $("detail").close());
+$("merge-x").addEventListener("click", () => $("merge").close());
+$("select-clear").addEventListener("click", () => {
+  lib.selected.clear();
+  for (const c of document.querySelectorAll(".card.picked")) c.classList.remove("picked");
+  for (const c of document.querySelectorAll(".pick")) c.checked = false;
+  renderSelection();
+});
+$("select-merge").addEventListener("click", () => {
+  // In the order picked; the merge screen reorders.
+  const members = [...lib.selected.values()];
+  openMerge({ members, gaps: [] }).catch((e) => mergeMsg(e.message, true));
+});
+$("mg-cancel").addEventListener("click", () => $("merge").close());
+$("merge").addEventListener("click", (e) => { if (e.target === $("merge")) $("merge").close(); });
+$("mg-gap-ok").addEventListener("change", updateMergeButton);
+$("mg-search").addEventListener("input", searchToAdd);
+for (const id of ["mg-people", "mg-title", "mg-collection"]) $(id).addEventListener("input", mergeNameChanged);
+attachSuggest($("mg-people"), $("mg-people-suggest"), "people", mergeNameChanged);
+attachSuggest($("mg-collection"), $("mg-collection-suggest"), "collections", mergeNameChanged);
+$("merge-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    await api("POST", "/api/library/merge", {
+      ids: mergeIds(), people: $("mg-people").value, title: $("mg-title").value,
+      collection: $("mg-collection").value,
+    });
+    $("merge").close();
+    lib.selected.clear();
+    await loadLibrary().catch(showLibError);
+    $("lib-summary").textContent =
+      "Merge queued — it runs between encodes. Follow it in the Downloads tab's Encoding panel.";
+  } catch (err) { mergeMsg(err.message, true); }
+});
 $("detail-play").addEventListener("click", () => detailAction("open"));
 $("detail-reveal").addEventListener("click", () => detailAction("reveal"));
 $("detail-trash").addEventListener("click", () => {

@@ -253,6 +253,40 @@ select { font: inherit; color: var(--fg); background: var(--surface); border: 1p
 .part-warn.block { color: var(--bad); }
 .part-members { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
 .part-label { position: absolute; top: 6px; left: 6px; z-index: 1; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: rgb(0 0 0 / .65); color: #fff; }
+/* ── picking videos to merge by hand ── */
+.pick { position: absolute; top: 6px; right: 6px; z-index: 2; width: 20px; height: 20px; margin: 0; opacity: 0; transition: opacity .12s ease; cursor: pointer; accent-color: var(--accent); }
+.card:hover .pick, .card:focus-within .pick, .pick:checked, .grid.selecting .pick { opacity: 1; }
+.card.picked { outline: 2px solid var(--accent); outline-offset: -1px; }
+.select-bar { position: sticky; bottom: 12px; justify-self: center; display: flex; gap: 10px; align-items: center; padding: 8px 10px 8px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 99px; box-shadow: 0 6px 24px rgb(0 0 0 / .16); z-index: 4; }
+@media (hover: none) { .pick { opacity: 1; } }
+
+/* ── merge dialog ── */
+.merge-parts { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.merge-part { display: grid; grid-template-columns: auto 72px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+.merge-part.off { opacity: .5; }
+.merge-part.dragging { opacity: .4; }
+.merge-part.drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.merge-part img { width: 72px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: var(--sunken); }
+.merge-part .what { min-width: 0; display: grid; font-size: 12.5px; }
+.merge-part .what b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.merge-part .what span { color: var(--muted); }
+.merge-part .move { display: flex; gap: 2px; }
+.merge-part .move button { padding: 0 6px; }
+.merge-part .grip { cursor: grab; color: var(--muted); user-select: none; }
+.merge-results { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.merge-results button { width: 100%; text-align: left; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 12.5px; }
+.notes li.ok { color: var(--ok); }
+.notes li.info { color: var(--muted); }
+.notes li.warn { color: var(--warn); }
+.notes li.block { color: var(--bad); font-weight: 600; }
+.gap-ok { display: flex; gap: 8px; align-items: center; font-size: 13px; padding: 8px 10px; background: var(--warn-bg); color: var(--warn); border-radius: 6px; }
+.gap-ok input { width: auto; }
+.pill.queued, .pill.running { background: var(--accent); color: var(--accent-fg); }
+.pill.done { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.pill.unverified { background: var(--warn-bg); color: var(--warn); }
+.pill.discarded { background: var(--sunken); color: var(--muted); }
+
 .pill.sure { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .pill.maybe { background: var(--warn-bg); color: var(--warn); }
 
