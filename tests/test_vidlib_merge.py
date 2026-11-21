@@ -85,7 +85,10 @@ def test_encoded_parts_merge_into_the_root_for_sorting_only(lib):
 
 
 @needs("ffmpeg", "ffprobe")
-def test_a_never_encoded_part_makes_the_merge_new_input(lib):
+def test_parts_the_library_has_as_done_are_never_re_encoded(lib):
+    # "lake part 3.mp4" has no encoder recorded — like a file vidlib found already sitting in
+    # a folder, or one from the old optimiselib log. The pipeline counts it as compressed by
+    # its status, so the merge must too: re-encoding it would only lose quality.
     library, root, status = lib
     ids = _ids(library, "Trips/Alice - Lake P1 - Trips.mp4", "lake part 3.mp4")
     job = library.queue_merge(ids, "Alice", "Lake", "")                 # blank → Unknown
@@ -94,7 +97,24 @@ def test_a_never_encoded_part_makes_the_merge_new_input(lib):
     merged = status.merge(job["id"])
     assert merged.state == "done" and merged.output == "Alice - Lake - Unknown.mp4"
     with library.lock:
-        assert library.db.get(merged.output) is None        # the pipeline will encode it
+        row = library.db.get(merged.output)
+        assert row is not None and row.status == "compressed"       # sorted, not encoded
+        assert vidlib.already_done(row, 8, "auto")
+
+
+@needs("ffmpeg", "ffprobe")
+def test_a_part_the_library_doesnt_have_as_done_makes_the_merge_new_input(lib):
+    library, root, status = lib
+    with library.lock:
+        row = library.db.get("lake part 3.mp4")
+        assert row is not None
+        row.status = "failed"                     # e.g. its encode keeps failing
+        library.db.upsert(row)
+    job = status.queue_merge(["Trips/Alice - Lake P1 - Trips.mp4", "lake part 3.mp4"],
+                             "Alice - Lake - Trips", ".mp4")
+    with library.lock:
+        vidlib.run_merge(root, library.db, job, status)
+        assert job.state == "done" and library.db.get(job.output) is None   # gets encoded
 
 
 @needs("ffmpeg", "ffprobe")

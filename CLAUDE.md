@@ -474,8 +474,9 @@ Progress *factories* themselves) were extracted from it.
   a time. The join is written to `_incoming/merge-<id>/` and only moved into the root once
   its parts are gone, i.e. concatvid's length check passed; otherwise it stays there,
   `unverified`, for the page to discard. In the root it's `compressed` (sort only) when
-  every part has a `backend` (vidlib encoded it), and new input otherwise — merging raw
-  parts must not file them unencoded.
+  every part's status is in `DONE_STATUSES` — the pipeline's own "already compressed" test —
+  and new input otherwise. Not `backend`: files recorded from folders or the old JSON log
+  have none, and keying on it re-encoded merges of already-compressed libraries.
 - `vidlib/fetcher.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only through
   callbacks (`on_start`, `on_line` with a parsed `Progress`, `on_done`), never printing. Every
   job writes into its own folder, so the finished file is whatever non-partial file is left

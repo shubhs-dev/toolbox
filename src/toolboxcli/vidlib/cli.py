@@ -951,15 +951,19 @@ def run_merge(root: Path, db: LibraryDB, job: MergeJob, status: PipelineStatus) 
 
     The joined file is written to _incoming/merge-<id>/ (never scanned) and moved into the
     root only once its parts are gone — i.e. concatvid's check passed. There the pipeline
-    files it: sorted only when every part was encoded by vidlib (its row is recorded as
-    compressed), encoded like any new arrival otherwise. A join that failed the check stays
+    files it: sorted only when the library has every part as done (DONE_STATUSES, as
+    already_done() reads it; its row is recorded as compressed), encoded like any new
+    arrival otherwise. A join that failed the check stays
     put, `unverified`, with the parts untouched, for the page to discard."""
     parts = [root / p for p in job.paths]
     if any(not p.is_file() for p in parts):
         status.update_merge(job, "failed", "a part was moved or removed while it waited")
         return
     rows = [db.get(p) for p in job.paths]
-    all_encoded = all(r is not None and r.backend for r in rows)
+    # The same test the pipeline uses (already_done): a file the library has as done is
+    # compressed, whether or not vidlib's own encoder made it — files found in folders and
+    # ones from the old optimiselib log have no `backend`, and must not be encoded again.
+    all_encoded = all(r is not None and r.status in DONE_STATUSES for r in rows)
     backend = next((r.backend for r in rows if r is not None and r.backend), "")
 
     staging = root / INCOMING_DIR / f"merge-{job.id}"

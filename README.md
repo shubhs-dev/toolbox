@@ -793,8 +793,8 @@ what belongs, drag or ↑/↓ to reorder, search to add a missed one), the merge
 editable), and what it takes: "joined as they are", or which part will be re-encoded or
 downscaled to match. Merges wait for the pipeline (one heavy job at a time; Pause applies)
 and are done by `concatvid`, which only sends the parts to the Trash once the joined video is
-confirmed to be as long as all of them. The result is filed like any new video — encoded
-first unless every part already was. To merge videos the Parts view didn't find, tick them
+confirmed to be as long as all of them. The result is filed like any new video, without
+being encoded again (the parts already were). To merge videos the Parts view didn't find, tick them
 in the grid (a checkbox appears on hover) and choose **Merge selected…**. Each video has a thumbnail (one frame,
 made with ffmpeg the first time it's shown and cached in `.vidlib-cache/` at the library
 root). Rest the pointer on one for a moment and it steps through twelve frames from across the
