@@ -635,6 +635,11 @@ function card(v) {
 }
 
 async function loadLibrary(append = false) {
+  const partsView = lib.view === "parts";
+  $("lib-grid").hidden = partsView;
+  $("lib-parts").hidden = !partsView;
+  for (const id of ["lib-q", "lib-person", "lib-collection", "lib-resolution"]) $(id).disabled = partsView;
+  if (partsView) { $("lib-more").hidden = true; return loadParts(); }
   const seq = ++lib.seq;
   const offset = append ? lib.offset : 0;
   const data = await api("GET", libQuery(offset));
@@ -658,6 +663,7 @@ async function loadLibrary(append = false) {
   lib.total = data.total;
   $("lib-more").hidden = lib.offset >= data.total;
   $("lib-empty").hidden = data.total > 0;
+  $("lib-empty").textContent = "Nothing matches.";
   const all = data.library;
   $("lib-summary").textContent =
     `${data.total} shown of ${all.videos} videos · ${humanSize(all.size)} in the library`;
@@ -665,6 +671,81 @@ async function loadLibrary(append = false) {
 
 const reloadLibrary = debounce(() => loadLibrary().catch(showLibError), 200);
 function showLibError(err) { $("lib-summary").textContent = err.message || String(err); }
+
+// ── parts of one video ──
+
+function partLabel(m) {
+  const n = m.first === m.last ? `Part ${m.first}` : `Parts ${m.first}–${m.last}`;
+  return m.total ? `${n} of ${m.total}` : n;
+}
+
+function partGroup(g) {
+  const li = document.createElement("li");
+  li.className = `part-group ${g.sure ? "sure" : "maybe"}`;
+  const head = document.createElement("div");
+  head.className = "part-head";
+  const title = document.createElement("div");
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = g.name.title;
+  const who = document.createElement("div");
+  who.className = "who";
+  const total = g.members.reduce((t, m) => t + (m.duration || 0), 0);
+  who.textContent = [g.name.people, g.name.collection, `${g.members.length} parts`,
+                     total ? duration(total) : ""].filter(Boolean).join(" · ");
+  title.append(name, who);
+  const side = document.createElement("span");
+  side.className = "row-actions";
+  const pill = document.createElement("span");
+  pill.className = `pill ${g.sure ? "sure" : "maybe"}`;
+  pill.textContent = g.sure ? "same title" : "similar titles";
+  pill.title = g.sure ? "The titles match apart from the part numbers"
+                      : "Most of the words match — check these really belong together";
+  side.append(pill, action("Not parts", async () => {
+    await api("POST", "/api/library/parts/dismiss", { ids: g.ids });
+    li.remove();
+    if (!$("lib-parts").children.length) $("lib-empty").hidden = false;
+  }));
+  head.append(title, side);
+
+  const notes = [];
+  if (g.doubled.length) {
+    notes.push([`Part ${g.doubled.join(", ")} appears more than once — sort out the duplicate first.`, "block"]);
+  }
+  if (g.gaps.length) notes.push([`Part ${g.gaps.join(", ")} is missing.`, ""]);
+  const warnings = notes.map(([text, cls]) => {
+    const p = document.createElement("p");
+    p.className = `part-warn ${cls}`;
+    p.textContent = text;
+    return p;
+  });
+
+  const list = document.createElement("ul");
+  list.className = "part-members";
+  for (const m of g.members) {
+    const item = card(m);
+    const label = document.createElement("span");
+    label.className = "part-label";
+    label.textContent = partLabel(m);
+    item.querySelector(".thumbwrap").append(label);
+    list.append(item);
+  }
+  li.append(head, ...warnings, list);
+  return li;
+}
+
+async function loadParts() {
+  const seq = ++lib.seq;
+  const data = await api("GET", "/api/library/parts");
+  if (seq !== lib.seq) return;
+  $("lib-parts").replaceChildren(...data.groups.map(partGroup));
+  $("lib-empty").hidden = data.groups.length > 0;
+  $("lib-empty").textContent = data.groups.length ? "" : "No videos look like parts of one.";
+  const sure = data.groups.filter((g) => g.sure).length;
+  $("lib-summary").textContent = data.groups.length
+    ? `${data.groups.length} set(s) of parts — ${sure} with matching titles, ${data.groups.length - sure} with similar ones`
+    : "";
+}
 
 // ── one video ──
 

@@ -24,7 +24,7 @@ from typing import Any
 
 from toolboxcli._common.tooling import detached_kwargs
 from toolboxcli._common.trash import move_to_trash
-from toolboxcli.vidlib import core, naming
+from toolboxcli.vidlib import core, naming, parts
 from toolboxcli.vidlib.db import LibraryDB, Video
 from toolboxcli.vidlib.status import PipelineStatus
 
@@ -272,6 +272,39 @@ class Library:
             return []
         with self.lock:
             return [v.path for v in self.db.same_video(stem, exclude_path)]
+
+    # ── parts of one video ──
+
+    def part_groups(self) -> list[dict[str, Any]]:
+        """Sets of library videos that look like parts of one (parts.find_groups), each part
+        with its marker, and the name the merged video would get."""
+        with self.lock:
+            rows = self.db.videos_with_ids()
+            dismissed = self.db.part_dismissals()
+            known_people, _ = self.db.spellings()
+        by_id = dict(rows)
+        videos = [parts.Video(i, v.name.title, tuple(v.name.people), v.name.collection)
+                  for i, v in rows]
+        groups: list[dict[str, Any]] = []
+        for g in parts.find_groups(videos, dismissed=dismissed, people=known_people):
+            groups.append({
+                "sure": g.sure, "gaps": g.gaps, "doubled": g.doubled,
+                "ids": sorted(g.ids),
+                "name": {"people": ", ".join(g.people), "title": g.title,
+                         "collection": g.collection},
+                "members": [_video_json(by_id[m.video.id]) | {
+                    "id": m.video.id, "first": m.part.marker.first,
+                    "last": m.part.marker.last, "total": m.part.marker.total,
+                } for m in g.members],
+            })
+        return groups
+
+    def dismiss_parts(self, video_ids: list[int]) -> None:
+        """Remember that these videos aren't parts of one, so the set isn't offered again."""
+        if len(set(video_ids)) < 2:
+            raise LibraryError("a set of parts has at least two videos")
+        with self.lock:
+            self.db.dismiss_parts(video_ids)
 
     # ── the review queue ──
 
