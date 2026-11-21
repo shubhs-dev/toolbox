@@ -13,7 +13,7 @@ Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
 `uv tool install --managed-python -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
 `check-deps`, `compressvid`, `concatvid`, `convertimg`, `cutvid`, `cybermod`,
 `downscalevid`, `finddupes`, `flatten`, `flipvid`, `jellyname`, `kavitaname`,
-`mergemanga`, `prunelib`, `sortmedia`, `toolbox`, `video-download`, `vidlib`, `wallready` —
+`mergemanga`, `prunelib`, `sortmedia`, `toolbox`, `vidlib`, `wallready` —
 identically on both platforms. `inventory.html` is a standalone static HTML dashboard,
 unrelated to the Python package.
 
@@ -32,7 +32,7 @@ uv run python -m toolboxcli.<script>.cli --help
 # (tests/test_project.py already runs every command's --help from source)
 for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cybermod \
            downscalevid finddupes flatten flipvid jellyname kavitaname mergemanga \
-           prunelib sortmedia toolbox video-download vidlib wallready; do
+           prunelib sortmedia toolbox vidlib wallready; do
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 
@@ -61,7 +61,7 @@ without a reason.
 
 ### Types
 
-pyright runs in **basic** mode over `src/`, and **strict** for the `*/core.py` modules
+pyright runs in **basic** mode over `src/`, and **strict** for the `*/core.py` modules and `vidlib/naming.py`
 (`[tool.pyright]` in pyproject.toml) — those hold the parsing and decision logic and take
 plain values, so full types are cheap there. `pythonVersion = "3.11"` matches
 `requires-python`, so a stdlib call newer than 3.11 is flagged. ffprobe/JSON payloads are
@@ -83,13 +83,13 @@ a `# type: ignore`.
   (`run_cli`, `make_video` and `sandbox_env` in `conftest.py`): videos are generated with
   ffmpeg, HOME points into the test's tmp dir so trashed files never reach the real Trash,
   and tests needing a missing binary (`ffmpeg`, `HandBrakeCLI`) are skipped via `needs()`.
-  video-download is driven by a fake `yt-dlp` script (POSIX only), never the network.
+  vidlib's downloads are driven by a fake `yt-dlp` script (POSIX only), never the network.
 
 ## Architecture
 
-`vidlib` (formerly `optimiselib`) is being reworked in stages into one process that also
-downloads videos and serves a web UI, absorbing `video-download`; `docs/vidlib-plan.md` holds
-the decisions and the stage list. Read it before changing either script.
+`vidlib` (formerly `optimiselib`, and now also what `video-download` was) is being reworked in
+stages into one process that runs the pipeline, downloads videos and serves a web page;
+`docs/vidlib-plan.md` holds the decisions and the stage list. Read it before changing vidlib.
 
 ### Package layout
 
@@ -114,8 +114,7 @@ src/toolboxcli/
 ├── prunelib/{cli.py, core.py}
 ├── sortmedia/cli.py
 ├── toolbox/cli.py
-├── videodownload/{cli.py, core.py, engine.py, tui.py}
-├── vidlib/{cli.py, core.py, db.py}
+├── vidlib/{cli.py, core.py, db.py, naming.py, fetcher.py, downloads.py, server.py, data/web/*}
 └── wallready/{cli.py, core.py}
 ```
 
@@ -415,33 +414,52 @@ Progress *factories* themselves) were extracted from it.
   for a TV show only, its year, rendered `Fargo (2014)` as Jellyfin names shows. Neither
   applies to the first token, so a show *called* `Us` or `1923` keeps its name. `MediaTags.hdr`
   is a list, like `audio`: `DV.HDR10` is both, and keeping only the last one lost Dolby Vision.
-- `videodownload/core.py` turns a pasted page title into a `People - Title - Collection`
-  name (for the TUI). `tokenize` splits on whitespace; `| – — · •` split anywhere,
-  `: / ( ) [ ]` only at a word's edge (so `12:30`, `AC/DC` survive), a dash only standing
-  alone; `& and , x +` are connectors. Each token carries a *set* of labels (`Labels`):
-  `auto_label` moves a known name out of the title when it leads the title or is its own
-  segment, but keeps it in the title too (`people`+`title`) mid-sentence, so the title still
-  reads; everything after the last `|` is a site name and skipped; one collection only.
-  `NameParts.problems()` checks the result with vidlib's own `parse_name`, so the two
-  scripts can't drift. `tests/fixtures/videodownload_titles.json` is the spec — change a rule
-  by changing the code and the affected rows.
-- `videodownload/engine.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only
-  through callbacks (`on_start`, `on_line` with a parsed `core.Progress`, `on_done`), never
-  printing, so batch mode's rich status lines and the TUI share it. Callbacks run on worker
-  threads: a Textual app posts them as messages (see the TUI note below). `Job.still_wanted` is
-  asked just before a job starts (batch mode: is the line still in urls.txt?). Leaving the
-  `Engine` context on an exception cancels everything, so no yt-dlp outlives a Ctrl+C. The
-  engine passes `--newline` so progress arrives as lines; batch `-j 1` runs yt-dlp straight
-  to the terminal without it, keeping yt-dlp's own in-place display.
-- `video-download` with no flags opens `videodownload/tui.py` (Textual); `-b/--batch` is the
-  `urls.txt` mode. Engine callbacks reach the app only as messages (`post_message` is
-  thread-safe and non-blocking) — never `call_from_thread`, which blocks a worker on the UI
-  thread and can deadlock against a shutdown. The queue (`.video-download-queue.json` in the
-  folder) is saved after every change; a `downloading` item loads back as `queued`. The
-  vidlib library is opened read-only (`mode=ro` URI) for name suggestions, so the UI can
-  never create or migrate a library database. Don't name an App attribute `workers`: that's
-  Textual's worker manager. `tests/test_videodownload_tui.py` drives the app headlessly with
-  Textual's pilot; the downloading tests use a fake `yt-dlp` (POSIX only).
+- `vidlib/naming.py` turns a pasted page title into a `People - Title - Collection` name for
+  the web page. The title is split into *segments* on a spaced dash (`-`, `–`, `—`) and `|`,
+  never on a dash inside a word; whatever follows the last `|` is marked `site` and guessed
+  `skip`. Each segment has one role. Any number can be people (split into names on
+  `, & and x + ×`) or title (joined with `" - "` in their original order — `parse_name` reads
+  every middle field back as one title, so a multi-segment title round-trips); there is one
+  collection (`set_role` demotes the previous one to title). `guess_roles` tries the library
+  first — a segment whose names are *all* known people, the last segment that is a known
+  collection — and only then position. Matching is two-tier: exact (`core.normalize`, as
+  duplicate detection uses) rewrites a name to the library's spelling; loose (`loose_key`:
+  also accents, punctuation and every space) counts for the guess but only offers a
+  suggestion, and a loose key two library spellings share suggests nothing. `Draft.problems()`
+  checks the result with `parse_name`, so naming and the library can't drift.
+  `tests/fixtures/vidlib_titles.json` is the spec — change a rule by changing the code and the
+  affected rows. Colons don't split: `Part 2: The Return` would come back as
+  `Part 2 - The Return`.
+- `vidlib/fetcher.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only through
+  callbacks (`on_start`, `on_line` with a parsed `Progress`, `on_done`), never printing. Every
+  job writes into its own folder, so the finished file is whatever non-partial file is left
+  there — no guessing yt-dlp's extension or the title an unnamed download gets. A job cancelled
+  before it starts still calls `on_done`. Leaving the `Engine` context on an exception cancels
+  everything, so no yt-dlp outlives a Ctrl+C.
+- `vidlib/downloads.py`'s `DownloadManager` owns the queue: rows in the `downloads` table
+  (schema 3), statuses `naming` (bulk paste, waiting for a name while its title is fetched) →
+  `queued` → `downloading` → `downloaded` → `imported`, or `failed`/`cancelled`. Jobs run in
+  `<target>/_incoming/<id>/`; in library mode a finished file moves straight into the root
+  (`imported`), in download-only mode (`-X DIR`) into DIR (`downloaded`) until
+  `import_waiting()` moves it. `move_file` never overwrites — a clash leaves the file where it
+  is, `downloaded` with the reason in `error` — and across disks copies to a hidden
+  `.name.vidlib-partial`, checks the size, then renames and removes the source. It has its own
+  `LibraryDB(shared=True)` connection, used only under its lock, alongside the pipeline's
+  connection on the main thread (WAL). On shutdown the running rows keep `downloading`
+  (`_closing` stops `_on_done` from marking them cancelled) and `start()` requeues them.
+  `.video-download-queue.json` (the old TUI's queue) in the target folder is imported once.
+- `vidlib/server.py` is stdlib `ThreadingHTTPServer` on 127.0.0.1 only, with the page as
+  package data in `vidlib/data/web/` (plain HTML/CSS/JS, no build step) and live state over
+  Server-Sent Events (`/api/events`, throttled to `EVENT_INTERVAL`). Being on localhost isn't
+  protection — any open web page can send requests there — so the Host header must be this
+  server's (DNS rebinding), a request with a foreign Origin is refused, and every write takes a
+  JSON body (a cross-site JSON POST needs a CORS preflight nothing answers). The page's script
+  holds no naming logic: it posts the title and roles (or the hand-edited fields) to
+  `/api/name` and renders the answer. The web page runs only in watch mode (`wants_web`): not
+  with `-W`, `-n`, `-O`, reports or queries. `tests/test_vidlib_web.py` drives the API with a
+  fake `yt-dlp` (POSIX only); `tests/test_vidlib_ui.py` is a Playwright smoke test that skips
+  unless run with `uv run --with playwright` (CI doesn't install it; `CHROMIUM_PATH` picks the
+  browser binary).
 - `prunelib` deletes files the user *picked*, rather than files it
   produced, so everything it removes is listed and confirmed first, and it trashes by default
   (`-p/--permanent` requires typing the item count, not a y/n keypress). Sidecars are files
@@ -478,8 +496,7 @@ Progress *factories* themselves) were extracted from it.
 
 ### Dependencies
 
-Base dependencies (`rich`, `send2trash`, and `textual` for video-download's TUI — imported only
-when the UI opens) are required by most scripts — don't add new
+Base dependencies (`rich`, `send2trash`) are required by most scripts — don't add new
 third-party libraries without a clear reason: `argparse` (stdlib) is used for all CLI parsing,
 and single-keypress confirmation is hand-rolled via `termios`/`tty`/`msvcrt` in
 `_common/confirm.py` rather than pulling in a library for it. External tools (`ffmpeg`,

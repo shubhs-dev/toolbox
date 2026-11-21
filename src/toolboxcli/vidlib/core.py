@@ -33,6 +33,11 @@ BRACKET_RE = re.compile(r"^(?P<base>.*?)\s*\[(?P<tags>[^\]]*)\]\s*$")
 
 FIELD_SEP = " - "
 
+VIDEO_EXTS = frozenset({
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
+    ".m4v", ".mpg", ".mpeg", ".ts", ".vob", ".3gp", ".mts",
+})
+
 # `addsub -u` appends this as its own " - " field, which would otherwise be read as the trip.
 SUB_FIELD = "sub"
 

@@ -33,8 +33,7 @@ SCRIPTS = [
     ("prunelib", "Review the biggest, oldest or least-watched videos in a library and delete the ones you pick"),
     ("sortmedia", "Move video files into folders based on the camelCase type tag in each filename"),
     ("toolbox", "List all custom scripts with a brief description (this script)"),
-    ("video-download", "Download videos with yt-dlp + aria2c from a terminal UI, or in batch from ./urls.txt"),
-    ("vidlib", "Video library: watch a root, compress new videos to 1080p, tag the resolution and sort by trip"),
+    ("vidlib", "Video library with a web page: download videos, compress them to 1080p, tag and sort them"),
     ("wallready", "Prepare a folder of images for wallpaper use: JPG, downscaled and centre-cropped to 4K"),
 ]
 

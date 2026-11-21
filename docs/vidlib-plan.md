@@ -62,9 +62,10 @@ CLAUDE.md.
   as pipeline input. `_incoming/` is **excluded from the library scan** — without that,
   `sync_library` records an unknown file in any subfolder as already sorted, and it would
   never be encoded.
-- `--download-only [DIR]` serves only downloads, into `DIR` (default: current folder),
-  leaves them `downloaded`, and never encodes. `--library PATH` (flag → `VIDLIB_LIBRARY` →
-  default) says where the database lives, so history and name suggestions stay central.
+- `-X/--download-only [DIR]` serves only downloads, into `DIR` (default: current folder),
+  leaves them `downloaded`, and never encodes. The library (where the database lives) is the
+  usual `ROOT` positional, which now defaults to env `VIDLIB_LIBRARY`, so history and name
+  suggestions stay central.
   Later the UI offers to move waiting downloads into the library (size checked after a
   cross-disk copy, source removed only then), marking them `imported`. Files moved by hand
   into the root still get encoded, just unlinked from their download row.
@@ -109,11 +110,16 @@ pass at every stage.
    *Done when*: a URL named in the UI downloads (fake yt-dlp) into `_incoming/` and lands in
    the root; download-only leaves it `downloaded` in DIR and the move button imports it;
    requests with a foreign Host/Origin are refused.
+   *As built*: flags `-W/--no-web`, `-X/--download-only [DIR]`, `-P/--port` (8642),
+   `-b/--no-browser`, `-j/--jobs`. The web page runs next to the existing rich pipeline display
+   until stage 3. An `imported` download records the root-relative path it was dropped at;
+   linking it to the video row the pipeline later writes (after encode, rename and sort) needs
+   the pipeline in-process, so it's part of stage 3.
 3. **Pipeline in the server.** The poll loop runs in a thread of the server process,
    reporting through callbacks instead of the rich display; Pipeline page with live
    progress, pause/resume/cancel; disk-missing guard; caffeinate. `-W` keeps the headless
    display.
    *Done when*: an encode's progress reaches the page; pause holds the next file; an
-   unmounted root marks nothing missing.
+   unmounted root marks nothing missing; an imported download is linked to its video row.
 4. **Library page.** Queries over HTTP, thumbnails, play / reveal / rename / trash.
 5. **Review page.** Side-by-side comparison and the three decisions.

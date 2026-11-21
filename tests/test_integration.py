@@ -1,8 +1,7 @@
 """End-to-end runs of real commands on throwaway folders.
 
 vidlib runs against tiny videos generated with ffmpeg; anything needing a tool that
-isn't installed is skipped. video-download runs against a fake yt-dlp that just writes a
-file, so its urls.txt bookkeeping can be exercised without the network.
+isn't installed is skipped. Its web page and downloads are tested in test_vidlib_web.py.
 """
 
 from __future__ import annotations
@@ -299,101 +298,53 @@ def test_already_done(status, pref, depth, done):
     assert vidlib.already_done(row, depth, pref) is done
 
 
-# ── video-download ─────────────────────────────────────────────────────
-
-FAKE_YTDLP = """\
-#!{python}
-import pathlib, sys
-args = sys.argv[1:]
-url, template = args[-1], args[args.index("-o") + 1]
-if "fail" in url:
-    print("ERROR: simulated failure for " + url)
-    sys.exit(1)
-if "add" in url:  # simulates the user adding a line to urls.txt mid-run
-    with open("urls.txt", "a") as f:
-        f.write("https://example.com/late Late one\\n")
-name = template.replace("%(title)s", "Video Title").replace("%(ext)s", "mp4").replace("%%", "%")
-pathlib.Path(name).write_text(url)
-print("[download] Destination: " + name)
-"""
-
-
-@pytest.fixture
-def fake_downloader(tmp_path):
-    """A bin dir holding a fake yt-dlp (and an aria2c it never calls)."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for name, body in (("yt-dlp", FAKE_YTDLP.format(python=sys.executable)),
-                       ("aria2c", "#!/bin/sh\nexit 0\n")):
-        script = bin_dir / name
-        script.write_text(body)
-        script.chmod(0o755)
-    return bin_dir
-
+# ── vidlib's web page ──────────────────────────────────────────────────
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="fake binaries are POSIX scripts")
 
 
-def _run_download(run_cli, work: Path, bin_dir: Path, *args: str):
+@pytest.fixture
+def fake_downloader(tmp_path):
+    """A bin dir with stand-ins for yt-dlp and aria2c, so -X gets past require_tool."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("yt-dlp", "aria2c"):
+        script = bin_dir / name
+        script.write_text("#!/bin/sh\nexit 0\n")
+        script.chmod(0o755)
+    return bin_dir
+
+
+@pytest.mark.parametrize("extra", [["-W"], ["-n"], ["-O"], ["-l"], ["-a", "x"], ["-D"]])
+def test_download_only_refuses_the_terminal_only_modes(tmp_path, run_cli, extra):
+    result = run_cli("vidlib", [str(tmp_path), "-X", str(tmp_path), *extra])
+    assert result.returncode == 1
+    assert "can't be combined" in result.stderr
+
+
+@posix_only
+def test_download_only_needs_another_folder(tmp_path, run_cli, fake_downloader):
     import os
-    path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
-    return run_cli("video-download", ["-b", *args], cwd=work, env_extra={"PATH": path})
-
-
-@posix_only
-@pytest.mark.parametrize("jobs", ["1", "3"])
-def test_successes_leave_urls_txt_and_failures_stay(tmp_path, fake_downloader, run_cli, jobs):
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / "urls.txt").write_text(
-        "# my list\n"
-        "https://example.com/a Trip - Day 1\n"
-        "https://example.com/fail Broken\n"
-        "\n"
-        "https://example.com/b\n"
-        "https://example.com/c 100% Done\n",
-        encoding="utf-8",
-    )
-    result = _run_download(run_cli, work, fake_downloader, "-j", jobs)
-    assert result.returncode == 1, result.stdout
-    assert (work / "urls.txt").read_text() == "# my list\nhttps://example.com/fail Broken\n\n"
-    assert sorted(p.name for p in work.iterdir()) == [
-        "100% Done.mp4", "Trip - Day 1.mp4", "Video Title.mp4", "urls.txt"]
-    assert "3 succeeded" in result.stdout and "1 failed" in result.stdout
-
-
-@posix_only
-def test_lines_added_mid_run_are_downloaded_with_yes(tmp_path, fake_downloader, run_cli):
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / "urls.txt").write_text("https://example.com/add First\n", encoding="utf-8")
-    result = _run_download(run_cli, work, fake_downloader, "-y")
-    assert result.returncode == 0, result.stdout
-    assert "1 new line(s) were added" in result.stdout
-    assert (work / "urls.txt").read_text() == ""
-    assert sorted(p.name for p in work.iterdir()) == ["First.mp4", "Late one.mp4", "urls.txt"]
-
-
-@posix_only
-def test_lines_added_mid_run_are_left_when_nobody_can_answer(tmp_path, fake_downloader, run_cli):
-    # stdin closed (cron, nohup): the prompt must not crash, and silence means "no".
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / "urls.txt").write_text("https://example.com/add First\n", encoding="utf-8")
-    result = _run_download(run_cli, work, fake_downloader)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "taking that as no" in result.stdout
-    assert "All done: 1 succeeded" in result.stdout
-    assert (work / "urls.txt").read_text() == "https://example.com/late Late one\n"
-
-
-def test_the_ui_needs_a_terminal(tmp_path, run_cli):
-    result = run_cli("video-download", [], cwd=tmp_path)    # stdin isn't a tty here
+    path = f"{fake_downloader}{os.pathsep}{os.environ['PATH']}"
+    result = run_cli("vidlib", [str(tmp_path), "-X", str(tmp_path), "-b"],
+                     env_extra={"PATH": path})
     assert result.returncode == 1
-    assert "use -b" in result.stderr
+    assert "other than the library root" in result.stderr
 
 
-def test_missing_urls_txt_is_an_error(tmp_path, run_cli):
-    result = run_cli("video-download", ["-b"], cwd=tmp_path)
+@posix_only
+def test_a_busy_port_is_an_error_naming_the_flag(tmp_path, run_cli, fake_downloader):
+    import os
+    import socket
+    path = f"{fake_downloader}{os.pathsep}{os.environ['PATH']}"
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        dest = tmp_path / "dl"
+        dest.mkdir()
+        result = run_cli("vidlib", [str(tmp_path), "-X", str(dest), "-b", "-P", str(port)],
+                         env_extra={"PATH": path})
     assert result.returncode == 1
-    assert "no urls.txt found" in result.stderr
+    assert f"Port {port} is in use" in result.stderr and "-P" in result.stderr
+
