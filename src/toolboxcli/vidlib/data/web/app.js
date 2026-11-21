@@ -758,9 +758,10 @@ function renderPills(data, f, changed) {
   const basis = title.value;
   const set = (input, value) => {
     input.value = value;
-    for (const row of rows) row.replaceChildren();
+    for (const row of rows) row.classList.add("stale");   // kept in place until the answer
     changed();
   };
+  for (const row of rows) row.classList.remove("stale");
   const fresh = (fn) => () => { if (title.value === basis) fn(); };
   const found = data.found || [];
   const peoplePills = found.filter((x) => x.kind === "people").map((x) =>
@@ -774,9 +775,13 @@ function renderPills(data, f, changed) {
       coll.value = x.name;
       set(title, x.title_without);
     })));
-  const fillIns = (input, field) => FILL_INS[field]
-    .filter((v) => input.value.trim().toLowerCase() !== v.toLowerCase())
-    .map((v) => pillButton(v, "fill-in", () => set(input, v)));
+  // Fill-ins stay where they are, shown as chosen, so the row never changes shape.
+  const fillIns = (input, field) => FILL_INS[field].map((v) => {
+    const chosen = input.value.trim().toLowerCase() === v.toLowerCase();
+    const b = pillButton(v, "fill-in", () => { if (!chosen) set(input, v); });
+    b.setAttribute("aria-pressed", String(chosen));
+    return b;
+  });
   $(f.peoplePills).replaceChildren(...peoplePills, ...fillIns(people, "people"));
   $(f.titlePills).replaceChildren(...fillIns(title, "title"));
   $(f.collectionPills).replaceChildren(...collPills, ...fillIns(coll, "collection"));

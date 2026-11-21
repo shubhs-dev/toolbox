@@ -203,18 +203,7 @@
       <h2 id="detail-title"></h2>
       <button type="button" class="link" id="detail-close" aria-label="Close">Close</button>
     </div>
-    <img class="detail-thumb" id="detail-thumb" alt="">
-    <dl class="facts" id="detail-facts"></dl>
-    <div class="actions">
-      <button type="button" id="detail-play">Play</button>
-      <button type="button" id="detail-reveal">Show in Finder</button>
-      <button type="button" id="detail-trash" class="danger">Move to Trash</button>
-    </div>
-    <p class="confirm" id="detail-confirm" hidden>
-      <span id="detail-confirm-text"></span>
-      <button type="button" class="danger" id="detail-confirm-yes">Move to Trash</button>
-      <button type="button" id="detail-confirm-no">Keep it</button>
-    </p>
+    <div class="detail-body">
     <form class="rename" id="rename-form" autocomplete="off">
       <h3>Rename</h3>
       <label class="field"><span class="label">People</span>
@@ -230,12 +219,29 @@
       <div class="preview"><span class="label">New name</span>
         <code class="stem" id="rn-stem"></code>
         <ul class="problems" id="rn-problems"></ul></div>
-      <div class="actions">
-        <button type="submit" class="primary" id="rn-save" disabled>Rename</button>
-        <button type="button" id="rn-close">Close</button>
-        <span class="form-msg" id="detail-msg" role="status"></span>
+      <div class="rename-foot">
+        <p class="form-msg" id="detail-msg" role="status"></p>
+        <div class="actions">
+          <button type="submit" class="primary" id="rn-save" disabled>Rename</button>
+          <button type="button" id="rn-close">Close</button>
+        </div>
       </div>
     </form>
+    <aside class="detail-info" aria-label="About this video">
+      <img class="detail-thumb" id="detail-thumb" alt="">
+      <dl class="facts" id="detail-facts"></dl>
+      <div class="actions">
+        <button type="button" id="detail-play">Play</button>
+        <button type="button" id="detail-reveal">Show in Finder</button>
+        <button type="button" id="detail-trash" class="danger">Move to Trash</button>
+      </div>
+      <p class="confirm" id="detail-confirm" hidden>
+        <span id="detail-confirm-text"></span>
+        <button type="button" class="danger" id="detail-confirm-yes">Move to Trash</button>
+        <button type="button" id="detail-confirm-no">Keep it</button>
+      </p>
+    </aside>
+    </div>
   </div>
 </dialog>
 
