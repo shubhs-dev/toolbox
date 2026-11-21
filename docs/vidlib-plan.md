@@ -121,5 +121,10 @@ pass at every stage.
    display.
    *Done when*: an encode's progress reaches the page; pause holds the next file; an
    unmounted root marks nothing missing; an imported download is linked to its video row.
+   *As built*: the loop stays on the main thread (the server was already threaded), keeping
+   the rich display alongside the page; `PipelineStatus` connects them. "Cancel current" is
+   **Stop now** = pause + stop the encode, since a cancelled file would otherwise just be
+   picked up again on the next poll. The link is the download row's `library_path`
+   following the video to its final path.
 4. **Library page.** Queries over HTTP, thumbnails, play / reveal / rename / trash.
 5. **Review page.** Side-by-side comparison and the three decisions.

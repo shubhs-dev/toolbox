@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlsplit
 from toolboxcli._common.console import warn
 from toolboxcli.vidlib import naming
 from toolboxcli.vidlib.downloads import DownloadManager
+from toolboxcli.vidlib.status import PipelineStatus
 
 DEFAULT_PORT = 8642
 EVENT_INTERVAL = 0.25
@@ -169,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
                 "data", "web", name).read_bytes(), content_type)
             return
         if method == "GET" and path == "/api/state":
-            self._json(mgr.snapshot())
+            self._json(self.server.state())
             return
         if method == "GET" and path == "/api/events":
             self._events()
@@ -209,6 +210,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.BAD_REQUEST, "urls must be a list")
             added = mgr.add_bulk([str(u) for u in urls])  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
             self._json({"added": len(added)}, HTTPStatus.CREATED)
+            return
+        if method == "POST" and path in ("/api/pipeline/pause", "/api/pipeline/stop",
+                                         "/api/pipeline/resume"):
+            self._body()
+            pipeline = self.server.pipeline
+            if pipeline is None:
+                raise ApiError(HTTPStatus.CONFLICT, "nothing is encoded in download-only mode")
+            {"pause": pipeline.pause, "stop": pipeline.stop_now,
+             "resume": pipeline.resume}[path.rsplit("/", 1)[1]]()
+            self._json({"ok": True})
             return
         if method == "POST" and path == "/api/downloads/clear":
             self._body()
@@ -260,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
                 pause = EVENT_INTERVAL - (time.monotonic() - last_sent)
                 if pause > 0:
                     time.sleep(pause)
-                state = mgr.snapshot()
+                state = self.server.state()
                 seen = state["version"]
                 self.wfile.write(f"data: {json.dumps(state)}\n\n".encode())
                 last_sent = time.monotonic()
@@ -270,10 +281,18 @@ class Handler(BaseHTTPRequestHandler):
 class VidlibServer(ThreadingHTTPServer):
     daemon_threads = True   # an open event stream never holds up quitting
 
-    def __init__(self, manager: DownloadManager, port: int = DEFAULT_PORT) -> None:
+    def __init__(self, manager: DownloadManager, port: int = DEFAULT_PORT,
+                 pipeline: PipelineStatus | None = None) -> None:
         self.manager = manager
+        self.pipeline = pipeline   # None in download-only mode
         self.stopping = threading.Event()
         super().__init__(("127.0.0.1", port), Handler)
+
+    def state(self) -> dict[str, Any]:
+        """Everything the page shows: the downloads, and the pipeline when there is one."""
+        state = self.manager.snapshot()
+        state["pipeline"] = self.pipeline.snapshot() if self.pipeline is not None else None
+        return state
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         """A client that hangs up or sends garbage isn't worth a traceback over the pipeline's

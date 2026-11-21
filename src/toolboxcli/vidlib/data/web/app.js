@@ -153,7 +153,8 @@ function renderDraft(data) {
     stem.textContent = "Named after the video's own title";
     stem.classList.add("dim");
   }
-  $("problems").replaceChildren(...data.problems.map((p) => {
+  // An empty form has nothing wrong with it yet.
+  $("problems").replaceChildren(...(data.stem ? data.problems : []).map((p) => {
     const li = document.createElement("li");
     li.textContent = p;
     return li;
@@ -387,6 +388,97 @@ function renderState(state) {
   $("overall-speed").textContent = formatRate(o.speed);
   $("overall-bar").style.width = `${o.percent}%`;
   document.title = o.running ? `vidlib · ${Math.round(o.percent)}%` : "vidlib";
+  renderPipeline(state.pipeline);
+}
+
+// ── the pipeline ──────────────────────────────────────────────────────
+
+const PIPE_STATE = {
+  starting: "starting", scanning: "scanning", encoding: "encoding", idle: "idle",
+  paused: "paused", outside_hours: "outside hours", high_load: "high load",
+  disk_missing: "disk missing",
+};
+const RESULT_TEXT = {
+  sorted: "sorted", review: "to review", awaiting_trip: "no collection", skipped: "skipped",
+  failed: "failed", stopped: "stopped", "dry-run": "dry run",
+};
+
+function duration(seconds) {
+  if (seconds == null) return "";
+  seconds = Math.max(0, Math.round(seconds));
+  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : m ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
+function clock(epoch) {
+  return new Date(epoch * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderPipeline(p) {
+  $("pipeline").hidden = !p;
+  if (!p) return;
+  const pill = $("pipe-state");
+  pill.textContent = PIPE_STATE[p.state] || p.state;
+  pill.className = `pill ${p.state}`;
+  if (p.paused && p.state === "encoding") pill.textContent = "pausing after this file";
+  $("pipe-pause").hidden = p.paused;
+  $("pipe-stop").hidden = p.paused && !p.current;
+  $("pipe-resume").hidden = !p.paused;
+
+  $("pipe-disk").hidden = p.state !== "disk_missing";
+  $("pipe-disk").textContent = `${p.detail} isn't there — is the library's disk connected? ` +
+    "Nothing is synced or encoded until it's back.";
+
+  const cur = p.current;
+  $("pipe-current").hidden = !cur;
+  if (cur) {
+    $("pipe-file").textContent = cur.file;
+    $("pipe-meta").textContent = cur.step === "encoding"
+      ? `${cur.preset} · ${cur.encoder}` : "checking the file…";
+    $("pipe-bar").style.width = `${cur.percent}%`;
+    const stats = [];
+    if (cur.step === "encoding") stats.push(`${cur.percent.toFixed(1)}%`);
+    if (cur.eta != null) stats.push(`${duration(cur.eta)} left`);
+    if (p.batch_total > 1) stats.push(`file ${p.batch_done + 1} of ${p.batch_total}`);
+    $("pipe-stats").textContent = stats.join(" · ");
+  }
+
+  let line = "";
+  if (p.waiting.length) {
+    line = `Next: ${p.waiting.slice(0, 3).join(", ")}${p.waiting.length > 3 ? ` and ${p.waiting.length - 3} more` : ""}`;
+  } else if (p.state === "idle" && p.next_poll) {
+    line = `Watching the library root — next look at ${clock(p.next_poll)}.`;
+  } else if (p.state === "outside_hours") {
+    line = `Encodes only start inside ${p.detail}.`;
+  } else if (p.state === "high_load") {
+    line = `Waiting for the load average to drop below ${p.detail}.`;
+  } else if (p.state === "paused") {
+    line = "Paused. New files wait in the library root until you resume.";
+  }
+  $("pipe-line").textContent = line;
+  $("pipe-line").hidden = !line;
+
+  $("pipe-recent").replaceChildren(...p.recent.slice(0, 8).map((r) => {
+    const li = document.createElement("li");
+    const pillEl = document.createElement("span");
+    pillEl.className = `pill ${r.status}`;
+    pillEl.textContent = RESULT_TEXT[r.status] || r.status;
+    const what = document.createElement("span");
+    what.className = "what";
+    what.textContent = r.path || r.file;
+    what.title = [r.file, r.reason].filter(Boolean).join(" — ");
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = clock(r.at);
+    li.append(pillEl, what, when);
+    return li;
+  }));
+
+  const st = p.settings || {};
+  const bits = [`every ${st.interval}s`, `encoder ${st.gpu}`];
+  if (st.hours) bits.push(`hours ${st.hours}`);
+  if (st.max_load != null) bits.push(`max load ${st.max_load}`);
+  $("pipe-settings").textContent = bits.join(" · ");
 }
 
 function connect() {
@@ -437,6 +529,9 @@ $("bulk-add").addEventListener("click", async () => {
     message(`${r.added} URL(s) added — fetching their titles`);
   } catch (err) { showError(err); }
 });
+for (const act of ["pause", "stop", "resume"]) {
+  $(`pipe-${act}`).addEventListener("click", () => api("POST", `/api/pipeline/${act}`, {}).catch(showError));
+}
 attachSuggest($("people"), $("people-suggest"), "people");
 attachSuggest($("collection"), $("collection-suggest"), "collections");
 

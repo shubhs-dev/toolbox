@@ -773,6 +773,17 @@ and lists them under *Needs naming* to name one by one. The queue is kept in the
 database, so quitting mid-download resumes next time. The page only listens on `127.0.0.1`
 and refuses requests from other websites.
 
+**The pipeline on the page** — the page also shows what the pipeline is doing: the file being
+encoded with its preset, encoder, progress and time left; the rest of the batch; and what
+happened to the last few files (sorted into which folder, parked for review, skipped). **Pause**
+stops after the current file; **Stop now** also stops its encode, leaving the file in the root
+untouched and not counted as a failure. New files wait in the root until you **Resume**. The
+`-H`/`-L` settings are shown but only changed on the command line. While anything downloads or
+encodes, vidlib keeps a Mac from idle-sleeping (`caffeinate -i`), and lets it sleep again once
+idle. If the library's disk is unplugged, the pipeline waits — nothing is synced, so nothing is
+marked missing — and the page says so until the disk is back. An imported download's row
+follows its video to wherever the pipeline files it.
+
 **Download-only** (`-X DIR`) — for when the library's disk is full: nothing is encoded, and
 downloads go into `DIR` (default: the current folder) instead, still recorded in the library's
 database. Once there's room, **Move into library** on the page moves them into the root

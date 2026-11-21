@@ -56,6 +56,12 @@ title; one is the collection; a part after the last "|" (the site's name) is ski
 Downloads run in _incoming/ and move into the root when they finish, -j at a time. They're
 recorded in the library database, so the queue survives a restart.
 
+The page also shows the pipeline: the file being encoded (preset, encoder, progress, time
+left), what's next, and what happened to recent files. Pause stops after the current file;
+Stop now also stops its encode, leaving the file in the root as it was. While anything
+downloads or encodes, the Mac is kept from idle-sleeping (caffeinate). If the library's disk
+is unplugged, vidlib waits — nothing is synced, so nothing is marked missing — until it's back.
+
 With -X DIR (download-only), nothing is encoded: downloads go into DIR (default: the current
 folder) and wait there, recorded in ROOT's database, until "Move into library" on the page
 moves them into ROOT. Useful while the library's disk is full.
@@ -94,8 +100,9 @@ import shutil
 import subprocess
 import time
 import webbrowser
-from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from rich import box
@@ -140,6 +147,7 @@ from toolboxcli.vidlib.db import (
 )
 from toolboxcli.vidlib.downloads import DownloadManager
 from toolboxcli.vidlib.server import DEFAULT_PORT, VidlibServer
+from toolboxcli.vidlib.status import KeepAwake, PipelineStatus
 
 VIDEO_EXTS = core.VIDEO_EXTS
 
@@ -272,8 +280,9 @@ class BatchDisplay:
     Progress the overall bar could only ever sit at the top.
     """
 
-    def __init__(self, total: int) -> None:
+    def __init__(self, total: int, status: PipelineStatus | None = None) -> None:
         self.total = total
+        self.status = status or PipelineStatus()
         self.done = 0
         self.counts: dict[str, int] = {}
         self.files = progress_bar()
@@ -335,6 +344,7 @@ class _EncodeProgress:
     def update(self, task_id: TaskID, completed: float) -> None:
         self.display.files.update(task_id, completed=completed)
         self.display.file_fraction(completed / 100)
+        self.display.status.progress(completed)
 
 
 # ── Probing ───────────────────────────────────────────────────────────
@@ -684,6 +694,8 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
                    has_sub=src_has_sub, duration=src_duration, source_height=src_height)
             forget(db, root, video)
             db.log_event(rel_path(root, parked), "parked", f"downgrade of {existing.path}")
+            return {"file": name, "status": "review", "reason": "downgrade",
+                    "path": rel_path(root, parked)}
         return {"file": name, "status": "review", "reason": "downgrade"}
 
     preset_stem = core.select_preset(src_height, args.preset_1080, args.preset_720)
@@ -747,26 +759,39 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
     progress, task = display.encode_task(
         f"[cyan]{name}[/]  [dim]{fmt_size(orig_size)} · {preset_stem}[/]"
     )
+    cancel = display.status.cancel
+    display.status.encoding(preset_stem, plan.backend.name)
     try:
         succeeded = transcode(
             src_processing, tmp, preset_file, preset_label, progress, task,
             extra_args=plan.args_for(preset_stem, ten_bit=ten_bit),
-            low_priority=not args.no_nice,
+            low_priority=not args.no_nice, cancel=cancel,
         )
         # An auto-selected backend that fails gets one CPU retry; an explicitly requested
         # one does not — the same rule _common/encoders.py follows.
-        if not succeeded and plan.auto_selected and plan.backend.name != "cpu":
+        if (not succeeded and not cancel.is_set() and plan.auto_selected
+                and plan.backend.name != "cpu"):
             warn(f"{plan.backend.name} encode failed for {name} — retrying on CPU")
             if tmp.exists():
                 tmp.unlink()
             progress.update(task, completed=0)
+            display.status.encoding(preset_stem, "cpu")
             succeeded = transcode(
                 src_processing, tmp, preset_file, preset_label, progress, task,
                 extra_args=plan.args_for(preset_stem, force_cpu=True, ten_bit=ten_bit),
-                low_priority=not args.no_nice,
+                low_priority=not args.no_nice, cancel=cancel,
             )
     finally:
         display.end_encode(task)
+
+    if cancel.is_set():
+        # Stopped from the web page: put the file back as it was, and don't count it as a
+        # failure — it's encoded again once the pipeline is resumed.
+        if tmp.exists():
+            tmp.unlink()
+        src_processing.rename(video)
+        info(f"Stopped: {name}")
+        return {"file": name, "status": "stopped"}
 
     if not succeeded or not tmp.exists():
         if tmp.exists():
@@ -861,6 +886,7 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
         forget(db, root, video, final)
         db.log_event(rel_path(root, parked), "parked", f"{verdict} vs {existing.path}")
         return {"file": name, "status": "review", "reason": verdict,
+                "path": rel_path(root, parked),
                 "original_size": orig_size, "compressed_size": comp_size}
 
     # ── Sort ──────────────────────────────────────────────────────
@@ -869,7 +895,7 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
             warn(f"No trip field, leaving in root: {final.name}")
         record(db, root, final, "awaiting_trip", **fields)  # pyright: ignore[reportArgumentType]
         forget(db, root, video)
-        return {"file": name, "status": "awaiting_trip",
+        return {"file": name, "status": "awaiting_trip", "path": rel_path(root, final),
                 "original_size": orig_size, "compressed_size": comp_size}
 
     if dest_folder is None:
@@ -891,6 +917,7 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
                **fields)  # pyright: ignore[reportArgumentType]
         forget(db, root, video)
         return {"file": name, "status": "skipped", "reason": "destination exists",
+                "path": rel_path(root, final),
                 "original_size": orig_size, "compressed_size": comp_size}
 
     shutil.move(str(final), str(dest))
@@ -902,7 +929,7 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
     db.log_event(rel_path(root, dest), "encoded" if encoded else "sorted",
                  f"from {name}" if name != dest.name else "")
 
-    return {"file": name, "status": "sorted", "trip": trip,
+    return {"file": name, "status": "sorted", "trip": trip, "path": rel_path(root, dest),
             "original_size": orig_size, "compressed_size": comp_size}
 
 
@@ -1270,8 +1297,17 @@ def main() -> None:
         if args.download_only is not None:
             run_download_only(root, args)
             return
-        with web_ui(root, args) if wants_web(args) else nullcontext():
-            run(root, db, args)
+        if wants_web(args):
+            with web_ui(root, args) as web:
+                run(root, db, args, web.status, web.manager.video_settled)
+        else:
+            keep_awake = KeepAwake()
+            status = PipelineStatus()
+            status.on_change = lambda: keep_awake.set(status.busy)
+            try:
+                run(root, db, args, status)
+            finally:
+                keep_awake.close()
 
 
 def wants_web(args) -> bool:
@@ -1281,10 +1317,22 @@ def wants_web(args) -> bool:
                 or args.subs_only or args.list_files is not None)
 
 
+@dataclass
+class WebUI:
+    server: VidlibServer
+    manager: DownloadManager
+    status: PipelineStatus | None
+
+
 @contextmanager
-def web_ui(root: Path, args, dest: Path | None = None) -> Iterator[VidlibServer]:
-    """The download manager and the web server, for as long as the block runs. The manager
-    has its own database connection, shared by the server's threads under its lock."""
+def web_ui(root: Path, args, dest: Path | None = None) -> Iterator[WebUI]:
+    """The download manager, the pipeline's status and the web server, for as long as the
+    block runs. The manager has its own database connection, shared by the server's threads
+    under its lock. In download-only mode (*dest* set) there's no pipeline to report on.
+
+    Every change either side reports bumps the manager's version (which wakes the page's
+    event stream) and re-checks whether anything is downloading or encoding, holding the
+    Mac awake (KeepAwake) while it is."""
     if args.jobs < 1:
         die("--jobs must be at least 1")
     for tool in ("yt-dlp", "aria2c"):
@@ -1297,8 +1345,17 @@ def web_ui(root: Path, args, dest: Path | None = None) -> Iterator[VidlibServer]
     except (RuntimeError, OSError) as exc:
         die(f"Can't open the library database: {exc}")
     manager = DownloadManager(root, db, dest=dest, workers=args.jobs)
+    status = None if dest is not None else PipelineStatus(settings=_pipeline_settings(args))
+    keep_awake = KeepAwake()
+
+    def check_awake() -> None:
+        keep_awake.set(manager.busy or (status is not None and status.busy))
+
+    manager.after_change = check_awake
+    if status is not None:
+        status.on_change = manager.notify
     try:
-        server = VidlibServer(manager, args.port)
+        server = VidlibServer(manager, args.port, pipeline=status)
     except OSError as exc:
         db.close()
         if exc.errno == errno.EADDRINUSE:
@@ -1313,11 +1370,19 @@ def web_ui(root: Path, args, dest: Path | None = None) -> Iterator[VidlibServer]
         ok(f"Web page at {server.url}")
         if not args.no_browser:
             webbrowser.open(server.url)
-        yield server
+        yield WebUI(server, manager, status)
     finally:
         server.stop()
         manager.shutdown()
+        keep_awake.close()
         db.close()
+
+
+def _pipeline_settings(args) -> dict[str, object]:
+    """The flags the page shows (it can't change them)."""
+    return {"interval": args.interval, "hours": args.hours or "", "max_load": args.max_load,
+            "gpu": args.gpu or os.environ.get("VIDLIB_GPU") or "auto",
+            "on_duplicate": args.on_duplicate, "bit_depth": args.bit_depth}
 
 
 def run_download_only(root: Path, args) -> None:
@@ -1343,7 +1408,12 @@ def run_download_only(root: Path, args) -> None:
             console.print("\n[bold yellow]Stopped.[/]")
 
 
-def run(root: Path, db: LibraryDB, args) -> None:
+def run(root: Path, db: LibraryDB, args, status: PipelineStatus | None = None,
+        on_settled: Callable[[str, str], None] | None = None) -> None:
+    """Reports and queries, or the pipeline. *status* is what the web page shows of the
+    pipeline (and how it pauses it); *on_settled(name, path)* is told where each file that
+    was in the root ended up, so a download can follow its video."""
+    status = status or PipelineStatus()
     # Reports, queries and subtitle merges read the database, so bring it in line with the
     # disk first — otherwise a file moved by hand since the last poll shows where it used to be.
     if args.list_files is not None:
@@ -1428,20 +1498,44 @@ def run(root: Path, db: LibraryDB, args) -> None:
 
     try:
         first_scan = True
+        disk_warned = False
         while True:
+            # An unplugged library disk: touch nothing (a sync would mark every video
+            # missing) until it's back.
+            if not root.is_dir():
+                status.set_state("disk_missing", str(root))
+                if not disk_warned:
+                    warn(f"{root} isn't there — is the library's disk connected? Waiting.")
+                    disk_warned = True
+                if args.once:
+                    break
+                status.sleep(args.interval)
+                continue
+            if disk_warned:
+                info(f"{root} is back")
+                disk_warned = False
+
+            if status.paused:
+                status.set_state("paused")
+                status.sleep(args.interval)
+                continue
+
             if window is not None and not core.within_hours(window):
                 delay = core.seconds_until(window)
+                status.set_state("outside_hours", args.hours)
                 info(f"Outside the encode window — sleeping {delay // 60} min")
-                time.sleep(min(delay, 3600))
+                status.sleep(min(delay, 3600))
                 continue
 
             if not load_ok(args.max_load):
+                status.set_state("high_load", str(args.max_load))
                 info(f"Load above {args.max_load} — waiting {args.interval}s")
-                time.sleep(args.interval)
+                status.sleep(args.interval)
                 continue
 
             # Hand renames and moves, and files added to folders by hand, are picked up
             # before anything in the root is judged new.
+            status.set_state("scanning")
             sync_library(root, db)
 
             # Anything sitting in the root is fair game: it's either new, or one you moved
@@ -1457,11 +1551,21 @@ def run(root: Path, db: LibraryDB, args) -> None:
             if videos:
                 console.print(f"[bold]Found {len(videos)} file(s)[/]\n")
                 results = []
-                with BatchDisplay(len(videos)) as display:
-                    for v in videos:
-                        result = process(v, root, db, plan, args, display)
-                        display.finish(result)
-                        results.append(result)
+                status.begin_batch([v.name for v in videos])
+                try:
+                    with BatchDisplay(len(videos), status) as display:
+                        for v in videos:
+                            if status.paused:
+                                break   # the rest stay in the root until resumed
+                            status.begin_file(v.name)
+                            result = process(v, root, db, plan, args, display)
+                            display.finish(result)
+                            status.end_file(result)
+                            results.append(result)
+                            if on_settled is not None and result.get("path"):
+                                on_settled(v.name, result["path"])
+                finally:
+                    status.end_batch()
                 show_summary(results)
             elif args.once and first_scan:
                 info("Nothing new to process.")
@@ -1478,7 +1582,8 @@ def run(root: Path, db: LibraryDB, args) -> None:
 
             if videos:
                 console.print(f"\n[dim]Watching (every {args.interval}s)… Ctrl+C to stop[/]")
-            time.sleep(args.interval)
+            status.set_state("paused" if status.paused else "idle")
+            status.sleep(args.interval)
             first_scan = False
 
     except KeyboardInterrupt:

@@ -448,6 +448,18 @@ Progress *factories* themselves) were extracted from it.
   connection on the main thread (WAL). On shutdown the running rows keep `downloading`
   (`_closing` stops `_on_done` from marking them cancelled) and `start()` requeues them.
   `.video-download-queue.json` (the old TUI's queue) in the target folder is imported once.
+- `vidlib/status.py`'s `PipelineStatus` is how the pipeline loop (main thread) and the page
+  (server threads) see each other: the loop reports states, the batch, the current file and
+  each result; the page pauses, stops or resumes. The loop waits between polls with
+  `status.sleep()`, which a resume cuts short. Stop now sets `status.cancel`, the Event passed
+  to `transcode(cancel=...)`; a stopped file is renamed back from `.processing` and returns
+  `status: "stopped"` without counting as a failure, and the CPU retry never follows a stop.
+  `on_change` is called *outside* the status lock — it takes the download manager's lock, and
+  the manager's `after_change` (KeepAwake) reads the status, so holding both would invite a
+  lock-order deadlock. Before each poll the loop checks `root.is_dir()`: an unplugged disk
+  would otherwise sync as "every video missing". `_finish` results carry the file's final
+  root-relative `path`, which `on_settled` hands to `DownloadManager.video_settled` so an
+  imported download follows its video. KeepAwake runs `caffeinate -i -w <pid>` on macOS only.
 - `vidlib/server.py` is stdlib `ThreadingHTTPServer` on 127.0.0.1 only, with the page as
   package data in `vidlib/data/web/` (plain HTML/CSS/JS, no build step) and live state over
   Server-Sent Events (`/api/events`, throttled to `EVENT_INTERVAL`). Being on localhost isn't
