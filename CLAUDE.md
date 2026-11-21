@@ -61,7 +61,7 @@ without a reason.
 
 ### Types
 
-pyright runs in **basic** mode over `src/`, and **strict** for the `*/core.py` modules and `vidlib/naming.py`
+pyright runs in **basic** mode over `src/`, and **strict** for the `*/core.py` modules, `vidlib/naming.py` and `vidlib/parts.py`
 (`[tool.pyright]` in pyproject.toml) — those hold the parsing and decision logic and take
 plain values, so full types are cheap there. `pythonVersion = "3.11"` matches
 `requires-python`, so a stdlib call newer than 3.11 is flagged. ffprobe/JSON payloads are
@@ -456,6 +456,16 @@ Progress *factories* themselves) were extracted from it.
   `Library.rename` and the rename form's preview via `fill_unknown: true`).
   Both naming answers carry `same_as`: library videos with the same match key, i.e. what
   duplicate detection would take for the same video and replace or park.
+- `vidlib/parts.py` finds videos that are parts of one (being built in stages:
+  `docs/vidlib-merge-plan.md`). The marker is read from the *title* only, at its start or
+  end or as a `" - "` segment, in many spellings (`P1`, `Part1`, `Ep 2`, `Part II`, `Part
+  Two`, `2/3`, `Part 1-5`); a sentence-opening marker followed by a small word is a title.
+  Grouping deliberately ignores people and collection (crossovers) and the library's known
+  names inside titles (a badly named file carries them): equal `loose_key` is *sure*, ≥80%
+  shared words is *maybe*. A bare trailing number counts only in a set of two different
+  numbers including 1 — two copies of "Day 1" are one video twice.
+  `tests/fixtures/vidlib_parts.json` pins the markers. Dismissed sets live in
+  `part_dismissals` (schema 4) and stay hidden until a new video joins them.
 - `vidlib/fetcher.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only through
   callbacks (`on_start`, `on_line` with a parsed `Progress`, `on_done`), never printing. Every
   job writes into its own folder, so the finished file is whatever non-partial file is left

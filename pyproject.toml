@@ -64,7 +64,7 @@ pythonVersion = "3.11"   # matches requires-python
 typeCheckingMode = "basic"
 # The I/O-free logic modules are held to strict: they're where the parsing and decision
 # logic lives, and they take plain values, so full types cost little there.
-strict = ["src/toolboxcli/*/core.py", "src/toolboxcli/vidlib/naming.py"]
+strict = ["src/toolboxcli/*/core.py", "src/toolboxcli/vidlib/naming.py", "src/toolboxcli/vidlib/parts.py"]
 venvPath = "."
 venv = ".venv"
 

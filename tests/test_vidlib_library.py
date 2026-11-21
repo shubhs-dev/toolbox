@@ -319,3 +319,27 @@ def test_renaming_fills_blank_fields_with_unknown(client, library):
     status, moved = client("POST", "/api/library/rename", {
         "path": "Odd name.mp4", "people": "Carol", "title": "", "collection": "Clips"})
     assert status == 200 and moved["path"] == "Clips/Carol - Unknown - Clips.mp4"
+
+
+# ── parts of one video ─────────────────────────────────────────────────
+
+
+def test_parts_are_offered_and_a_dismissal_sticks(client, library):
+    with LibraryDB.open(library) as db:
+        for path in ("Lakes/Alice - Trip P1 - Lakes.mp4", "Peaks/Alice, Bob - Trip Part 2 - Peaks.mp4",
+                     "trip part 3.mp4"):
+            (library / path).parent.mkdir(exist_ok=True)
+            (library / path).write_bytes(b"x")
+            db.upsert(Video(path=path, duration=60.0))
+    _, data = client("GET", "/api/library/parts")
+    [group] = data["groups"]
+    assert group["sure"] and group["gaps"] == [] and group["doubled"] == []
+    assert [(m["filename"], m["first"]) for m in group["members"]] == [
+        ("Alice - Trip P1 - Lakes.mp4", 1), ("Alice, Bob - Trip Part 2 - Peaks.mp4", 2),
+        ("trip part 3.mp4", 3)]
+    assert group["name"] == {"people": "Alice, Bob", "title": "Trip", "collection": "Lakes"}
+
+    assert client("POST", "/api/library/parts/dismiss", {"ids": group["ids"]})[0] == 200
+    assert client("GET", "/api/library/parts")[1]["groups"] == []
+    assert client("POST", "/api/library/parts/dismiss", {"ids": [1]})[0] == 409
+    assert client("POST", "/api/library/parts/dismiss", {"ids": "x"})[0] == 400

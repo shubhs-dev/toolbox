@@ -42,8 +42,9 @@ INCOMING_DIR = "_incoming"
 
 # 1: initial. 2: names that don't follow People - Title - Collection are no longer split
 # into fields (core.VideoName.complete); upgrading re-derives every row and drops the
-# people that only those mis-split names had created. 3: the downloads table.
-SCHEMA_VERSION = 3
+# people that only those mis-split names had created. 3: the downloads table. 4: sets of
+# videos the user said aren't parts of one (part_dismissals).
+SCHEMA_VERSION = 4
 
 # Statuses a row can have. "compressed" is a known, already-compressed file that hasn't been
 # sorted yet (the old log's "reconciled"); "missing" is a row whose file has disappeared.
@@ -120,6 +121,16 @@ CREATE TABLE downloads (
     library_path TEXT NOT NULL DEFAULT '',   -- root-relative path it was imported at
     added_at     TEXT NOT NULL,
     updated_at   TEXT NOT NULL
+);
+"""
+
+# Added in schema 4: a set of video ids the user said aren't parts of one video, so the
+# Parts view stops offering it (until another video joins the set).
+_DISMISSALS_SCHEMA = """
+CREATE TABLE part_dismissals (
+    id        INTEGER PRIMARY KEY,
+    video_ids TEXT NOT NULL,             -- JSON list of videos.id, sorted
+    at        TEXT NOT NULL
 );
 """
 
@@ -287,6 +298,10 @@ class LibraryDB:
             with self.conn:
                 self.conn.executescript(_DOWNLOADS_SCHEMA)
                 self.conn.execute("PRAGMA user_version = 3")
+        if version < 4:
+            with self.conn:
+                self.conn.executescript(_DISMISSALS_SCHEMA)
+                self.conn.execute("PRAGMA user_version = 4")
         if version > SCHEMA_VERSION:
             raise RuntimeError(
                 f"{self.path.name} was written by a newer vidlib (schema {version}); "
@@ -483,6 +498,26 @@ class LibraryDB:
     def delete_download(self, download_id: int) -> None:
         with self.conn:
             self.conn.execute("DELETE FROM downloads WHERE id = ?", (download_id,))
+
+    # ── Parts ────────────────────────────────────────────────────────
+
+    def videos_with_ids(self) -> list[tuple[int, Video]]:
+        """Every video that could be a part: known, present, not waiting in review."""
+        rows = self.conn.execute(
+            "SELECT * FROM videos WHERE status NOT IN ('missing', 'review', 'failed') "
+            "ORDER BY id").fetchall()
+        return [(r["id"], Video(**{**{c: r[c] for c in _VIDEO_COLUMNS},
+                                   "has_sub": bool(r["has_sub"])}))
+                for r in rows]
+
+    def dismiss_parts(self, video_ids: list[int]) -> None:
+        with self.conn:
+            self.conn.execute("INSERT INTO part_dismissals (video_ids, at) VALUES (?, ?)",
+                              (json.dumps(sorted(set(video_ids))), _now()))
+
+    def part_dismissals(self) -> list[frozenset[int]]:
+        return [frozenset(json.loads(r[0]))
+                for r in self.conn.execute("SELECT video_ids FROM part_dismissals")]
 
     def spellings(self) -> tuple[list[str], list[str]]:
         """People and collections as the library writes them, for name suggestions: the

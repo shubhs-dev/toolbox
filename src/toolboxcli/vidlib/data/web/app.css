@@ -242,6 +242,20 @@ select { font: inherit; color: var(--fg); background: var(--surface); border: 1p
 .group-break { grid-column: 1 / -1; border-top: 1px dashed var(--line); margin-top: 4px; padding-top: 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
 #lib-more { justify-self: center; }
 
+/* ── parts ── */
+.part-groups { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.part-group { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: grid; gap: 10px; }
+.part-group.maybe { border-style: dashed; }
+.part-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+.part-head .name { font-weight: 600; overflow-wrap: anywhere; }
+.part-head .who { color: var(--muted); font-size: 12.5px; }
+.part-warn { margin: 0; font-size: 12.5px; color: var(--warn); }
+.part-warn.block { color: var(--bad); }
+.part-members { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.part-label { position: absolute; top: 6px; left: 6px; z-index: 1; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 99px; background: rgb(0 0 0 / .65); color: #fff; }
+.pill.sure { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.pill.maybe { background: var(--warn-bg); color: var(--warn); }
+
 .detail { border: 1px solid var(--line); border-radius: var(--radius); padding: 0; background: var(--surface); color: var(--fg); width: min(1040px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
 .detail::backdrop { background: rgb(0 0 0 / .45); }
 /* Header, a scrolling middle, and a bottom bar that's always in view. */

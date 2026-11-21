@@ -310,6 +310,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.NOT_FOUND, str(exc)) from exc
             self._send(HTTPStatus.OK, image, "image/jpeg")
             return
+        if method == "GET" and path == "/api/library/parts":
+            self._json({"groups": lib.part_groups()})
+            return
+        if method == "POST" and path == "/api/library/parts/dismiss":
+            ids: Any = self._body().get("ids")
+            if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):  # pyright: ignore[reportUnknownVariableType]
+                raise ApiError(HTTPStatus.BAD_REQUEST, "ids must be a list of numbers")
+            lib.dismiss_parts(ids)  # pyright: ignore[reportUnknownArgumentType]
+            self._json({"ok": True})
+            return
         if method == "GET" and path == "/api/library/review":
             self._json({"items": lib.review_items()})
             return

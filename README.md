@@ -784,7 +784,10 @@ and refuses requests from other websites.
 
 **The library on the page** — the **Library** tab is a browsable view of the database: search
 by name, filter by person, collection and resolution, or switch to the duplicates, the badly
-named files (`-U`) or what's waiting in `_review/`. Each video has a thumbnail (one frame,
+named files (`-U`), what's waiting in `_review/`, or **Parts**: sets of videos that look like
+parts of one (`P1`, `Part 2`, `Ep 3`, `Part II`, `2/3`, `Part 1-5`…), matched loosely by title
+whatever their people or collection, with gaps and doubled parts flagged and a **Not parts**
+button for a wrong guess. Each video has a thumbnail (one frame,
 made with ffmpeg the first time it's shown and cached in `.vidlib-cache/` at the library
 root). Rest the pointer on one for a moment and it steps through twelve frames from across the
 video (moving across the picture scrubs them). Click one to **Play** it, **Show in Finder**,
