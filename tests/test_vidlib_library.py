@@ -299,9 +299,9 @@ def test_the_hover_filmstrip_is_made_once_and_cached(client, library, make_video
     status, image = client("GET", f"/api/strip?path={path}")
     assert status == 200 and image[:2] == b"\xff\xd8"
     import subprocess
-    strip = next((library / ".vidlib-cache" / "thumbs").glob("*-strip.jpg"))
+    strip = next((library / ".vidlib-cache" / "thumbs").glob("*-strip12.jpg"))
     size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
                            "-of", "csv=p=0", str(strip)], capture_output=True, text=True).stdout
-    assert size.strip() == "1920,180"                   # six 320-wide frames side by side
+    assert size.strip() == "3840,180"                   # twelve 320-wide frames side by side
     assert client("GET", f"/api/strip?path={path}")[1] == image
     assert client("GET", "/api/strip?path=" + quote("Odd name.mp4"))[0] == 404   # no length

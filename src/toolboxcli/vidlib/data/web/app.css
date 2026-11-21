@@ -282,7 +282,7 @@ button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 4
 .pill-btn.found-people::before, .pill-btn.found-collection::before { content: "+ "; }
 .problems li.same { color: var(--bad); }
 .thumbwrap { position: relative; display: block; overflow: hidden; }
-.strip { position: absolute; inset: 0; background-size: 600% 100%; background-repeat: no-repeat; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
+.strip { position: absolute; inset: 0; background-repeat: no-repeat; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
 .strip.on { opacity: 1; }
 .strip-dots { position: absolute; left: 6px; right: 6px; bottom: 5px; display: flex; gap: 3px; opacity: 0; transition: opacity .15s ease; }
 .strip.on + .strip-dots { opacity: 1; }

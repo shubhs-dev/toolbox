@@ -30,7 +30,7 @@ from toolboxcli.vidlib.status import PipelineStatus
 
 CACHE_DIR = ".vidlib-cache"
 THUMB_WIDTH = 480
-STRIP_FRAMES = 6
+STRIP_FRAMES = 12
 STRIP_WIDTH = 320
 PAGE_SIZE = 60
 VIEWS = ("all", "duplicates", "unnamed", "review")
@@ -171,7 +171,7 @@ class Library:
         """STRIP_FRAMES frames spread across the video, side by side in one JPEG, for the
         hover preview. Each is a fast seek, so a long video costs no more than a short one;
         a frame that can't be read repeats the one before."""
-        row, file, strip = self._cached(path, "-strip")
+        row, file, strip = self._cached(path, f"-strip{STRIP_FRAMES}")
         if strip.is_file():
             return strip.read_bytes()
         if row.duration <= 0:

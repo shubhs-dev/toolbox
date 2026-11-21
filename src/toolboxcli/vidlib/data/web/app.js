@@ -528,7 +528,7 @@ function thumbUrl(path) {
 // A light hover preview: after a short pause on a card, step through a filmstrip of frames
 // from across the video (one cached JPEG, made on first hover). Only where there's a real
 // pointer, and without the stepping when reduced motion is asked for.
-const STRIP_FRAMES = 6;
+const STRIP_FRAMES = 12;   // as vidlib/library.py makes them
 const canHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -544,6 +544,7 @@ function attachPreview(card, wrap, v) {
     if (!strip) {
       strip = document.createElement("span");
       strip.className = "strip";
+      strip.style.backgroundSize = `${STRIP_FRAMES * 100}% 100%`;
       dots = document.createElement("span");
       dots.className = "strip-dots";
       dots.append(...Array.from({ length: STRIP_FRAMES }, () => document.createElement("i")));
@@ -562,7 +563,7 @@ function attachPreview(card, wrap, v) {
   const begin = () => {
     show(0);
     strip.classList.add("on");
-    if (!reduceMotion) timer = setInterval(() => show(frame + 1), 650);
+    if (!reduceMotion) timer = setInterval(() => show(frame + 1), 400);
   };
   card.addEventListener("mouseenter", () => { delay = setTimeout(start, 350); });
   card.addEventListener("mouseleave", () => {
