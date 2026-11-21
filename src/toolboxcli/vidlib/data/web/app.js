@@ -723,7 +723,7 @@ async function renamePreview() {
   const seq = ++detail.seq;
   const data = await api("POST", "/api/name/fields", {
     people: $("rn-people").value, title: $("rn-title").value, collection: $("rn-collection").value,
-    path: detail.path,
+    path: detail.path, fill_unknown: true,
   });
   if (seq !== detail.seq) return;
   const tags = detail.video && detail.video.tags.length ? ` [${detail.video.tags.join(" ")}]` : "";
