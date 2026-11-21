@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -312,3 +313,89 @@ def from_fields(people: str, title: str, collection: str,
         title=clean_title(title),
         collection=_collection_part(collection, vocab),
     )
+
+
+# ── Names hiding in a title ──────────────────────────────────────────
+
+# What can be left dangling beside a name that's taken out of a title: a field separator
+# (kept, once, if both sides had one) or a connector ("Alice & Bob", "with Carol" is left).
+_JOIN = r"(?:[-–—|·:]+|,|&|\+|×|\band\b|\bx\b|\bwith\b|\bfeat\b\.?|\bft\b\.?|\bfeaturing\b)"
+_EDGE_SEP = re.compile(rf"(?:\s*{_JOIN})+\s*$", re.IGNORECASE)
+_LEAD_SEP = re.compile(rf"^\s*(?:{_JOIN}\s*)+", re.IGNORECASE)
+_FIELD_MARK = re.compile(r"[-–—|·:]")
+_WORD = re.compile(r"[^\W_][\w'’.]*", re.UNICODE)
+_MAX_NAME_WORDS = 6
+
+
+@dataclass(frozen=True)
+class Found:
+    """A known person or collection spotted in a title, and the title without it."""
+
+    kind: Literal["people", "collection"]
+    name: str            # the library's spelling
+    title_without: str
+
+
+def _without(title: str, start: int, end: int) -> str:
+    """*title* with [start:end) taken out, tidying the separators around the gap."""
+    left, right = title[:start], title[end:]
+    left_mark = _EDGE_SEP.search(left)
+    right_mark = _LEAD_SEP.search(right)
+    # "Day 1 with Alice - Lakes" → "Day 1 - Lakes": a field separator on either side stays.
+    kept_sep = bool((left_mark and _FIELD_MARK.search(left_mark.group()))
+                    or (right_mark and _FIELD_MARK.search(right_mark.group())))
+    left = left[:left_mark.start()] if left_mark else left
+    right = right[right_mark.end():] if right_mark else right
+    left, right = left.strip(), right.strip()
+    joiner = FIELD_SEP if kept_sep and left and right else " "
+    text = joiner.join(part for part in (left, right) if part)
+    text = re.sub(r"\(\s*\)|\[\s*\]", "", text)
+    return re.sub(r"\s+", " ", text).strip(" -–—|,&:")
+
+
+def _spans(title: str, lookup: Callable[[str], Match]) -> list[tuple[int, int, str]]:
+    """(start, end, spelling) of every run of whole words in *title* that is one of
+    *names*, exactly or loosely; longest first, never overlapping."""
+    words = list(_WORD.finditer(title))
+    taken: set[int] = set()
+    found: list[tuple[int, int, str]] = []
+    for size in range(min(_MAX_NAME_WORDS, len(words)), 0, -1):
+        for i in range(len(words) - size + 1):
+            if taken & set(range(i, i + size)):
+                continue
+            start, end = words[i].start(), words[i + size - 1].end()
+            text = title[start:end].rstrip(".'’")
+            match = lookup(re.sub(r"['’]s$", "", text, flags=re.IGNORECASE))
+            if match.kind != "new":
+                found.append((start, start + len(text), match.spelling))
+                taken |= set(range(i, i + size))
+    return sorted(found)
+
+
+def find_in_title(title: str, vocab: Vocabulary, have_people: list[str] | None = None,
+                  have_collection: str = "") -> list[Found]:
+    """Known people and collections mentioned in *title*, as suggestions: a badly named file
+    often has everything in its title. Names already in the People or Collection field are
+    left out. Each comes with the title it leaves once taken out of it."""
+    have = {normalize(p) for p in have_people or []}
+    results: list[Found] = []
+    seen: set[tuple[str, str]] = set()
+    for kind, lookup in (("people", vocab.person), ("collection", vocab.collection)):
+        spans = _spans(title, lookup)
+        # A name mentioned twice: people usually lead a title and the collection ends it
+        # ("… to the lakes (Lakes)"), so that's the mention to take out.
+        if kind == "collection":
+            spans.reverse()
+        for start, end, spelling in spans:
+            key = (kind, normalize(spelling))
+            if key in seen:
+                continue
+            if kind == "people" and normalize(spelling) in have:
+                continue
+            if kind == "collection" and normalize(spelling) == normalize(have_collection):
+                continue
+            seen.add(key)
+            results.append(Found("people" if kind == "people" else "collection", spelling,
+                                 clean_title(_without(title, start, end))))
+    return sorted(results, key=lambda f: (f.kind != "people", title.casefold().find(
+        f.name.casefold())))

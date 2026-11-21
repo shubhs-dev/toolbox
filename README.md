@@ -764,6 +764,14 @@ click. The People and Collection boxes autocomplete from the library too. **Add 
 only enabled once the name has people, a title and a collection; "Download anyway" is there for
 the odd video you'll name later.
 
+Under each field are pills. Known people and collections that the title mentions are offered
+there: clicking one moves the name out of the title and into its field, which makes short
+work of a badly named file whose whole name is its title. The fill-ins **Unknown** (every field)
+and **Clips** (collection) are there for a field you can't name yet. Both the Add form and the
+Library's rename form have them, and both warn when the name is one the library already has: duplicate
+detection would then treat the two files as the same video and keep only the better copy —
+so two different clips can't both be `Unknown - Unknown - Clips`.
+
 Downloads run `-j` at a time (yt-dlp with aria2c), each in its own folder under `_incoming/`,
 which the pipeline never looks in. A finished download is moved into the root, where the
 pipeline picks it up like any other new file; a name that's already taken there waits on the
@@ -777,7 +785,9 @@ and refuses requests from other websites.
 by name, filter by person, collection and resolution, or switch to the duplicates, the badly
 named files (`-U`) or what's waiting in `_review/`. Each video has a thumbnail (one frame,
 made with ffmpeg the first time it's shown and cached in `.vidlib-cache/` at the library
-root). Click one to **Play** it, **Show in Finder**, **Rename** it — the same People / Title /
+root). Rest the pointer on one for a moment and it steps through a few frames from across the
+video (moving across the picture scrubs them). Click one to **Play** it, **Show in Finder**,
+**Rename** it — the same People / Title /
 Collection fields and suggestions as a download, keeping its `[tags]`, and moved into the new
 collection's folder with its history — or **Move to Trash** (after a confirmation; never
 deleted outright). Only files the database knows can be touched, and the file the pipeline is
