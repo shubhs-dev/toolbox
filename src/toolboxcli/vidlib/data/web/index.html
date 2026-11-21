@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vidlib</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <span class="wordmark">vidlib</span>
+      <span class="mode" id="mode" title="">library</span>
+    </div>
+    <div class="overall" id="overall" aria-live="polite">
+      <div class="overall-text">
+        <span id="overall-counts">Nothing queued</span>
+        <span id="overall-speed" class="dim"></span>
+      </div>
+      <div class="bar" aria-hidden="true"><div class="bar-fill" id="overall-bar"></div></div>
+    </div>
+    <span class="conn" id="conn" title="Live updates">●</span>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="panel add" aria-labelledby="add-heading">
+    <div class="panel-head">
+      <h2 id="add-heading">Add a download</h2>
+      <button type="button" class="link" id="form-reset">Clear</button>
+    </div>
+    <p class="naming-banner" id="naming-banner" hidden>
+      Naming a pasted URL. <button type="button" class="link" id="naming-cancel">Stop</button>
+    </p>
+
+    <form id="add-form" autocomplete="off">
+      <label class="field">
+        <span class="label">URL</span>
+        <input id="url" type="url" inputmode="url" placeholder="https://…" spellcheck="false">
+      </label>
+      <label class="field">
+        <span class="label">Page title</span>
+        <input id="page-title" type="text" placeholder="Paste the page's title">
+      </label>
+
+      <div class="segments-wrap" id="segments-wrap" hidden>
+        <div class="label-row">
+          <span class="label">Segments</span>
+          <span class="legend">
+            <span class="key role-people">P</span> people
+            <span class="key role-title">T</span> title
+            <span class="key role-collection">C</span> collection
+            <span class="key role-skip">×</span> skip
+          </span>
+        </div>
+        <ol class="segments" id="segments"></ol>
+      </div>
+
+      <div class="fields">
+        <label class="field">
+          <span class="label">People</span>
+          <span class="combo">
+            <input id="people" type="text" placeholder="Alice, Bob">
+            <ul class="suggest" id="people-suggest" role="listbox" hidden></ul>
+          </span>
+        </label>
+        <div class="people-chips" id="people-chips"></div>
+        <label class="field">
+          <span class="label">Title</span>
+          <input id="title" type="text">
+        </label>
+        <label class="field">
+          <span class="label">Collection</span>
+          <span class="combo">
+            <input id="collection" type="text">
+            <ul class="suggest" id="collection-suggest" role="listbox" hidden></ul>
+          </span>
+        </label>
+        <div class="people-chips" id="collection-chip"></div>
+      </div>
+
+      <div class="preview" id="preview">
+        <span class="label">Saved as</span>
+        <code id="stem" class="stem dim">Named after the video's own title</code>
+        <ul class="problems" id="problems"></ul>
+      </div>
+
+      <div class="actions">
+        <button type="submit" class="primary" id="add-btn" disabled>Add to queue</button>
+        <button type="button" class="link" id="add-anyway" hidden>Download anyway</button>
+        <span class="form-msg" id="form-msg" role="status"></span>
+      </div>
+    </form>
+
+    <details class="bulk" id="bulk">
+      <summary>Paste many URLs</summary>
+      <p class="hint">One per line. Each one's title is fetched, then waits below for you to name it.</p>
+      <textarea id="bulk-urls" rows="4" spellcheck="false" placeholder="https://…&#10;https://…"></textarea>
+      <button type="button" id="bulk-add">Fetch titles</button>
+    </details>
+  </section>
+
+  <section class="panel queue" aria-labelledby="queue-heading">
+    <div class="panel-head">
+      <h2 id="queue-heading">Downloads</h2>
+      <button type="button" class="link" id="clear-finished">Clear finished</button>
+    </div>
+
+    <div class="group" id="group-naming" hidden>
+      <h3>Needs naming</h3>
+      <ul class="rows" id="rows-naming"></ul>
+    </div>
+    <div class="group" id="group-waiting" hidden>
+      <div class="group-head">
+        <h3>Waiting to go into the library</h3>
+        <button type="button" id="import-btn">Move into library</button>
+      </div>
+      <p class="hint" id="waiting-hint"></p>
+      <ul class="rows" id="rows-waiting"></ul>
+    </div>
+    <div class="group" id="group-active">
+      <h3>In progress</h3>
+      <ul class="rows" id="rows-active"></ul>
+      <p class="empty" id="empty-active">Nothing downloading. Paste a URL to start.</p>
+    </div>
+    <div class="group" id="group-failed" hidden>
+      <h3>Failed</h3>
+      <ul class="rows" id="rows-failed"></ul>
+    </div>
+    <div class="group" id="group-done" hidden>
+      <h3>Finished</h3>
+      <ul class="rows" id="rows-done"></ul>
+    </div>
+  </section>
+</main>
+
+<template id="row-template">
+  <li class="row">
+    <div class="row-main">
+      <div class="row-name"></div>
+      <div class="row-sub dim"></div>
+      <div class="bar row-bar"><div class="bar-fill"></div></div>
+      <div class="row-error"></div>
+    </div>
+    <div class="row-side">
+      <span class="pill"></span>
+      <span class="row-stats dim"></span>
+      <span class="row-actions"></span>
+    </div>
+  </li>
+</template>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -42,8 +42,8 @@ INCOMING_DIR = "_incoming"
 
 # 1: initial. 2: names that don't follow People - Title - Collection are no longer split
 # into fields (core.VideoName.complete); upgrading re-derives every row and drops the
-# people that only those mis-split names had created.
-SCHEMA_VERSION = 2
+# people that only those mis-split names had created. 3: the downloads table.
+SCHEMA_VERSION = 3
 
 # Statuses a row can have. "compressed" is a known, already-compressed file that hasn't been
 # sorted yet (the old log's "reconciled"); "missing" is a row whose file has disappeared.
@@ -105,6 +105,45 @@ CREATE TABLE events (
     detail TEXT NOT NULL DEFAULT ''
 );
 """
+
+# Added in schema 3. Kept apart from _SCHEMA (the v1 tables) because a new database is
+# built by running every migration step in order, so it ends up exactly like an upgraded one.
+_DOWNLOADS_SCHEMA = """
+CREATE TABLE downloads (
+    id           INTEGER PRIMARY KEY,
+    url          TEXT NOT NULL,
+    name         TEXT NOT NULL,              -- filename stem; '' = the video's own title
+    page_title   TEXT NOT NULL DEFAULT '',   -- the pasted or fetched title it was named from
+    status       TEXT NOT NULL,              -- DOWNLOAD_STATUSES
+    error        TEXT NOT NULL DEFAULT '',
+    file         TEXT NOT NULL DEFAULT '',   -- absolute path while it waits outside the library
+    library_path TEXT NOT NULL DEFAULT '',   -- root-relative path it was imported at
+    added_at     TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+"""
+
+# naming: waiting for a name (bulk paste); queued → downloading → downloaded, which in
+# download-only mode waits in its folder until it's moved into the library: imported.
+DOWNLOAD_STATUSES = ("naming", "queued", "downloading", "downloaded", "imported", "failed",
+                     "cancelled")
+
+
+@dataclass
+class Download:
+    url: str
+    name: str = ""
+    page_title: str = ""
+    status: str = "queued"
+    error: str = ""
+    file: str = ""
+    library_path: str = ""
+    added_at: str = ""
+    updated_at: str = ""
+    id: int | None = None
+
+
+_DOWNLOAD_COLUMNS = [f.name for f in fields(Download) if f.name != "id"]
 
 
 def adopt_legacy_db(root: Path) -> bool:
@@ -180,7 +219,9 @@ def _resolution_query(text: str) -> str:
 class LibraryDB:
     """An open `.vidlib.db`. Use as a context manager, or call close()."""
 
-    def __init__(self, path: Path, in_memory: bool = False) -> None:
+    def __init__(self, path: Path, in_memory: bool = False, shared: bool = False) -> None:
+        """With *shared*, the connection may be used from any thread; the caller then
+        serialises access itself (the web server's download manager holds a lock)."""
         self.path = path
         if in_memory:
             # A private copy for a dry run: everything it writes (a JSON import, a library
@@ -191,7 +232,7 @@ class LibraryDB:
                     source.backup(self.conn)
                 source.close()
         else:
-            self.conn = sqlite3.connect(path, timeout=10)
+            self.conn = sqlite3.connect(path, timeout=10, check_same_thread=not shared)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         # WAL lets a report or query read while the watcher writes. Fine on a local disk;
@@ -204,7 +245,7 @@ class LibraryDB:
             raise
 
     @classmethod
-    def open(cls, root: Path, in_memory: bool = False) -> LibraryDB:
+    def open(cls, root: Path, in_memory: bool = False, shared: bool = False) -> LibraryDB:
         """The library's database; with in_memory, a throwaway copy of it (for -n).
 
         A library last used as optimiselib has `.optimiselib.db`; it's renamed `.vidlib.db`
@@ -216,7 +257,7 @@ class LibraryDB:
                 path = legacy
         else:
             adopt_legacy_db(root)
-        return cls(path, in_memory=in_memory)
+        return cls(path, in_memory=in_memory, shared=shared)
 
     def close(self) -> None:
         self.conn.close()
@@ -232,8 +273,8 @@ class LibraryDB:
         if version == 0:
             with self.conn:
                 self.conn.executescript(_SCHEMA)
-                self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            return
+                self.conn.execute("PRAGMA user_version = 2")
+            version = 2
         if version < 2:
             # Same tables; only the name-derived columns change meaning. Re-writing each
             # row recomputes them from its path under the current rules.
@@ -242,6 +283,10 @@ class LibraryDB:
             self.prune_people()
             with self.conn:
                 self.conn.execute("PRAGMA user_version = 2")
+        if version < 3:
+            with self.conn:
+                self.conn.executescript(_DOWNLOADS_SCHEMA)
+                self.conn.execute("PRAGMA user_version = 3")
         if version > SCHEMA_VERSION:
             raise RuntimeError(
                 f"{self.path.name} was written by a newer vidlib (schema {version}); "
@@ -410,6 +455,48 @@ class LibraryDB:
             )
             for k in keys
         ]
+
+    # ── Downloads ────────────────────────────────────────────────────
+
+    def save_download(self, dl: Download) -> Download:
+        """Insert *dl* (id None, which is then set) or update its row."""
+        dl.updated_at = _now()
+        dl.added_at = dl.added_at or dl.updated_at
+        values = [getattr(dl, c) for c in _DOWNLOAD_COLUMNS]
+        with self.conn:
+            if dl.id is None:
+                cur = self.conn.execute(
+                    f"INSERT INTO downloads ({', '.join(_DOWNLOAD_COLUMNS)}) "
+                    f"VALUES ({', '.join('?' for _ in _DOWNLOAD_COLUMNS)})", values)
+                dl.id = cur.lastrowid
+            else:
+                self.conn.execute(
+                    f"UPDATE downloads SET {', '.join(f'{c} = ?' for c in _DOWNLOAD_COLUMNS)} "
+                    "WHERE id = ?", [*values, dl.id])
+        return dl
+
+    def downloads(self) -> list[Download]:
+        """Every download, oldest first."""
+        rows = self.conn.execute("SELECT * FROM downloads ORDER BY id").fetchall()
+        return [Download(**{k: r[k] for k in r.keys()}) for r in rows]
+
+    def delete_download(self, download_id: int) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM downloads WHERE id = ?", (download_id,))
+
+    def spellings(self) -> tuple[list[str], list[str]]:
+        """People and collections as the library writes them, for name suggestions: the
+        people table, every video's collection, and the names of earlier downloads."""
+        people = [r[0] for r in self.conn.execute("SELECT name FROM people ORDER BY id")]
+        collections = [r[0] for r in self.conn.execute(
+            "SELECT collection FROM videos WHERE collection != '' "
+            "GROUP BY collection_key ORDER BY MIN(id)")]
+        for (stem,) in self.conn.execute("SELECT name FROM downloads WHERE name != ''"):
+            name = core.parse_name(stem)
+            if name.complete:
+                people.extend(name.people)
+                collections.append(name.collection)
+        return people, collections
 
     def events(self, path: str | None = None) -> Iterator[sqlite3.Row]:
         if path is None:

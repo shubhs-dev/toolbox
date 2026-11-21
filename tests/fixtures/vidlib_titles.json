@@ -1,0 +1,163 @@
+{
+  "known": {
+    "people": [
+      "DougDoug",
+      "Atrioc",
+      "Alice",
+      "Bob",
+      "Mary Jane",
+      "José"
+    ],
+    "collections": [
+      "Lemonade Stand",
+      "Lakes",
+      "Japan 2024"
+    ]
+  },
+  "cases": [
+    {
+      "title": "DougDoug, Atrioc - The Conspiracy Episode - Lemonade Stand",
+      "segments": [
+        "DougDoug, Atrioc",
+        "The Conspiracy Episode",
+        "Lemonade Stand"
+      ],
+      "roles": [
+        "people",
+        "title",
+        "collection"
+      ],
+      "name": "DougDoug, Atrioc - The Conspiracy Episode - Lemonade Stand"
+    },
+    {
+      "title": "DougDoug - Atrioc - The Conspiracy Episode - Part 1 - Lemonade Stand",
+      "segments": [
+        "DougDoug",
+        "Atrioc",
+        "The Conspiracy Episode",
+        "Part 1",
+        "Lemonade Stand"
+      ],
+      "roles": [
+        "people",
+        "people",
+        "title",
+        "title",
+        "collection"
+      ],
+      "name": "DougDoug, Atrioc - The Conspiracy Episode - Part 1 - Lemonade Stand"
+    },
+    {
+      "title": "Lemonade Stand - The Conspiracy Episode - dougdoug",
+      "segments": [
+        "Lemonade Stand",
+        "The Conspiracy Episode",
+        "dougdoug"
+      ],
+      "roles": [
+        "collection",
+        "title",
+        "people"
+      ],
+      "name": "DougDoug - The Conspiracy Episode - Lemonade Stand"
+    },
+    {
+      "title": "Doug-Doug & Atrioc – Ranking Snacks — Lemonade Stand | YouTube",
+      "segments": [
+        "Doug-Doug & Atrioc",
+        "Ranking Snacks",
+        "Lemonade Stand",
+        "YouTube"
+      ],
+      "roles": [
+        "people",
+        "title",
+        "collection",
+        "skip"
+      ],
+      "name": "Doug-Doug, Atrioc - Ranking Snacks - Lemonade Stand"
+    },
+    {
+      "title": "Carol and Dee - Rent-a-Boat Day - Peaks",
+      "segments": [
+        "Carol and Dee",
+        "Rent-a-Boat Day",
+        "Peaks"
+      ],
+      "roles": [
+        "people",
+        "title",
+        "collection"
+      ],
+      "name": "Carol, Dee - Rent-a-Boat Day - Peaks"
+    },
+    {
+      "title": "Carol - Sunrise hike",
+      "segments": [
+        "Carol",
+        "Sunrise hike"
+      ],
+      "roles": [
+        "people",
+        "title"
+      ],
+      "name": "Carol - Sunrise hike"
+    },
+    {
+      "title": "Just a video title",
+      "segments": [
+        "Just a video title"
+      ],
+      "roles": [
+        "title"
+      ],
+      "name": "Just a video title"
+    },
+    {
+      "title": "Day 1 - Alice x Bob - Lakes",
+      "segments": [
+        "Day 1",
+        "Alice x Bob",
+        "Lakes"
+      ],
+      "roles": [
+        "title",
+        "people",
+        "collection"
+      ],
+      "name": "Alice, Bob - Day 1 - Lakes"
+    },
+    {
+      "title": "Jose and Mary Jane - Kyoto temples - japan 2024 | Travel Channel | Site",
+      "segments": [
+        "Jose and Mary Jane",
+        "Kyoto temples",
+        "japan 2024",
+        "Travel Channel",
+        "Site"
+      ],
+      "roles": [
+        "people",
+        "title",
+        "collection",
+        "title",
+        "skip"
+      ],
+      "name": "Jose, Mary Jane - Kyoto temples - Travel Channel - Japan 2024"
+    },
+    {
+      "title": "Part 2/3: the end? - Alice - Lakes",
+      "segments": [
+        "Part 2/3: the end?",
+        "Alice",
+        "Lakes"
+      ],
+      "roles": [
+        "title",
+        "people",
+        "collection"
+      ],
+      "name": "Alice - Part 2-3 the end - Lakes"
+    }
+  ]
+}

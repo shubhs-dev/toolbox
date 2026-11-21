@@ -11,6 +11,7 @@ from toolboxcli.vidlib.db import (
     DB_NAME,
     JSON_LOG_NAME,
     LEGACY_DB_NAME,
+    Download,
     LibraryDB,
     Video,
     import_json_log,
@@ -206,11 +207,12 @@ def test_upgrading_a_v1_database_re_derives_names_and_drops_junk_people(tmp_path
         db.conn.execute("INSERT INTO people (name, key) VALUES ('Movie', 'movie')")
         db.conn.execute("INSERT INTO video_people SELECT ?, id FROM people WHERE key='movie'",
                         (cut,))
+        db.conn.execute("DROP TABLE downloads")              # added in schema 3
         db.conn.execute("PRAGMA user_version = 1")
         db.conn.commit()
 
     with LibraryDB.open(tmp_path) as db:
-        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 3
         row = db.conn.execute("SELECT people_key, title, title_key FROM videos "
                               "WHERE path LIKE 'Movie%'").fetchone()
         assert tuple(row) == ("", "Movie - Director's Cut", "")
@@ -218,6 +220,32 @@ def test_upgrading_a_v1_database_re_derives_names_and_drops_junk_people(tmp_path
         assert people == {"alice"}
         assert len(db.search(person="alice")) == 1
 
+
+
+def test_upgrading_adds_the_downloads_table(tmp_path):
+    with LibraryDB.open(tmp_path) as db:
+        db.conn.execute("DROP TABLE downloads")
+        db.conn.execute("PRAGMA user_version = 2")
+        db.conn.commit()
+    with LibraryDB.open(tmp_path) as db:
+        saved = db.save_download(Download("https://x/a", "Alice - Day 1 - Lakes"))
+        assert saved.id is not None and saved.added_at
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_downloads_round_trip_and_feed_the_spellings(tmp_path):
+    with LibraryDB.open(tmp_path) as db:
+        db.upsert(Video(path="Lakes/Alice, Bob - Day 1 - Lakes.mp4"))
+        dl = db.save_download(Download("https://x/a", "Carol - Hike - Peaks"))
+        db.save_download(Download("https://x/b", "Untitled thing"))
+        dl.status, dl.error = "failed", "HTTP 403"
+        db.save_download(dl)
+        assert [(d.url, d.status, d.error) for d in db.downloads()] == [
+            ("https://x/a", "failed", "HTTP 403"), ("https://x/b", "queued", "")]
+        people, collections = db.spellings()
+        assert people == ["Alice", "Bob", "Carol"] and collections == ["Lakes", "Peaks"]
+        db.delete_download(dl.id)
+        assert [d.url for d in db.downloads()] == ["https://x/b"]
 
 def test_reopening_keeps_data_and_rejects_a_newer_schema(tmp_path):
     with LibraryDB.open(tmp_path) as db:

@@ -1,8 +1,13 @@
 """
-vidlib — Watch a library root, optimise new videos to 1080p, tag and sort them.
+vidlib — A video library: download new videos, optimise them to 1080p, tag and sort them.
 
-Runs continuously on a media server. For every video that appears directly in the library
-root it will:
+Runs continuously next to the library. While it runs, a web page at http://127.0.0.1:8642/
+(opened in your browser on start) downloads videos into the library: paste a URL and the
+page's title, mark which parts of the title are the people, the title and the collection,
+and the download is named "People - Title - Collection" and dropped into the root, where the
+pipeline below picks it up.
+
+For every video that appears directly in the library root it will:
 
   1. Transcode it with HandBrake — the 720p preset for <=720p sources, the 1080p preset
      otherwise. Neither preset upscales. Every audio track is kept, encoded to stereo AAC
@@ -42,12 +47,29 @@ log is imported on the first run and kept as .optimiselib.json.migrated, and a l
 used as optimiselib has its .optimiselib.db renamed .vidlib.db. A dry run works on an
 in-memory copy, so it changes nothing.
 
+DOWNLOADS
+
+A pasted title is split into segments on " - " and "|"; each gets a role, guessed from the
+people and collections the library already has (also matching loosely, so "Doug-Doug"
+suggests your "DougDoug"), then fixed by clicking. Any number of segments can be people or
+title; one is the collection; a part after the last "|" (the site's name) is skipped.
+Downloads run in _incoming/ and move into the root when they finish, -j at a time. They're
+recorded in the library database, so the queue survives a restart.
+
+With -X DIR (download-only), nothing is encoded: downloads go into DIR (default: the current
+folder) and wait there, recorded in ROOT's database, until "Move into library" on the page
+moves them into ROOT. Useful while the library's disk is full.
+
 Requires:
     HandBrakeCLI, ffprobe
+    yt-dlp, aria2c (for downloads)
     addsub (optional — enables automatic subtitle merging when present)
 
 Usage:
-    vidlib /srv/library                   # watch, poll every 30s
+    vidlib /Volumes/Media/Library         # watch, poll every 30s, serve the web page
+    vidlib -W                             # just the pipeline, no web page
+    vidlib -X ~/Downloads/tmp             # download only, into that folder
+    vidlib -P 9000 -b                     # web page on port 9000, don't open a browser
     vidlib -O                             # process what's there, then exit
     vidlib -n                             # dry run: show what would happen
     vidlib -r                             # report sub-1080p files and the review queue
@@ -66,10 +88,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import shutil
 import subprocess
 import time
+import webbrowser
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path, PurePosixPath
 
 from rich import box
@@ -112,11 +138,10 @@ from toolboxcli.vidlib.db import (
     import_json_log,
     legacy_db_conflict,
 )
+from toolboxcli.vidlib.downloads import DownloadManager
+from toolboxcli.vidlib.server import DEFAULT_PORT, VidlibServer
 
-VIDEO_EXTS = {
-    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
-    ".m4v", ".mpg", ".mpeg", ".ts", ".vob", ".3gp", ".mts",
-}
+VIDEO_EXTS = core.VIDEO_EXTS
 
 # Statuses meaning "this file is already compressed": vidlib wrote it, or recorded it
 # as compressed (a sync of the library's folders, or the old log's reconciled files).
@@ -1139,7 +1164,9 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("root", nargs="?", default=".", help="Library root to watch (default: .)")
+    ap.add_argument("root", nargs="?", default=os.environ.get("VIDLIB_LIBRARY") or ".",
+                    help="Library root, where .vidlib.db lives (default: env VIDLIB_LIBRARY, "
+                         "else .)")
     ap.add_argument("-t", "--interval", type=int, default=30,
                     help="Seconds between folder scans (default: 30)")
     ap.add_argument("-O", "--once", action="store_true",
@@ -1192,6 +1219,17 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Don't scan for or merge matching subtitle files")
     ap.add_argument("-s", "--subs-only", action="store_true",
                     help="Merge waiting subtitle files and exit; encode and sort nothing")
+    ap.add_argument("-W", "--no-web", action="store_true",
+                    help="Run the pipeline without the web page (and so without downloads)")
+    ap.add_argument("-X", "--download-only", nargs="?", const=".", default=None,
+                    metavar="DIR",
+                    help="Serve only downloads, into DIR (default: .); encode nothing")
+    ap.add_argument("-P", "--port", type=int, default=DEFAULT_PORT,
+                    help=f"Port for the web page on 127.0.0.1 (default: {DEFAULT_PORT})")
+    ap.add_argument("-b", "--no-browser", action="store_true",
+                    help="Don't open the web page in a browser on start")
+    ap.add_argument("-j", "--jobs", type=int, default=2, metavar="N",
+                    help="Downloads to run at once (default: 2)")
     return ap
 
 
@@ -1209,6 +1247,9 @@ def main() -> None:
 
     if args.subs_only and args.no_subs:
         die("--subs-only and --no-subs contradict each other")
+    if args.download_only is not None and not wants_web(args):
+        die("-X/--download-only serves the web page, so it can't be combined with -W, -n, "
+            "-O, -r, -l (or its filters), -D or -s")
 
     # A dry run works on an in-memory copy of the database, so importing the old log or
     # syncing the library changes nothing on disk.
@@ -1226,7 +1267,80 @@ def main() -> None:
             die(f"Can't migrate the old log: {exc}")
         if migrated:
             info(f"Imported {migrated} entries from the old log into {db.path.name}")
-        run(root, db, args)
+        if args.download_only is not None:
+            run_download_only(root, args)
+            return
+        with web_ui(root, args) if wants_web(args) else nullcontext():
+            run(root, db, args)
+
+
+def wants_web(args) -> bool:
+    """The web page runs alongside the continuous watch only; reports, queries, one-shot
+    runs, dry runs and subtitle-only merges are terminal commands that exit."""
+    return not (args.no_web or args.dry_run or args.once or args.report or args.duplicates
+                or args.subs_only or args.list_files is not None)
+
+
+@contextmanager
+def web_ui(root: Path, args, dest: Path | None = None) -> Iterator[VidlibServer]:
+    """The download manager and the web server, for as long as the block runs. The manager
+    has its own database connection, shared by the server's threads under its lock."""
+    if args.jobs < 1:
+        die("--jobs must be at least 1")
+    for tool in ("yt-dlp", "aria2c"):
+        if shutil.which(tool) is None:
+            if dest is not None:
+                require_tool(tool)
+            warn(f"{tool} not found — downloads from the web page will fail until it's installed")
+    try:
+        db = LibraryDB.open(root, shared=True)
+    except (RuntimeError, OSError) as exc:
+        die(f"Can't open the library database: {exc}")
+    manager = DownloadManager(root, db, dest=dest, workers=args.jobs)
+    try:
+        server = VidlibServer(manager, args.port)
+    except OSError as exc:
+        db.close()
+        if exc.errno == errno.EADDRINUSE:
+            die(f"Port {args.port} is in use — is vidlib already running? Open "
+                f"http://127.0.0.1:{args.port}/, or pick another port with -P")
+        die(f"Can't start the web page: {exc}")
+    try:
+        imported = manager.start()
+        if imported:
+            info(f"Imported {imported} entries from the old video-download queue")
+        server.start()
+        ok(f"Web page at {server.url}")
+        if not args.no_browser:
+            webbrowser.open(server.url)
+        yield server
+    finally:
+        server.stop()
+        manager.shutdown()
+        db.close()
+
+
+def run_download_only(root: Path, args) -> None:
+    dest = Path(args.download_only).expanduser().resolve()
+    if not dest.is_dir():
+        die(f"Not a directory: {dest}")
+    if dest == root:
+        die("-X needs a folder other than the library root; without -X, downloads already "
+            "go into the library")
+    banner = Table.grid(padding=(0, 2))
+    banner.add_column(style="bold")
+    banner.add_column()
+    banner.add_row("Library", str(root))
+    banner.add_row("Downloads", f"{dest}  [dim](download only — nothing is encoded)[/]")
+    console.print(Panel(banner, title="[bold cyan]vidlib[/]", border_style="cyan",
+                        expand=False))
+    with web_ui(root, args, dest=dest):
+        console.print("[dim]Ctrl+C to stop; unfinished downloads resume next time.[/]")
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            console.print("\n[bold yellow]Stopped.[/]")
 
 
 def run(root: Path, db: LibraryDB, args) -> None:

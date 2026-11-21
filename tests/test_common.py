@@ -1,8 +1,7 @@
-"""Shared _common helpers, and video-download's urls.txt bookkeeping."""
+"""Shared _common helpers."""
 
 from __future__ import annotations
 
-import codecs
 import os
 
 import pytest
@@ -10,13 +9,6 @@ import pytest
 from toolboxcli._common import output, streams
 from toolboxcli._common.ffprobe import bit_depth
 from toolboxcli._common.pathsafe import sanitize_for_path
-from toolboxcli.videodownload.cli import (
-    Download,
-    UrlsFile,
-    build_command,
-    output_template,
-    parse_line,
-)
 
 # ── ffprobe.bit_depth ──────────────────────────────────────────────────
 
@@ -144,63 +136,3 @@ def test_list_presets_reads_the_bundled_presets(capsys):
     out = capsys.readouterr().out
     assert "hw-1080" in out and "hw-720" in out
 
-
-# ── video-download ─────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("line, expected", [
-    ("https://x/a", Download("https://x/a", None)),
-    ("https://x/a Trip to the Lakes - Day 1", Download("https://x/a", "Trip to the Lakes - Day 1")),
-    ("  https://x/a \t  Name  \r\n", Download("https://x/a", "Name")),
-    ("", None), ("   ", None), ("# https://x/a", None),
-])
-def test_parse_line(line, expected):
-    assert parse_line(line) == expected
-
-
-def test_output_template_escapes_percent_in_names():
-    assert output_template(None) == "%(title)s.%(ext)s"
-    assert output_template("100% Done") == "100%% Done.%(ext)s"
-
-
-def test_build_command():
-    cmd = build_command(Download("https://x/a", "Day 1"))
-    assert cmd[0] == "yt-dlp" and cmd[-1] == "https://x/a"
-    assert cmd[cmd.index("-o") + 1] == "Day 1.%(ext)s"
-    assert cmd[cmd.index("--external-downloader") + 1] == "aria2c"
-
-
-def test_urls_file_removes_by_url_and_preserves_everything_else(tmp_path):
-    path = tmp_path / "urls.txt"
-    original = "# keep me\r\nhttps://x/a A\r\n\r\nhttps://x/b\r\nhttps://x/a A\r\n"
-    path.write_bytes(codecs.BOM_UTF8 + original.encode())
-    urls = UrlsFile(path)
-
-    assert urls.downloads() == [Download("https://x/a", "A"), Download("https://x/b", None),
-                                Download("https://x/a", "A")]
-    assert urls.remove(Download("https://x/b", None))
-    data = path.read_bytes()
-    assert data.startswith(codecs.BOM_UTF8)
-    assert data[3:].decode() == "# keep me\r\nhttps://x/a A\r\n\r\nhttps://x/a A\r\n"
-
-    # A duplicate line is removed one at a time.
-    assert urls.remove(Download("https://x/a", "A"))
-    assert urls.contains(Download("https://x/a", "A"))
-    assert not urls.remove(Download("https://x/gone", None))
-
-
-def test_urls_file_prefers_an_exact_match_then_falls_back_to_the_url(tmp_path):
-    path = tmp_path / "urls.txt"
-    path.write_text("https://x/a Old name\nhttps://x/a New name\n", encoding="utf-8")
-    urls = UrlsFile(path)
-    assert urls.remove(Download("https://x/a", "New name"))
-    assert path.read_text(encoding="utf-8") == "https://x/a Old name\n"
-    # The line was renamed by hand mid-run: still found by its URL.
-    assert urls.remove(Download("https://x/a", "Something else"))
-    assert path.read_text(encoding="utf-8") == ""
-
-
-def test_urls_file_missing_is_empty(tmp_path):
-    urls = UrlsFile(tmp_path / "urls.txt")
-    assert urls.downloads() == []
-    assert not urls.remove(Download("https://x/a", None))

@@ -25,8 +25,7 @@ in Python and installed as a single package with [uv](https://docs.astral.sh/uv/
 | `prunelib` | Review the biggest, oldest or least-watched videos in a library and delete the ones you pick |
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
 | `toolbox` | List all scripts in this repo with a brief description |
-| `video-download` | Download videos with yt-dlp + aria2c from a terminal UI (paste a URL and title, label it People - Title - Collection), or in batch from `./urls.txt` |
-| `vidlib` | Video library: watch a root, compress new videos to 1080p, tag the resolution and sort by trip |
+| `vidlib` | Video library with a web page: download videos, compress compress new videos to 1080p, tag the resolution and sort by trip |
 | `wallready` | Prepare a folder of images for wallpaper use: JPG, downscaled and centre-cropped to 4K |
 
 `inventory.html` is a standalone, dependency-free HTML dashboard for tracking Death Stranding
@@ -51,7 +50,7 @@ materials — just open it in a browser, no install needed.
 | `HandBrakeCLI` | `compressvid`, `vidlib` |
 | `magick` (ImageMagick 7) | `convertimg`, `wallready` |
 | `7z` (7-Zip) | `cybermod` |
-| `yt-dlp`, `aria2c` | `video-download` |
+| `yt-dlp`, `aria2c` | `vidlib` (downloads) |
 | `addsub` (on PATH) | `autosub`, `vidlib` (optional — enables subtitle merging) |
 
 ### macOS
@@ -621,12 +620,15 @@ a built-in volume map covering volumes 1–115 with official English titles.
 
 ### vidlib
 
-Watch a library root, optimise new videos to 1080p, tag them with their resolution and sort
-them into trip folders. Built to run continuously on a media server — it's `compressvid` and
-`sortmedia` welded into one unattended pipeline.
+A video library: download videos into it from a web page, optimise new videos to 1080p, tag
+them with their resolution and sort them into trip folders. Built to run continuously next to
+the library — the pipeline is `compressvid` and `sortmedia` welded into one unattended process.
 
 ```bash
-vidlib /srv/library                   # watch, poll every 30s
+vidlib /Volumes/Media/Library         # watch, poll every 30s, serve the web page
+vidlib -W                             # just the pipeline, no web page
+vidlib -X ~/Downloads/tmp             # download only, into that folder
+vidlib -P 9000 -b                     # web page on port 9000, don't open a browser
 vidlib -O                             # process what's there, then exit
 vidlib -n                             # dry run: show what would happen
 vidlib -r                             # report sub-1080p files and the review queue
@@ -733,6 +735,49 @@ size and folder. It's a report only: nothing is moved or deleted.
 | `-q, --preset-720` | `hw-720` | Preset for sources at 720p or below |
 | `-S, --no-subs` | off | Don't scan for or merge matching subtitle files |
 | `-s, --subs-only` | off | Merge waiting subtitle files and exit; encode and sort nothing |
+| `-W, --no-web` | off | Run the pipeline without the web page (and so without downloads) |
+| `-X, --download-only` | off | Serve only downloads, into `DIR` (default: `.`); encode nothing |
+| `-P, --port` | `8642` | Port for the web page on 127.0.0.1 |
+| `-b, --no-browser` | off | Don't open the web page in a browser on start |
+| `-j, --jobs` | `2` | Downloads to run at once |
+
+The library root defaults to env `VIDLIB_LIBRARY`, else the current folder.
+
+**Downloads (the web page)** — while vidlib watches, it serves a page at
+`http://127.0.0.1:8642/` and opens it in your browser. Paste a URL and the page's title; the
+title is split into segments on ` - ` (or a spaced `–`/`—`) and `|`, and each segment gets a
+role — **P**eople, **T**itle, **C**ollection or skip — which you can change with a click:
+
+```
+DougDoug - Atrioc - The Conspiracy Episode - Part 1 - Lemonade Stand | YouTube
+P          P        T                        T        C                 ×
+→ DougDoug, Atrioc - The Conspiracy Episode - Part 1 - Lemonade Stand.mp4
+```
+
+Any number of segments can be people (each split into names on `,` `&` `and` `x` `+`) or
+title (kept in order, joined with ` - `); there's one collection; the part after the last `|`
+is usually the site's name and starts out skipped. The order in the title doesn't matter. The
+first guess comes from the people and collections the library already has: a name written
+differently only in case or spacing takes the library's spelling, and one that's close
+(`Doug-Doug`, `Jose`) offers it — "did you mean DougDoug?" — without changing anything until you
+click. The People and Collection boxes autocomplete from the library too. **Add to queue** is
+only enabled once the name has people, a title and a collection; "Download anyway" is there for
+the odd video you'll name later.
+
+Downloads run `-j` at a time (yt-dlp with aria2c), each in its own folder under `_incoming/`,
+which the pipeline never looks in. A finished download is moved into the root, where the
+pipeline picks it up like any other new file; a name that's already taken there waits on the
+page instead of overwriting anything. The page shows each download's progress, speed and time
+left, an overall bar, and Retry / Cancel / Remove. **Paste many URLs** fetches each one's title
+and lists them under *Needs naming* to name one by one. The queue is kept in the library
+database, so quitting mid-download resumes next time. The page only listens on `127.0.0.1`
+and refuses requests from other websites.
+
+**Download-only** (`-X DIR`) — for when the library's disk is full: nothing is encoded, and
+downloads go into `DIR` (default: the current folder) instead, still recorded in the library's
+database. Once there's room, **Move into library** on the page moves them into the root
+(copying across disks safely, checking the size before removing the original), and the
+pipeline takes it from there.
 
 **Encoder** — the bundled presets specify AMD's `vce_h265`, but the encoder is chosen at
 runtime: if the preset's own encoder is available it's used untouched, otherwise HandBrake's
@@ -758,8 +803,10 @@ root: a single SQLite file, no server, and you can open it with any SQLite viewe
 poll it's synced with the disk — a file you rename or move by hand keeps its history and is
 never re-encoded (it's recognised by its size and modified time), files you add to folders
 yourself are recorded as they are, and files that have gone are marked missing. The old
-`.vidlib.json` log is imported on the first run and kept as `.vidlib.json.migrated`.
-A dry run (`-n`) works on an in-memory copy, so it changes nothing. Keep the library on a
+`.optimiselib.json` log is imported on the first run and kept as
+`.optimiselib.json.migrated`, and a library last used as `optimiselib` has its `.optimiselib.db`
+renamed `.vidlib.db` (a `.video-download-queue.json` in the download folder is imported the
+same way, once). A dry run (`-n`) works on an in-memory copy, so it changes nothing. Keep the library on a
 local disk: SQLite's locking isn't reliable over a network share.
 
 ---
@@ -834,107 +881,6 @@ List all scripts in this repo with a brief description of each.
 ```bash
 toolbox
 ```
-
----
-
-### video-download
-
-Download videos with **yt-dlp** (using **aria2c** for the transfer), named the way
-`vidlib` sorts them: `People - Title - Collection`.
-
-```bash
-video-download                    # open the downloader (a terminal UI)
-video-download -L ~/Library       # …suggesting people/collections from that library
-video-download -b                 # batch: download everything in ./urls.txt
-video-download -b -j 3            # batch, up to 3 downloads in parallel
-video-download -b -y              # batch, also download lines added mid-run without asking
-```
-
-| Flag | Description |
-|------|-------------|
-| `-b, --batch` | Download everything in `./urls.txt` instead of opening the UI |
-| `-j, --jobs N` | Downloads to run in parallel (default: `1` in batch mode, `2` in the UI) |
-| `-y, --yes` | Batch: download lines added to `urls.txt` during the run without asking |
-| `-L, --library DIR` | vidlib library whose people and collections the UI suggests (env `VIDEO_DOWNLOAD_LIBRARY`) |
-
-**The downloader** (default) — paste a URL and the page's title. The title is split into words,
-and each word is labelled **people**, **title** or **collection**:
-
-```
-Alice & Bob hike to the lakes – Day 1 (Lakes) | SomeSite
-→ Alice, Bob - hike to the lakes Day 1 - Lakes
-```
-
-The labels start as a guess: names your vidlib library (`-L`) or your earlier downloads
-already use are recognised, a name at the start of the title or in its own segment (`(Lakes)`) is
-moved out of the title, one mid-sentence (`…with Bob`) stays in it too, and everything after the
-last `|` is skipped as the site name. Correct it in the word bar — `←`/`→` move, `shift+←`/`→`
-select a run, `p` / `t` / `c` toggle people / title / collection, `x` skips — or edit the People,
-Title and Collection fields directly. The preview shows the filename and warns if vidlib
-couldn't sort it. `ctrl+s` adds it to the queue, and downloads start straight away into the
-current folder.
-
-In the queue, `r` retries a failed or cancelled download, `d` cancels or removes one and `D`
-clears finished ones; failures show yt-dlp's last error. `ctrl+q` quits (press twice if downloads
-are running); anything unfinished resumes next time from `.video-download-queue.json` in the
-folder. Library names are only ever *read* — the library's database is never written. The UI
-works best in a modern terminal (macOS Terminal, iTerm2, Windows Terminal); Git Bash's default
-mintty window doesn't handle its keys well.
-
-**Batch** (`-b`) — `urls.txt` holds one download per line: a URL, then optionally a space and the
-output file name. The name may contain spaces and takes no extension — yt-dlp adds the right one.
-Without a name, the video's title is used. Blank lines and lines starting with `#` are ignored.
-
-```text
-https://example.com/watch?v=abc Trip to the Lakes - Day 1
-https://example.com/watch?v=def
-```
-
-`urls.txt` is kept up to date as the run goes: once a download completes successfully (yt-dlp
-exits 0), its line is removed from the file. The line is looked up again by its URL at that
-moment rather than by line number, so editing the file mid-run is safe — add lines, or delete
-ones you no longer want (a line deleted before its download starts is skipped). Failed or
-interrupted downloads keep their line for the next run. Comments, blank lines, a BOM and CRLF
-line endings are preserved, and the file is rewritten via a temp file so it's never left
-truncated. Before finishing, `urls.txt` is read again: if lines were added during the run, you're
-asked whether to download those too (`-y` answers yes), and this repeats until nothing new
-remains.
-
-With `-j 1` you see yt-dlp's own output; with more, each running download gets one status line
-showing its progress (percent, speed, time left), and a failed download's last lines of output
-are printed when it finishes. The command exits non-zero if any download failed, listing which
-(they stay in `urls.txt`). Every aria2c opens 16 connections, so `-j 4` means up to 64 at once.
-
-------|-------------|
-| `-j, --jobs N` | Number of downloads to run in parallel (default: `1`) |
-| `-y, --yes` | Download lines added to `urls.txt` during the run without asking |
-
-`urls.txt` holds one download per line: a URL, then optionally a space and the output file
-name. The name may contain spaces and takes no extension — yt-dlp adds the right one. Without
-a name, the video's title is used. Blank lines and lines starting with `#` are ignored.
-
-```text
-https://example.com/watch?v=abc Trip to the Lakes - Day 1
-https://example.com/watch?v=def
-```
-
-`urls.txt` is kept up to date as the run goes: once a download completes successfully (yt-dlp
-exits 0), its line is removed from the file. The line is looked up again by its URL at that
-moment rather than by line number, so editing the file mid-run is safe — add lines, or delete
-ones you no longer want (a line deleted before its download starts is skipped). Failed or
-interrupted downloads keep their line for the next run. Comments, blank lines, a BOM and CRLF
-line endings are preserved, and the file is rewritten via a temp file so it's never left
-truncated.
-
-Before finishing, `urls.txt` is read again: if lines were added during the run, you're asked
-whether to download those too (`-y` answers yes), and this repeats until nothing new remains.
-
-Each line runs `yt-dlp --external-downloader aria2c --external-downloader-args "-x 16 -k 1M"
--o "<name or %(title)s>.%(ext)s" <url>`. With `-j 1` you see yt-dlp's own output; with more,
-each running download gets one status line showing its progress (percent, speed, time left), and a
-failed download's last lines of output are
-printed when it finishes. The command exits non-zero if any download failed, listing which (they stay in `urls.txt`).
-Every aria2c opens 16 connections, so `-j 4` means up to 64 at once.
 
 ---
 

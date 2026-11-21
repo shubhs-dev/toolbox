@@ -1,0 +1,298 @@
+"""vidlib's web server: the UI's page, a small JSON API, and a live event stream.
+
+stdlib only (ThreadingHTTPServer), listening on 127.0.0.1. Being local isn't protection on
+its own — any web page open in the browser can send requests to localhost — so:
+
+- the Host header must name this server (127.0.0.1 or localhost, this port), which defeats
+  DNS rebinding;
+- a request carrying an Origin must come from this server's own pages;
+- every API write takes a JSON body, and a cross-site JSON POST needs a CORS preflight this
+  server never answers.
+
+Live updates are Server-Sent Events on /api/events: the manager's state, sent whenever its
+version changes (at most every EVENT_INTERVAL seconds, since progress lines arrive far
+faster than anyone reads them), with a comment every few seconds to keep the line open.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import time
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+from toolboxcli._common.console import warn
+from toolboxcli.vidlib import naming
+from toolboxcli.vidlib.downloads import DownloadManager
+
+DEFAULT_PORT = 8642
+EVENT_INTERVAL = 0.25
+KEEPALIVE = 10.0
+MAX_BODY = 1_000_000
+
+_STATIC = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/app.css": ("app.css", "text/css; charset=utf-8"),
+}
+
+
+class ApiError(Exception):
+    def __init__(self, status: HTTPStatus, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+# ── naming, as the API returns it ────────────────────────────────────
+
+
+def _part_json(part: naming.NamedPart) -> dict[str, str]:
+    return {"text": part.text, "match": part.match, "suggestion": part.suggestion}
+
+
+def draft_json(draft: naming.Draft) -> dict[str, Any]:
+    return {
+        "people": [_part_json(p) for p in draft.people],
+        "title": draft.title,
+        "collection": _part_json(draft.collection) if draft.collection else None,
+        "stem": draft.stem,
+        "problems": draft.problems(),
+        "complete": draft.complete,
+    }
+
+
+def name_from_title(title: str, roles: list[str] | None,
+                    vocab: naming.Vocabulary) -> dict[str, Any]:
+    """Segments, their roles (guessed, or as given) and the name they make."""
+    segments = naming.split_segments(title)
+    if roles is not None and len(roles) == len(segments) and all(r in naming.ROLES
+                                                                  for r in roles):
+        chosen: list[naming.Role] = [next(r for r in naming.ROLES if r == given)
+                                     for given in roles]
+    else:
+        chosen = naming.guess_roles(segments, vocab)
+    draft = naming.compose(segments, chosen, vocab)
+    return {
+        "segments": [{"text": s.text, "site": s.site, "role": r}
+                     for s, r in zip(segments, chosen, strict=True)],
+        **draft_json(draft),
+    }
+
+
+# ── the request handler ──────────────────────────────────────────────
+
+
+class Handler(BaseHTTPRequestHandler):
+    server: VidlibServer
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, format: str, *args: Any) -> None:   # noqa: A002
+        pass   # the terminal belongs to the pipeline's display
+
+    # ── plumbing ──
+
+    def _allowed_hosts(self) -> set[str]:
+        port = self.server.server_address[1]
+        return {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    def _check_origin(self) -> None:
+        if self.headers.get("Host", "") not in self._allowed_hosts():
+            raise ApiError(HTTPStatus.FORBIDDEN, "unexpected Host header")
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in {f"http://{h}" for h in self._allowed_hosts()}:
+            raise ApiError(HTTPStatus.FORBIDDEN, "cross-origin requests are not allowed")
+
+    def _body(self) -> dict[str, Any]:
+        if self.headers.get_content_type() != "application/json":
+            raise ApiError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "send JSON")
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > MAX_BODY:
+            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request too large")
+        try:
+            data = json.loads(self.rfile.read(length) or b"{}")
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"bad JSON: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "expected a JSON object")
+        return data  # pyright: ignore[reportUnknownVariableType]
+
+    def _send(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+        self._send(status, json.dumps(data).encode(), "application/json")
+
+    def _handle(self, method: str) -> None:
+        try:
+            self._check_origin()
+            self._route(method)
+        except ApiError as exc:
+            self._json({"error": str(exc)}, exc.status)
+        except KeyError:
+            self._json({"error": "no such download"}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.CONFLICT)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._handle("GET")
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._handle("POST")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._handle("DELETE")
+
+    # ── routes ──
+
+    def _route(self, method: str) -> None:
+        url = urlsplit(self.path)
+        path, query = url.path, parse_qs(url.query)
+        mgr = self.server.manager
+
+        if method == "GET" and path in _STATIC:
+            name, content_type = _STATIC[path]
+            self._send(HTTPStatus.OK, files("toolboxcli.vidlib").joinpath(
+                "data", "web", name).read_bytes(), content_type)
+            return
+        if method == "GET" and path == "/api/state":
+            self._json(mgr.snapshot())
+            return
+        if method == "GET" and path == "/api/events":
+            self._events()
+            return
+        if method == "GET" and path == "/api/suggest":
+            kind = (query.get("kind") or ["people"])[0]
+            if kind not in ("people", "collections"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "kind is people or collections")
+            q = (query.get("q") or [""])[0]
+            self._json({"suggestions": mgr.vocabulary().suggest(
+                "people" if kind == "people" else "collections", q)})
+            return
+        if method == "POST" and path == "/api/name":
+            body = self._body()
+            roles: Any = body.get("roles")
+            self._json(name_from_title(str(body.get("title") or ""),
+                                       roles if isinstance(roles, list) else None,
+                                       mgr.vocabulary()))
+            return
+        if method == "POST" and path == "/api/name/fields":
+            body = self._body()
+            draft = naming.from_fields(str(body.get("people") or ""),
+                                       str(body.get("title") or ""),
+                                       str(body.get("collection") or ""), mgr.vocabulary())
+            self._json(draft_json(draft))
+            return
+        if method == "POST" and path == "/api/downloads":
+            body = self._body()
+            dl = mgr.add(str(body.get("url") or ""), str(body.get("name") or ""),
+                         str(body.get("page_title") or ""))
+            self._json({"id": dl.id}, HTTPStatus.CREATED)
+            return
+        if method == "POST" and path == "/api/downloads/bulk":
+            body = self._body()
+            urls: Any = body.get("urls")
+            if not isinstance(urls, list):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "urls must be a list")
+            added = mgr.add_bulk([str(u) for u in urls])  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+            self._json({"added": len(added)}, HTTPStatus.CREATED)
+            return
+        if method == "POST" and path == "/api/downloads/clear":
+            self._body()
+            self._json({"removed": mgr.clear_finished()})
+            return
+        if method == "POST" and path == "/api/downloads/import":
+            self._body()
+            moved, problems = mgr.import_waiting()
+            self._json({"moved": moved, "problems": problems})
+            return
+
+        parts = path.strip("/").split("/")
+        if len(parts) >= 3 and parts[:2] == ["api", "downloads"] and parts[2].isdigit():
+            download_id = int(parts[2])
+            action = parts[3] if len(parts) == 4 else None
+            if method == "DELETE" and action is None:
+                mgr.remove(download_id)
+                self._json({"ok": True})
+                return
+            if method == "POST" and action in ("retry", "cancel", "name"):
+                body = self._body()
+                if action == "retry":
+                    mgr.retry(download_id)
+                elif action == "cancel":
+                    mgr.cancel(download_id)
+                else:
+                    title: Any = body.get("page_title")
+                    mgr.name_item(download_id, str(body.get("name") or ""),
+                                  title if isinstance(title, str) else None)
+                self._json({"ok": True})
+                return
+        raise ApiError(HTTPStatus.NOT_FOUND, f"no such endpoint: {method} {path}")
+
+    def _events(self) -> None:
+        mgr = self.server.manager
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        self.close_connection = True
+        seen = -1
+        last_sent = 0.0
+        while not self.server.stopping.is_set():
+            version = mgr.wait_for_change(seen, KEEPALIVE)
+            if version == seen:
+                self.wfile.write(b": keepalive\n\n")
+            else:
+                pause = EVENT_INTERVAL - (time.monotonic() - last_sent)
+                if pause > 0:
+                    time.sleep(pause)
+                state = mgr.snapshot()
+                seen = state["version"]
+                self.wfile.write(f"data: {json.dumps(state)}\n\n".encode())
+                last_sent = time.monotonic()
+            self.wfile.flush()
+
+
+class VidlibServer(ThreadingHTTPServer):
+    daemon_threads = True   # an open event stream never holds up quitting
+
+    def __init__(self, manager: DownloadManager, port: int = DEFAULT_PORT) -> None:
+        self.manager = manager
+        self.stopping = threading.Event()
+        super().__init__(("127.0.0.1", port), Handler)
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """A client that hangs up or sends garbage isn't worth a traceback over the pipeline's
+        display; anything else gets one line."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, ConnectionError | TimeoutError):
+            return
+        warn(f"Web page: {type(exc).__name__}: {exc}")
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}/"
+
+    def start(self) -> threading.Thread:
+        thread = threading.Thread(target=self.serve_forever, name="vidlib-web", daemon=True)
+        thread.start()
+        return thread
+
+    def stop(self) -> None:
+        self.stopping.set()
+        self.shutdown()
+        self.server_close()
