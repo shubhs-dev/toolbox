@@ -157,12 +157,11 @@ def test_transcode_stops_when_cancelled(tmp_path, monkeypatch):
 
 @needs("ffprobe")
 def test_an_unplugged_library_marks_nothing_missing(tmp_path):
-    root = tmp_path / "Volumes" / "Media"
-    root.mkdir(parents=True)
-    with LibraryDB.open(root) as db:
+    # The database stays open while its disk goes away; renaming the folder under an open
+    # SQLite file isn't allowed on Windows, so the loop is pointed at a root that's gone.
+    with LibraryDB.open(tmp_path) as db:
         db.upsert(Video(path="C/A - B - C.mp4"))
-    with LibraryDB.open(root) as db:
-        root.rename(tmp_path / "unplugged")                  # the disk goes away
+        root = tmp_path / "Volumes" / "Media"
         args = vidlib.build_parser().parse_args([str(root), "-O", "-n", "-S"])
         status = PipelineStatus()
         vidlib.run(root, db, args, status)
