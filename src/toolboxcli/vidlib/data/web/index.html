@@ -71,10 +71,12 @@
           </span>
         </label>
         <div class="people-chips" id="people-chips"></div>
+        <div class="pills" id="people-pills"></div>
         <label class="field">
           <span class="label">Title</span>
           <input id="title" type="text">
         </label>
+        <div class="pills" id="title-pills"></div>
         <label class="field">
           <span class="label">Collection</span>
           <span class="combo">
@@ -83,6 +85,7 @@
           </span>
         </label>
         <div class="people-chips" id="collection-chip"></div>
+        <div class="pills" id="collection-pills"></div>
       </div>
 
       <div class="preview" id="preview">
@@ -217,15 +220,19 @@
       <label class="field"><span class="label">People</span>
         <span class="combo"><input id="rn-people" type="text">
           <ul class="suggest" id="rn-people-suggest" role="listbox" hidden></ul></span></label>
+      <div class="pills" id="rn-people-pills"></div>
       <label class="field"><span class="label">Title</span><input id="rn-title" type="text"></label>
+      <div class="pills" id="rn-title-pills"></div>
       <label class="field"><span class="label">Collection</span>
         <span class="combo"><input id="rn-collection" type="text">
           <ul class="suggest" id="rn-collection-suggest" role="listbox" hidden></ul></span></label>
+      <div class="pills" id="rn-collection-pills"></div>
       <div class="preview"><span class="label">New name</span>
         <code class="stem" id="rn-stem"></code>
         <ul class="problems" id="rn-problems"></ul></div>
       <div class="actions">
         <button type="submit" class="primary" id="rn-save" disabled>Rename</button>
+        <button type="button" id="rn-close">Close</button>
         <span class="form-msg" id="detail-msg" role="status"></span>
       </div>
     </form>

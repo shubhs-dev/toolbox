@@ -153,12 +153,9 @@ function renderDraft(data) {
     stem.textContent = "Named after the video's own title";
     stem.classList.add("dim");
   }
-  // An empty form has nothing wrong with it yet.
-  $("problems").replaceChildren(...(data.stem ? data.problems : []).map((p) => {
-    const li = document.createElement("li");
-    li.textContent = p;
-    return li;
-  }));
+  $("problems").replaceChildren(...problemItems(data));
+  // A pill click edits the fields by hand, so the segments stop driving them.
+  renderPills(data, ADD_FIELDS, () => { form.mode = "fields"; fieldsChanged(); });
   updateAddButton();
 }
 
@@ -528,6 +525,60 @@ function thumbUrl(path) {
   return `/api/thumb?path=${encodeURIComponent(path)}`;
 }
 
+// A light hover preview: after a short pause on a card, step through a filmstrip of frames
+// from across the video (one cached JPEG, made on first hover). Only where there's a real
+// pointer, and without the stepping when reduced motion is asked for.
+const STRIP_FRAMES = 6;
+const canHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function attachPreview(card, wrap, v) {
+  if (!canHover || !v.duration) return;
+  let strip = null, dots = null, timer = null, delay = null, frame = 0, loaded = false;
+  const show = (i) => {
+    frame = i % STRIP_FRAMES;
+    strip.style.backgroundPosition = `${(frame / (STRIP_FRAMES - 1)) * 100}% 0`;
+    [...dots.children].forEach((d, j) => d.classList.toggle("at", j === frame));
+  };
+  const start = () => {
+    if (!strip) {
+      strip = document.createElement("span");
+      strip.className = "strip";
+      dots = document.createElement("span");
+      dots.className = "strip-dots";
+      dots.append(...Array.from({ length: STRIP_FRAMES }, () => document.createElement("i")));
+      wrap.append(strip, dots);
+      const probe = new Image();
+      probe.onload = () => {
+        loaded = true;
+        strip.style.backgroundImage = `url("${probe.src}")`;
+        if (card.matches(":hover")) begin();
+      };
+      probe.src = `/api/strip?path=${encodeURIComponent(v.path)}`;
+      return;
+    }
+    if (loaded) begin();
+  };
+  const begin = () => {
+    show(0);
+    strip.classList.add("on");
+    if (!reduceMotion) timer = setInterval(() => show(frame + 1), 650);
+  };
+  card.addEventListener("mouseenter", () => { delay = setTimeout(start, 350); });
+  card.addEventListener("mouseleave", () => {
+    clearTimeout(delay);
+    clearInterval(timer);
+    if (strip) strip.classList.remove("on");
+  });
+  // Moving across the thumbnail scrubs instead of waiting for the next step.
+  wrap.addEventListener("mousemove", (e) => {
+    if (!loaded || !strip.classList.contains("on")) return;
+    clearInterval(timer);
+    const r = wrap.getBoundingClientRect();
+    show(Math.min(STRIP_FRAMES - 1, Math.floor(((e.clientX - r.left) / r.width) * STRIP_FRAMES)));
+  });
+}
+
 function card(v) {
   const li = document.createElement("li");
   const b = document.createElement("button");
@@ -539,6 +590,10 @@ function card(v) {
   img.alt = "";
   img.src = thumbUrl(v.path);
   img.addEventListener("error", () => img.classList.add("none"), { once: true });
+  const wrap = document.createElement("span");
+  wrap.className = "thumbwrap";
+  wrap.append(img);
+  attachPreview(b, wrap, v);
   const body = document.createElement("span");
   body.className = "body";
   const t = document.createElement("span");
@@ -572,7 +627,7 @@ function card(v) {
     m.append(pill);
   }
   body.append(t, p, m);
-  b.append(img, body);
+  b.append(wrap, body);
   b.addEventListener("click", () => openDetail(v.path));
   li.append(b);
   return li;
@@ -667,17 +722,91 @@ async function renamePreview() {
   const seq = ++detail.seq;
   const data = await api("POST", "/api/name/fields", {
     people: $("rn-people").value, title: $("rn-title").value, collection: $("rn-collection").value,
+    path: detail.path,
   });
   if (seq !== detail.seq) return;
   const tags = detail.video && detail.video.tags.length ? ` [${detail.video.tags.join(" ")}]` : "";
   $("rn-stem").textContent = data.stem ? `${data.stem}${tags}` : "";
-  $("rn-problems").replaceChildren(...data.problems.map((p) => {
+  $("rn-problems").replaceChildren(...problemItems(data));
+  renderPills(data, RENAME_FIELDS, renameChanged);
+  const unchanged = detail.video && `${data.stem}${tags}` === detail.video.filename.replace(/\.[^.]+$/, "");
+  $("rn-save").disabled = !data.complete || unchanged;
+}
+
+// Your own fill-ins for a field you can't name yet, beside what the title gives away.
+const FILL_INS = { people: ["Unknown"], title: ["Unknown"], collection: ["Unknown", "Clips"] };
+
+function pillButton(label, cls, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = `pill-btn ${cls}`;
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+// Pills under People / Title / Collection: known names the title gives away (clicking one moves
+// it out of the title into its field) and your fill-ins. *f* names the form's three inputs
+// and pill rows; *changed* re-runs the form's preview.
+function renderPills(data, f, changed) {
+  const people = $(f.people), title = $(f.title), coll = $(f.collection);
+  const rows = [$(f.peoplePills), $(f.titlePills), $(f.collectionPills)];
+  // Each "title without X" was worked out from the title as it is now. Once a pill or the
+  // keyboard changes it, every pill is stale: clear them until the next answer brings fresh
+  // ones, and ignore a click on one that's still on screen.
+  const basis = title.value;
+  const set = (input, value) => {
+    input.value = value;
+    for (const row of rows) row.replaceChildren();
+    changed();
+  };
+  const fresh = (fn) => () => { if (title.value === basis) fn(); };
+  const found = data.found || [];
+  const peoplePills = found.filter((x) => x.kind === "people").map((x) =>
+    pillButton(x.name, "found-people", fresh(() => {
+      const now = people.value.trim();
+      people.value = now && now !== "Unknown" ? `${now}, ${x.name}` : x.name;
+      set(title, x.title_without);
+    })));
+  const collPills = found.filter((x) => x.kind === "collection").map((x) =>
+    pillButton(x.name, "found-collection", fresh(() => {
+      coll.value = x.name;
+      set(title, x.title_without);
+    })));
+  const fillIns = (input, field) => FILL_INS[field]
+    .filter((v) => input.value.trim().toLowerCase() !== v.toLowerCase())
+    .map((v) => pillButton(v, "fill-in", () => set(input, v)));
+  $(f.peoplePills).replaceChildren(...peoplePills, ...fillIns(people, "people"));
+  $(f.titlePills).replaceChildren(...fillIns(title, "title"));
+  $(f.collectionPills).replaceChildren(...collPills, ...fillIns(coll, "collection"));
+}
+
+const RENAME_FIELDS = {
+  people: "rn-people", title: "rn-title", collection: "rn-collection",
+  peoplePills: "rn-people-pills", titlePills: "rn-title-pills", collectionPills: "rn-collection-pills",
+};
+const ADD_FIELDS = {
+  people: "people", title: "title", collection: "collection",
+  peoplePills: "people-pills", titlePills: "title-pills", collectionPills: "collection-pills",
+};
+
+// The draft's problems, plus a warning when the name is one the library already has: that
+// makes them the same video to duplicate detection, which keeps only the better copy.
+function problemItems(data) {
+  const items = (data.stem ? data.problems : []).map((p) => {
     const li = document.createElement("li");
     li.textContent = p;
     return li;
-  }));
-  const unchanged = detail.video && `${data.stem}${tags}` === detail.video.filename.replace(/\.[^.]+$/, "");
-  $("rn-save").disabled = !data.complete || unchanged;
+  });
+  if (data.same_as && data.same_as.length) {
+    const li = document.createElement("li");
+    li.className = "same";
+    li.textContent = `Already in the library as ${data.same_as.join(", ")} — vidlib will treat ` +
+      "them as the same video and keep only the better copy. If they're different videos, " +
+      "change the title.";
+    items.push(li);
+  }
+  return items;
 }
 
 async function detailAction(action) {
@@ -898,7 +1027,12 @@ $("detail-reveal").addEventListener("click", () => detailAction("reveal"));
 $("detail-trash").addEventListener("click", () => {
   $("detail-confirm-text").textContent = `Move ${detail.video.filename} to the Trash?`;
   $("detail-confirm").hidden = false;
+  $("detail-confirm").scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+  $("detail-confirm-yes").focus({ preventScroll: true });
 });
+$("rn-close").addEventListener("click", () => $("detail").close());
+// A click on the dimmed backdrop lands on the dialog element itself (its content is inside).
+$("detail").addEventListener("click", (e) => { if (e.target === $("detail")) $("detail").close(); });
 $("detail-confirm-no").addEventListener("click", () => { $("detail-confirm").hidden = true; });
 $("detail-confirm-yes").addEventListener("click", async () => {
   try {

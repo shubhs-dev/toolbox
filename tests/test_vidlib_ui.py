@@ -115,3 +115,60 @@ def test_renaming_from_the_library_page(library_url):
         assert (root / "Lakes" / "Bob - Swim at dawn - Lakes.mp4").exists()
         assert errors == []
         browser.close()
+
+
+def test_pills_fill_the_fields_and_the_dialog_closes_easily(library_url):
+    url, root = library_url
+    (root / "Alice and Bob swimming in the Lakes.mp4").write_bytes(b"x")
+    with LibraryDB.open(root) as db:
+        db.upsert(Video(path="Alice and Bob swimming in the Lakes.mp4", height=480))
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"no Chromium for Playwright: {exc}")
+        page = browser.new_page(viewport={"width": 900, "height": 500})
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url + "#library")
+        page.click(".seg button[data-view='unnamed']")
+        sync_api.expect(page.locator(".card")).to_have_count(1)
+        page.locator(".card").first.click()
+        pills = page.locator("#rn-people-pills")
+        # Everything starts in the title; the known names are offered as pills.
+        page.locator("#rn-people-pills").get_by_role("button", name="Alice").click()
+        sync_api.expect(page.locator("#rn-people")).to_have_value("Alice")
+        sync_api.expect(page.locator("#rn-title")).to_have_value("Bob swimming in the Lakes")
+        pills.get_by_role("button", name="Bob").click()
+        sync_api.expect(page.locator("#rn-stem")).to_have_text("Alice, Bob - swimming in the Lakes")
+        page.locator("#rn-collection-pills").get_by_role("button", name="Lakes").click()
+        sync_api.expect(page.locator("#rn-stem")).to_have_text(
+            "Alice, Bob - swimming in the - Lakes")
+        # The fill-ins replace a field outright.
+        page.locator("#rn-title-pills").get_by_role("button", name="Unknown").click()
+        page.locator("#rn-collection-pills").get_by_role("button", name="Clips").click()
+        sync_api.expect(page.locator("#rn-stem")).to_have_text("Alice, Bob - Unknown - Clips")
+
+        # The Trash confirmation scrolls into view; Close sits beside Rename.
+        page.click("#detail-trash")
+        sync_api.expect(page.locator("#detail-confirm-yes")).to_be_in_viewport()
+        page.click("#detail-confirm-no")
+        page.click("#rn-close")
+        sync_api.expect(page.locator("#detail")).to_be_hidden()
+
+        # A click on the backdrop closes it too.
+        page.locator(".card").first.click()
+        sync_api.expect(page.locator("#detail")).to_be_visible()
+        page.mouse.click(5, 5)
+        sync_api.expect(page.locator("#detail")).to_be_hidden()
+
+        # The add-a-download form offers the same pills.
+        page.goto(url + "#downloads")
+        page.fill("#url", "https://example.com/v")
+        page.fill("#page-title", "Carol - Bob hiking - Peaks")
+        page.locator("#people-pills").get_by_role("button", name="Bob").click()
+        sync_api.expect(page.locator("#stem")).to_have_text("Carol, Bob - hiking - Peaks.ext")
+        page.locator("#collection-pills").get_by_role("button", name="Clips").click()
+        sync_api.expect(page.locator("#stem")).to_have_text("Carol, Bob - hiking - Clips.ext")
+        assert errors == []
+        browser.close()

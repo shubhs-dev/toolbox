@@ -58,7 +58,7 @@ recorded in the library database, so the queue survives a restart.
 
 The page's Library tab browses what the database knows — search, people, collection and
 resolution filters, the duplicates, badly named files and the review queue — with a
-thumbnail for each video, and lets you play it, show it in Finder, rename it (moving it into
+thumbnail for each video (a few frames from across it on hover), and lets you play it, show it in Finder, rename it (moving it into
 its new collection's folder; its history follows) or move it to the Trash. The Review tab
 shows each file parked in _review/ next to the library copy it was compared with: keep the
 new one (the library's goes to the Trash), keep the library's, or rename the new one to keep

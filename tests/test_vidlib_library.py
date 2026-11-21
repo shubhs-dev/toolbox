@@ -259,3 +259,49 @@ def test_deciding_needs_a_review_item(client):
     assert status == 409 and "isn't waiting in review" in err["error"]
     status, err = client("POST", "/api/library/decide", {"path": PARKED, "keep": "maybe"})
     assert status == 409
+
+
+# ── naming help for the rename form ────────────────────────────────────
+
+
+def test_the_fields_answer_offers_names_from_the_title_and_flags_a_taken_name(client):
+    _, data = client("POST", "/api/name/fields", {
+        "people": "", "title": "Carol and Bob at the Peaks", "collection": "",
+        "path": "Odd name.mp4"})
+    assert [(f["kind"], f["name"], f["title_without"]) for f in data["found"]] == [
+        ("people", "Carol", "Bob at the Peaks"), ("people", "Bob", "Carol at the Peaks"),
+        ("collection", "Peaks", "Carol and Bob at the")]
+    assert data["same_as"] == []
+    _, data = client("POST", "/api/name/fields", {
+        "people": "bob, alice", "title": "day 1", "collection": "Lakes", "path": "Odd name.mp4"})
+    assert sorted(data["same_as"]) == [
+        "Lakes/Alice, Bob - Day 1 - Lakes [1080p].mp4", "Lakes/Bob and Alice - Day 1 - Lakes [720p].mp4"]
+    # Renaming a video to its own name isn't a clash with itself.
+    _, data = client("POST", "/api/name/fields", {
+        "people": "Carol", "title": "Summit", "collection": "Peaks",
+        "path": "Peaks/Carol - Summit - Peaks [720p Restored].mp4"})
+    assert data["same_as"] == []
+
+
+def test_the_title_answer_offers_names_too(client):
+    _, data = client("POST", "/api/name", {"title": "Bob - Hiking with Carol - Mountains"})
+    assert data["title"] == "Hiking with Carol"
+    assert [(f["name"], f["title_without"]) for f in data["found"]] == [("Carol", "Hiking")]
+    assert data["same_as"] == []
+
+
+@needs("ffmpeg", "ffprobe")
+def test_the_hover_filmstrip_is_made_once_and_cached(client, library, make_video):
+    make_video(library / "Peaks" / "Dee - Real - Peaks.mp4", "640x360", seconds=3)
+    with LibraryDB.open(library) as db:
+        db.upsert(Video(path="Peaks/Dee - Real - Peaks.mp4", duration=3.0))
+    path = quote("Peaks/Dee - Real - Peaks.mp4")
+    status, image = client("GET", f"/api/strip?path={path}")
+    assert status == 200 and image[:2] == b"\xff\xd8"
+    import subprocess
+    strip = next((library / ".vidlib-cache" / "thumbs").glob("*-strip.jpg"))
+    size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height",
+                           "-of", "csv=p=0", str(strip)], capture_output=True, text=True).stdout
+    assert size.strip() == "1920,180"                   # six 320-wide frames side by side
+    assert client("GET", f"/api/strip?path={path}")[1] == image
+    assert client("GET", "/api/strip?path=" + quote("Odd name.mp4"))[0] == 404   # no length

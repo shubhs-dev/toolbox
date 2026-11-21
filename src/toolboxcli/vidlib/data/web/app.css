@@ -272,3 +272,20 @@ button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 4
 .side-card dd.better { color: var(--ok); font-weight: 600; }
 .pair .actions { justify-content: flex-start; }
 .both { display: grid; gap: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
+
+/* ── rename pills, hover preview ── */
+.pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -4px; }
+.pills:empty { display: none; }
+.pill-btn { font-size: 12px; padding: 2px 9px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); }
+.pill-btn.found-people { border-color: var(--people); color: var(--people); background: var(--people-bg); }
+.pill-btn.found-collection { border-color: var(--collection); color: var(--collection); background: var(--collection-bg); }
+.pill-btn.found-people::before, .pill-btn.found-collection::before { content: "+ "; }
+.problems li.same { color: var(--bad); }
+.thumbwrap { position: relative; display: block; overflow: hidden; }
+.strip { position: absolute; inset: 0; background-size: 600% 100%; background-repeat: no-repeat; opacity: 0; transition: opacity .15s ease; pointer-events: none; }
+.strip.on { opacity: 1; }
+.strip-dots { position: absolute; left: 6px; right: 6px; bottom: 5px; display: flex; gap: 3px; opacity: 0; transition: opacity .15s ease; }
+.strip.on + .strip-dots { opacity: 1; }
+.strip-dots i { flex: 1; height: 2px; border-radius: 1px; background: rgb(255 255 255 / .45); }
+.strip-dots i.at { background: #fff; }
+@media (prefers-reduced-motion: reduce) { .strip, .strip-dots { transition: none; } }

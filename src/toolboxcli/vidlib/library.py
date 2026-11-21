@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -28,6 +30,8 @@ from toolboxcli.vidlib.status import PipelineStatus
 
 CACHE_DIR = ".vidlib-cache"
 THUMB_WIDTH = 480
+STRIP_FRAMES = 6
+STRIP_WIDTH = 320
 PAGE_SIZE = 60
 VIEWS = ("all", "duplicates", "unnamed", "review")
 
@@ -126,36 +130,80 @@ class Library:
         if current and current["file"] == row.filename and "/" not in row.path:
             raise LibraryError("the pipeline is working on that file right now")
 
-    def thumbnail(self, path: str) -> bytes:
-        """A JPEG frame from a tenth of the way in, made once and cached by path, size and
-        modified time (so a re-encoded file gets a fresh one)."""
+    def _cached(self, path: str, kind: str) -> tuple[Video, Path, Path]:
+        """(row, file, cache file) for one cached image of a known video, keyed by path, size
+        and modified time — so a re-encoded file gets a fresh one."""
         row, file = self._known(path)
         st = file.stat()
         key = hashlib.sha1(f"{row.path}\0{st.st_size}\0{st.st_mtime}".encode()).hexdigest()
-        cache = self.root / CACHE_DIR / "thumbs"
-        thumb = cache / f"{key}.jpg"
+        return row, file, self.root / CACHE_DIR / "thumbs" / f"{key}{kind}.jpg"
+
+    @staticmethod
+    def _frame(file: Path, at: float, width: int, out: Path) -> bool:
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.2f}", "-i", str(file),
+             "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "5", str(out)],
+            capture_output=True, timeout=60, check=False, **detached_kwargs(),
+        )
+        return out.is_file() and out.stat().st_size > 0
+
+    def thumbnail(self, path: str) -> bytes:
+        """A JPEG frame from a tenth of the way in, made once and cached."""
+        row, file, thumb = self._cached(path, "")
         if thumb.is_file():
             return thumb.read_bytes()
         with self._thumbs:
             if not thumb.is_file():
-                cache.mkdir(parents=True, exist_ok=True)
-                tmp = cache / f".{key}.tmp.jpg"
+                thumb.parent.mkdir(parents=True, exist_ok=True)
+                tmp = thumb.with_name(f".{thumb.stem}.tmp.jpg")
                 # A tenth of the way in skips black intros; the first frame is the fallback
                 # for a file shorter than its recorded duration.
                 for at in dict.fromkeys((max(row.duration * 0.1, 0.0), 0.0)):
-                    subprocess.run(
-                        ["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.2f}", "-i", str(file),
-                         "-frames:v", "1", "-vf", f"scale={THUMB_WIDTH}:-2", "-q:v", "5",
-                         str(tmp)],
-                        capture_output=True, timeout=60, check=False, **detached_kwargs(),
-                    )
-                    if tmp.is_file() and tmp.stat().st_size > 0:
+                    if self._frame(file, at, THUMB_WIDTH, tmp):
                         break
                 else:
                     tmp.unlink(missing_ok=True)
                     raise LibraryError("ffmpeg couldn't read a frame from it")
                 os.replace(tmp, thumb)
         return thumb.read_bytes()
+
+    def filmstrip(self, path: str) -> bytes:
+        """STRIP_FRAMES frames spread across the video, side by side in one JPEG, for the
+        hover preview. Each is a fast seek, so a long video costs no more than a short one;
+        a frame that can't be read repeats the one before."""
+        row, file, strip = self._cached(path, "-strip")
+        if strip.is_file():
+            return strip.read_bytes()
+        if row.duration <= 0:
+            raise LibraryError("no length known, so no preview")
+        with self._thumbs:
+            if not strip.is_file():
+                strip.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(dir=strip.parent) as work:
+                    frames = [Path(work) / f"f{i}.jpg" for i in range(STRIP_FRAMES)]
+                    have: Path | None = None
+                    for i, out in enumerate(frames):
+                        at = row.duration * (i + 0.5) / STRIP_FRAMES
+                        if self._frame(file, at, STRIP_WIDTH, out):
+                            have = out
+                        elif have is not None:
+                            shutil.copyfile(have, out)
+                    if have is None:
+                        raise LibraryError("ffmpeg couldn't read a frame from it")
+                    for out in frames:              # leading failures borrow the first good one
+                        if not out.is_file():
+                            shutil.copyfile(have, out)
+                    tmp = Path(work) / "strip.jpg"
+                    subprocess.run(
+                        ["ffmpeg", "-v", "error", "-y", "-start_number", "0",
+                         "-i", str(Path(work) / "f%d.jpg"), "-vf", f"tile={STRIP_FRAMES}x1",
+                         "-frames:v", "1", "-q:v", "6", str(tmp)],
+                        capture_output=True, timeout=60, check=False, **detached_kwargs(),
+                    )
+                    if not tmp.is_file():
+                        raise LibraryError("ffmpeg couldn't build the preview")
+                    os.replace(tmp, strip)
+        return strip.read_bytes()
 
     def open(self, path: str, reveal: bool = False) -> None:
         """Play the file in its default app, or show it in Finder / Explorer."""
@@ -216,6 +264,14 @@ class Library:
         with self.lock:
             self.db.remove(row.path)
             self.db.log_event(row.path, "trashed", "from the web page")
+
+    def same_as(self, stem: str, exclude_path: str | None = None) -> list[str]:
+        """Paths of videos the library would take for the same video as *stem* — duplicate
+        detection would then compare them, and replace or park the worse one."""
+        if not stem:
+            return []
+        with self.lock:
+            return [v.path for v in self.db.same_video(stem, exclude_path)]
 
     # ── the review queue ──
 

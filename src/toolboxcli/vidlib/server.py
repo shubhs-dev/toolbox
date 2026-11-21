@@ -86,6 +86,13 @@ def name_from_title(title: str, roles: list[str] | None,
     }
 
 
+def _found(title: str, vocab: naming.Vocabulary, people: list[str],
+           collection: str) -> list[dict[str, str]]:
+    """Known people and collections sitting in a title, for the forms' pills."""
+    return [{"kind": f.kind, "name": f.name, "title_without": f.title_without}
+            for f in naming.find_in_title(title, vocab, people, collection)]
+
+
 # ── the request handler ──────────────────────────────────────────────
 
 
@@ -193,16 +200,28 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/name":
             body = self._body()
             roles: Any = body.get("roles")
-            self._json(name_from_title(str(body.get("title") or ""),
-                                       roles if isinstance(roles, list) else None,
-                                       mgr.vocabulary()))
+            vocab = mgr.vocabulary()
+            data = name_from_title(str(body.get("title") or ""),
+                                   roles if isinstance(roles, list) else None, vocab)
+            data["same_as"] = self.server.library.same_as(data["stem"])
+            data["found"] = _found(data["title"], vocab, [p["text"] for p in data["people"]],
+                                   data["collection"]["text"] if data["collection"] else "")
+            self._json(data)
             return
         if method == "POST" and path == "/api/name/fields":
             body = self._body()
-            draft = naming.from_fields(str(body.get("people") or ""),
-                                       str(body.get("title") or ""),
-                                       str(body.get("collection") or ""), mgr.vocabulary())
-            self._json(draft_json(draft))
+            vocab = mgr.vocabulary()
+            title = str(body.get("title") or "")
+            draft = naming.from_fields(str(body.get("people") or ""), title,
+                                       str(body.get("collection") or ""), vocab)
+            data = draft_json(draft)
+            # Known people and collections sitting in the title: the rename form offers them.
+            data["found"] = _found(title, vocab, [p.text for p in draft.people],
+                                   draft.collection.text if draft.collection else "")
+            renaming: Any = body.get("path")
+            data["same_as"] = self.server.library.same_as(
+                draft.stem, renaming if isinstance(renaming, str) else None)
+            self._json(data)
             return
         if method == "POST" and path == "/api/downloads":
             body = self._body()
@@ -218,7 +237,7 @@ class Handler(BaseHTTPRequestHandler):
             added = mgr.add_bulk([str(u) for u in urls])  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
             self._json({"added": len(added)}, HTTPStatus.CREATED)
             return
-        if path.startswith("/api/library") or path == "/api/thumb":
+        if path.startswith("/api/library") or path in ("/api/thumb", "/api/strip"):
             self._library(method, path, query)
             return
         if method == "POST" and path in ("/api/pipeline/pause", "/api/pipeline/stop",
@@ -280,9 +299,9 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/library/video":
             self._json(lib.video(arg("path")))
             return
-        if method == "GET" and path == "/api/thumb":
+        if method == "GET" and path in ("/api/thumb", "/api/strip"):
             try:
-                image = lib.thumbnail(arg("path"))
+                image = (lib.thumbnail if path == "/api/thumb" else lib.filmstrip)(arg("path"))
             except LibraryError as exc:
                 raise ApiError(HTTPStatus.NOT_FOUND, str(exc)) from exc
             self._send(HTTPStatus.OK, image, "image/jpeg")

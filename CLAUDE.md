@@ -445,6 +445,15 @@ Progress *factories* themselves) were extracted from it.
   `tests/fixtures/vidlib_titles.json` is the spec — change a rule by changing the code and the
   affected rows. Colons don't split: `Part 2: The Return` would come back as
   `Part 2 - The Return`.
+  `find_in_title` powers the forms' pills: whole-word runs of the title that are a known
+  person or collection (exact or loose), longest first, the *first* mention of a person and
+  the *last* of a collection, each with the title it leaves (`_without` tidies the gap: a
+  dangling `&`/`and`/`with`/`ft.` goes, a field separator on either side survives once). The
+  page only ever applies `title_without` from an answer for the title as it is *now* — a
+  pill click clears every pill until the fresh answer arrives, or a quick second click would
+  put the first name back. "Unknown"/"Clips" are the user's own fill-ins, fixed in the page.
+  Both naming answers carry `same_as`: library videos with the same match key, i.e. what
+  duplicate detection would take for the same video and replace or park.
 - `vidlib/fetcher.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only through
   callbacks (`on_start`, `on_line` with a parsed `Progress`, `on_done`), never printing. Every
   job writes into its own folder, so the finished file is whatever non-partial file is left
@@ -492,7 +501,9 @@ Progress *factories* themselves) were extracted from it.
   same file. Trash goes through `move_to_trash`. Both refuse the root file the pipeline is
   working on. Thumbnails are one ffmpeg frame at 10% (falling back to the first frame),
   cached in `.vidlib-cache/thumbs/` keyed by path + size + mtime, at most two ffmpeg runs at
-  once.
+  once. The hover preview is a filmstrip (`filmstrip`): six fast-seek frames tiled
+  into one JPEG, cached alongside, stepped through by `background-position` — no video is
+  streamed, so any container or codec works and nothing autoplays.
 - `vidlib/server.py` is stdlib `ThreadingHTTPServer` on 127.0.0.1 only, with the page as
   package data in `vidlib/data/web/` (plain HTML/CSS/JS, no build step) and live state over
   Server-Sent Events (`/api/events`, throttled to `EVENT_INTERVAL`). Being on localhost isn't

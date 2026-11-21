@@ -123,3 +123,34 @@ def test_fields_are_made_safe_for_the_convention():
     assert draft.title == "Day 1 - Part 2-3 the end"         # " - " is allowed in a title
     assert draft.collection is not None and draft.collection.text == "Lakes Peaks X"
     assert draft.complete
+
+
+# ── Names hiding in a title (the forms' pills) ─────────────────────────
+
+FIND_VOCAB = Vocabulary.from_spellings(["Alice", "Bob", "Mary Jane", "DougDoug"],
+                                       ["Lakes", "Lemonade Stand"])
+
+
+@pytest.mark.parametrize("title, have, expected", [
+    # The title a known name leaves behind, separators tidied.
+    ("Alice & Bob hike to the lakes (Lakes)", [], [
+        ("people", "Alice", "Bob hike to the lakes (Lakes)"),
+        ("people", "Bob", "Alice hike to the lakes (Lakes)"),
+        ("collection", "Lakes", "Alice & Bob hike to the lakes")]),     # the last mention
+    ("Day 1 - Alice - Lakes", [], [
+        ("people", "Alice", "Day 1 - Lakes"), ("collection", "Lakes", "Day 1 - Alice")]),
+    ("Sunset with Bob", [], [("people", "Bob", "Sunset")]),
+    ("dougdoug's Lemonade Stand finale", [], [
+        ("people", "DougDoug", "Lemonade Stand finale"),
+        ("collection", "Lemonade Stand", "dougdoug's finale")]),
+    ("Mary Jane and Alice swim", ["alice"], [("people", "Mary Jane", "Alice swim")]),
+    ("Bobby goes home", [], []),                                  # whole words only
+])
+def test_known_names_are_found_in_a_title(title, have, expected):
+    found = naming.find_in_title(title, FIND_VOCAB, have)
+    assert [(f.kind, f.name, f.title_without) for f in found] == expected
+
+
+def test_a_collection_already_chosen_isnt_suggested_again():
+    found = naming.find_in_title("Alice at the Lakes", FIND_VOCAB, [], "lakes")
+    assert [f.name for f in found] == ["Alice"]
