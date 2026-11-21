@@ -460,6 +460,17 @@ Progress *factories* themselves) were extracted from it.
   would otherwise sync as "every video missing". `_finish` results carry the file's final
   root-relative `path`, which `on_settled` hands to `DownloadManager.video_settled` so an
   imported download follows its video. KeepAwake runs `caffeinate -i -w <pid>` on macOS only.
+- `vidlib/library.py` is the Library tab's backend. Every action takes a root-relative path
+  and first checks the *database* knows it (`_known`), so a crafted path (`../x`) can never
+  reach a file outside the library. It shares the download manager's connection and lock.
+  Rename builds the name with `naming.from_fields` (so the library's spellings and the same
+  checks as a download), keeps the `[tags]`, moves the file into its collection's folder as
+  the pipeline would find it (`cli.find_folder`, imported lazily — cli imports the server)
+  and moves its row with `db.move`; it refuses to overwrite, except a case-only rename of the
+  same file. Trash goes through `move_to_trash`. Both refuse the root file the pipeline is
+  working on. Thumbnails are one ffmpeg frame at 10% (falling back to the first frame),
+  cached in `.vidlib-cache/thumbs/` keyed by path + size + mtime, at most two ffmpeg runs at
+  once.
 - `vidlib/server.py` is stdlib `ThreadingHTTPServer` on 127.0.0.1 only, with the page as
   package data in `vidlib/data/web/` (plain HTML/CSS/JS, no build step) and live state over
   Server-Sent Events (`/api/events`, throttled to `EVENT_INTERVAL`). Being on localhost isn't

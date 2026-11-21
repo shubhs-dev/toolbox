@@ -56,6 +56,11 @@ title; one is the collection; a part after the last "|" (the site's name) is ski
 Downloads run in _incoming/ and move into the root when they finish, -j at a time. They're
 recorded in the library database, so the queue survives a restart.
 
+The page's Library tab browses what the database knows — search, people, collection and
+resolution filters, the duplicates, badly named files and the review queue — with a
+thumbnail for each video, and lets you play it, show it in Finder, rename it (moving it into
+its new collection's folder; its history follows) or move it to the Trash.
+
 The page also shows the pipeline: the file being encoded (preset, encoder, progress, time
 left), what's next, and what happened to recent files. Pause stops after the current file;
 Stop now also stops its encode, leaving the file in the root as it was. While anything

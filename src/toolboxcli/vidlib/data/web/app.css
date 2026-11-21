@@ -206,3 +206,51 @@ textarea { font-family: var(--font-mono); font-size: 12.5px; resize: vertical; }
 .pill.paused, .pill.outside_hours, .pill.high_load, .pill.review, .pill.awaiting_trip { background: var(--warn-bg); color: var(--warn); }
 .pill.disk_missing, .pill.stopped { background: var(--bad-bg); color: var(--bad); }
 .pill.sorted { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+
+/* ── tabs ── */
+.tabs { display: flex; gap: 2px; flex: none; }
+.tab { color: var(--muted); text-decoration: none; padding: 4px 10px; border-radius: 6px; font-weight: 550; }
+.tab:hover { color: var(--fg); background: var(--sunken); }
+.tab[aria-current="page"] { color: var(--fg); background: var(--sunken); }
+@media (max-width: 640px) { .top-inner { flex-wrap: wrap; } .overall { order: 3; flex-basis: 100%; } }
+
+/* ── library ── */
+.library {
+  max-width: 1280px; margin: 0 auto; display: grid; gap: 12px;
+  padding: 16px max(16px, env(safe-area-inset-right, 0px)) 32px max(16px, env(safe-area-inset-left, 0px));
+}
+.lib-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lib-bar input[type="search"] { flex: 1 1 220px; width: auto; }
+select { font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; max-width: 100%; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: var(--surface); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+.lib-summary { margin: 0; color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.grid > li { display: grid; min-width: 0; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: grid; grid-template-rows: auto 1fr; align-content: start; cursor: pointer; text-align: left; padding: 0; width: 100%; min-width: 0; }
+.card:hover { border-color: var(--muted); }
+.card .thumb { aspect-ratio: 16 / 9; width: 100%; max-width: 100%; object-fit: cover; background: var(--sunken); display: block; }
+.thumb.none, .detail-thumb.none { visibility: hidden; }
+.card .body { align-content: start; }
+.card .body { padding: 8px 10px 10px; display: grid; gap: 2px; min-width: 0; }
+.card .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .p { font-size: 12.5px; color: var(--people); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .m { font-size: 12px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+.card .m .c { color: var(--collection); }
+.group-break { grid-column: 1 / -1; border-top: 1px dashed var(--line); margin-top: 4px; padding-top: 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+#lib-more { justify-self: center; }
+
+.detail { border: 1px solid var(--line); border-radius: var(--radius); padding: 0; background: var(--surface); color: var(--fg); width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); }
+.detail::backdrop { background: rgb(0 0 0 / .45); }
+.detail-inner { padding: 16px; display: grid; gap: 12px; }
+.detail-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.detail-head h2 { overflow-wrap: anywhere; }
+.detail-thumb { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 6px; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 0; font-size: 13px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.rename { display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+.confirm { margin: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; background: var(--bad-bg); border-radius: 6px; }

@@ -70,3 +70,48 @@ def test_naming_a_title_on_the_page(page_url):
         sync_api.expect(page.locator("#add-anyway")).to_be_visible()
         assert errors == []
         browser.close()
+
+
+@pytest.fixture
+def library_url(tmp_path):
+    root = tmp_path / "lib"
+    (root / "Lakes").mkdir(parents=True)
+    with LibraryDB.open(root) as db:
+        for path in ("Lakes/Alice - Day 1 - Lakes [720p].mp4", "Lakes/Bob - Swim - Lakes.mp4"):
+            (root / path).write_bytes(b"x")
+            db.upsert(Video(path=path, height=720))
+    db = LibraryDB.open(root, shared=True)
+    manager = DownloadManager(root, db)
+    server = VidlibServer(manager, port=0)
+    manager.start()
+    server.start()
+    yield server.url, root
+    server.stop()
+    manager.shutdown()
+    db.close()
+
+
+def test_renaming_from_the_library_page(library_url):
+    url, root = library_url
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"no Chromium for Playwright: {exc}")
+        page = browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url + "#library")
+        sync_api.expect(page.locator(".card")).to_have_count(2)
+        page.select_option("#lib-person", "Bob")
+        sync_api.expect(page.locator(".card")).to_have_count(1)
+        page.locator(".card").first.click()
+        sync_api.expect(page.locator("#detail")).to_be_visible()
+        sync_api.expect(page.locator("#rn-save")).to_be_disabled()        # nothing changed yet
+        page.fill("#rn-title", "Swim at dawn")
+        sync_api.expect(page.locator("#rn-stem")).to_have_text("Bob - Swim at dawn - Lakes")
+        page.click("#rn-save")
+        sync_api.expect(page.locator("#detail-msg")).to_contain_text("Renamed")
+        assert (root / "Lakes" / "Bob - Swim at dawn - Lakes.mp4").exists()
+        assert errors == []
+        browser.close()
