@@ -135,7 +135,7 @@ def dump_history(reviewed: dict[str, dict[str, Any]]) -> str:
 
 def is_reviewed(reviewed: dict[str, dict[str, Any]], c: Candidate) -> bool:
     """A file counts as reviewed only while it's unchanged since — a file re-encoded in
-    place (optimiselib) or replaced by a new release comes back for review."""
+    place (vidlib) or replaced by a new release comes back for review."""
     entry = reviewed.get(c.rel)
     if entry is None:
         return False

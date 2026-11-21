@@ -2,7 +2,7 @@
 
 A pasted page title is split into tokens; each token gets a set of labels — people, title
 and/or collection, or none (skipped) — first guessed (auto_label) and then corrected by hand
-in the TUI; compose() turns the labelled tokens into the optimiselib naming convention,
+in the TUI; compose() turns the labelled tokens into the vidlib naming convention,
 People - Title - Collection.
 
     Alice & Bob hike to the lakes – Day 1 (Lakes) | SomeSite
@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from toolboxcli._common.pathsafe import sanitize_for_path
-from toolboxcli.optimiselib.core import FIELD_SEP, normalize, parse_name
+from toolboxcli.vidlib.core import FIELD_SEP, normalize, parse_name
 
 # ── Tokens ───────────────────────────────────────────────────────────
 
@@ -227,15 +227,15 @@ class NameParts:
         return FIELD_SEP.join(p for p in parts if p)
 
     def problems(self) -> list[str]:
-        """Why optimiselib couldn't sort this name; empty when it can."""
+        """Why vidlib couldn't sort this name; empty when it can."""
         missing = [label for label, value in (
             ("people", self.people), ("title", self.title), ("collection", self.collection),
         ) if not value]
         if missing:
-            return [f"no {', '.join(missing)} — optimiselib won't be able to sort it"]
+            return [f"no {', '.join(missing)} — vidlib won't be able to sort it"]
         parsed = parse_name(self.stem)
         if not parsed.complete or tuple(parsed.people) != self.people:
-            return ["optimiselib would read this name differently"]
+            return ["vidlib would read this name differently"]
         return []
 
 
@@ -283,8 +283,8 @@ def compose(tokens: list[Token], labels: list[Labels]) -> NameParts:
 
 
 def parts_from_fields(people: str, title: str, collection: str) -> NameParts:
-    """NameParts from hand-edited fields (people comma/&/and-separated, as optimiselib reads)."""
-    from toolboxcli.optimiselib.core import split_people
+    """NameParts from hand-edited fields (people comma/&/and-separated, as vidlib reads)."""
+    from toolboxcli.vidlib.core import split_people
 
     return NameParts(
         people=tuple(p for p in (_clean_field(n) for n in split_people(people)) if p),

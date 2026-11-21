@@ -71,7 +71,7 @@ def test_hand_labels_override_the_guess():
     (NameParts(("Alice",), "Day 1", ""), "no collection"),
     (NameParts(("Alice",), "", ""), "no title, collection"),
 ])
-def test_problems_name_what_optimiselib_would_miss(parts, problem):
+def test_problems_name_what_vidlib_would_miss(parts, problem):
     assert parts.problems()[0].startswith(problem)
 
 

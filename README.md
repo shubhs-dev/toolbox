@@ -22,11 +22,11 @@ in Python and installed as a single package with [uv](https://docs.astral.sh/uv/
 | `jellyname` | Rename and organize media files into a Jellyfin-compatible folder structure |
 | `kavitaname` | Rename manga/manhwa/book files for Kavita server compatibility |
 | `mergemanga` | Merge individual One Piece chapter CBZ files into volume CBZ files with metadata |
-| `optimiselib` | Watch a library root: compress new videos to 1080p, tag the resolution and sort by trip |
 | `prunelib` | Review the biggest, oldest or least-watched videos in a library and delete the ones you pick |
 | `sortmedia` | Move video files into folders based on the camelCase type tag in each filename |
 | `toolbox` | List all scripts in this repo with a brief description |
 | `video-download` | Download videos with yt-dlp + aria2c from a terminal UI (paste a URL and title, label it People - Title - Collection), or in batch from `./urls.txt` |
+| `vidlib` | Video library: watch a root, compress new videos to 1080p, tag the resolution and sort by trip |
 | `wallready` | Prepare a folder of images for wallpaper use: JPG, downscaled and centre-cropped to 4K |
 
 `inventory.html` is a standalone, dependency-free HTML dashboard for tracking Death Stranding
@@ -47,12 +47,12 @@ materials — just open it in a browser, no install needed.
 | Tool | Required by |
 |------|-------------|
 | `ffmpeg` | `addsub`, `concatvid`, `cutvid`, `downscalevid`, `flipvid` |
-| `ffprobe` (ships with ffmpeg) | `concatvid`, `downscalevid`, `optimiselib` |
-| `HandBrakeCLI` | `compressvid`, `optimiselib` |
+| `ffprobe` (ships with ffmpeg) | `concatvid`, `downscalevid`, `vidlib` |
+| `HandBrakeCLI` | `compressvid`, `vidlib` |
 | `magick` (ImageMagick 7) | `convertimg`, `wallready` |
 | `7z` (7-Zip) | `cybermod` |
 | `yt-dlp`, `aria2c` | `video-download` |
-| `addsub` (on PATH) | `autosub`, `optimiselib` (optional — enables subtitle merging) |
+| `addsub` (on PATH) | `autosub`, `vidlib` (optional — enables subtitle merging) |
 
 ### macOS
 
@@ -214,7 +214,7 @@ Use `-P` to point at your own directory of preset `.json` files instead.
 **Audio:** both presets keep *every* audio track and encode each to stereo AAC at 160 kbps.
 Surround is downmixed rather than kept as 5.1 — measured, that's the better trade, since
 ffmpeg's AAC encoder handles multichannel poorly. Passthrough was measured ~28% larger on a
-PCM + DTS + AAC source. These presets are shared with `optimiselib`.
+PCM + DTS + AAC source. These presets are shared with `vidlib`.
 
 ---
 
@@ -619,26 +619,26 @@ a built-in volume map covering volumes 1–115 with official English titles.
 
 ---
 
-### optimiselib
+### vidlib
 
 Watch a library root, optimise new videos to 1080p, tag them with their resolution and sort
 them into trip folders. Built to run continuously on a media server — it's `compressvid` and
 `sortmedia` welded into one unattended pipeline.
 
 ```bash
-optimiselib /srv/library              # watch, poll every 30s
-optimiselib -O                        # process what's there, then exit
-optimiselib -n                        # dry run: show what would happen
-optimiselib -r                        # report sub-1080p files and the review queue
-optimiselib -l                        # list every video in the library, alphabetically
-optimiselib -l library.txt            # write that list to library.txt instead
-optimiselib -a alice                  # everything with Alice in it
-optimiselib -R 720p -c Lakes          # filters combine: 720p videos in Lakes
-optimiselib -T Restored               # by [tag]
-optimiselib -U                        # files not named People - Title - Collection
-optimiselib -D                        # videos the library holds more than once
-optimiselib -s                        # merge waiting subtitles only, then exit
-optimiselib -H 01:00-07:00 -L 4       # only encode off-hours, and back off under load
+vidlib /srv/library                   # watch, poll every 30s
+vidlib -O                             # process what's there, then exit
+vidlib -n                             # dry run: show what would happen
+vidlib -r                             # report sub-1080p files and the review queue
+vidlib -l                             # list every video in the library, alphabetically
+vidlib -l library.txt                 # write that list to library.txt instead
+vidlib -a alice                       # everything with Alice in it
+vidlib -R 720p -c Lakes               # filters combine: 720p videos in Lakes
+vidlib -T Restored                    # by [tag]
+vidlib -U                             # files not named People - Title - Collection
+vidlib -D                             # videos the library holds more than once
+vidlib -s                             # merge waiting subtitles only, then exit
+vidlib -H 01:00-07:00 -L 4            # only encode off-hours, and back off under load
 ```
 
 For every video that appears **directly in the library root**:
@@ -673,7 +673,7 @@ tally (`✓ 3 done  1 skipped`), elapsed time and an ETA. The overall bar advanc
 encode rather than only when a file finishes, so the ETA is meaningful even with a few long
 files.
 
-**Subtitles** — on every poll, optimiselib also looks for subtitle files sitting in the root
+**Subtitles** — on every poll, vidlib also looks for subtitle files sitting in the root
 and matches each one to a video by the first `' - '`-separated field of its name (e.g. `People`
 in `People - Title - Trip`). Only an unambiguous 1:1 match is merged — a subtitle matching more
 than one video, or a video claimed by more than one subtitle, is left alone and retried next
@@ -700,7 +700,7 @@ folders included; `_review/` and files that have gone are left out. Narrow it wi
   `-r` report says how many there are
 
 All are case-insensitive, and every text filter matches part of a value. A filter on its own
-implies `-l`, so `optimiselib -a alice` is enough. Pass a filename (`-l library.txt`) to write the
+implies `-l`, so `vidlib -a alice` is enough. Pass a filename (`-l library.txt`) to write the
 matching names there, one per line, instead of printing a table; you're asked before an existing
 file is overwritten.
 
@@ -722,7 +722,7 @@ size and folder. It's a report only: nothing is moved or deleted.
 | `-U, --unnamed` | off | With `-l`: only videos not named `People - Title - Collection` |
 | `-D, --duplicates` | off | List videos the library holds more than once, then exit (report only) |
 | `-F, --force` | off | Re-process files the library database already knows as done |
-| `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `OPTIMISELIB_GPU` |
+| `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `VIDLIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |
 | `-B, --bit-depth` | `auto` | `auto` matches the source (10-bit stays 10-bit, 8-bit isn't inflated); `8`/`10` force it |
 | `-H, --hours` | none | Only start encodes inside e.g. `01:00-07:00` |
@@ -753,12 +753,12 @@ Windows scheduled task all work. It de-prioritises the encoder by default, and
 `-H`/`-L` keep it out of the way of live playback. A run killed mid-encode restores the source
 file on restart.
 
-**Library database** — everything optimiselib knows lives in `.optimiselib.db` at the library
+**Library database** — everything vidlib knows lives in `.vidlib.db` at the library
 root: a single SQLite file, no server, and you can open it with any SQLite viewer. Before each
 poll it's synced with the disk — a file you rename or move by hand keeps its history and is
 never re-encoded (it's recognised by its size and modified time), files you add to folders
 yourself are recorded as they are, and files that have gone are marked missing. The old
-`.optimiselib.json` log is imported on the first run and kept as `.optimiselib.json.migrated`.
+`.vidlib.json` log is imported on the first run and kept as `.vidlib.json.migrated`.
 A dry run (`-n`) works on an in-memory copy, so it changes nothing. Keep the library on a
 local disk: SQLite's locking isn't reliable over a network share.
 
@@ -802,7 +802,7 @@ the file is deleted outright.
 
 Files you were shown and kept are recorded in `.prunelib-history.json` in the directory you ran
 it from and skipped next time, so each run moves on to new suggestions. A file comes back if
-its size or modified date changes, for example after `optimiselib` re-encodes it. History is
+its size or modified date changes, for example after `vidlib` re-encodes it. History is
 saved when you finish with `q`; Ctrl+C leaves it untouched. Dot-folders and NAS
 recycle-bin/snapshot folders (`#recycle`, `@Recycle`, `$RECYCLE.BIN`, `@eaDir`) are never
 scanned.
@@ -840,7 +840,7 @@ toolbox
 ### video-download
 
 Download videos with **yt-dlp** (using **aria2c** for the transfer), named the way
-`optimiselib` sorts them: `People - Title - Collection`.
+`vidlib` sorts them: `People - Title - Collection`.
 
 ```bash
 video-download                    # open the downloader (a terminal UI)
@@ -855,7 +855,7 @@ video-download -b -y              # batch, also download lines added mid-run wit
 | `-b, --batch` | Download everything in `./urls.txt` instead of opening the UI |
 | `-j, --jobs N` | Downloads to run in parallel (default: `1` in batch mode, `2` in the UI) |
 | `-y, --yes` | Batch: download lines added to `urls.txt` during the run without asking |
-| `-L, --library DIR` | optimiselib library whose people and collections the UI suggests (env `VIDEO_DOWNLOAD_LIBRARY`) |
+| `-L, --library DIR` | vidlib library whose people and collections the UI suggests (env `VIDEO_DOWNLOAD_LIBRARY`) |
 
 **The downloader** (default) — paste a URL and the page's title. The title is split into words,
 and each word is labelled **people**, **title** or **collection**:
@@ -865,12 +865,12 @@ Alice & Bob hike to the lakes – Day 1 (Lakes) | SomeSite
 → Alice, Bob - hike to the lakes Day 1 - Lakes
 ```
 
-The labels start as a guess: names your optimiselib library (`-L`) or your earlier downloads
+The labels start as a guess: names your vidlib library (`-L`) or your earlier downloads
 already use are recognised, a name at the start of the title or in its own segment (`(Lakes)`) is
 moved out of the title, one mid-sentence (`…with Bob`) stays in it too, and everything after the
 last `|` is skipped as the site name. Correct it in the word bar — `←`/`→` move, `shift+←`/`→`
 select a run, `p` / `t` / `c` toggle people / title / collection, `x` skips — or edit the People,
-Title and Collection fields directly. The preview shows the filename and warns if optimiselib
+Title and Collection fields directly. The preview shows the filename and warns if vidlib
 couldn't sort it. `ctrl+s` adds it to the queue, and downloads start straight away into the
 current folder.
 

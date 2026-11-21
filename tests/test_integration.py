@@ -1,6 +1,6 @@
 """End-to-end runs of real commands on throwaway folders.
 
-optimiselib runs against tiny videos generated with ffmpeg; anything needing a tool that
+vidlib runs against tiny videos generated with ffmpeg; anything needing a tool that
 isn't installed is skipped. video-download runs against a fake yt-dlp that just writes a
 file, so its urls.txt bookkeeping can be exercised without the network.
 """
@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 from conftest import needs
 
-from toolboxcli.optimiselib import cli as optimiselib
-from toolboxcli.optimiselib.db import LibraryDB, Video
+from toolboxcli.vidlib import cli as vidlib
+from toolboxcli.vidlib.db import LibraryDB, Video
 
-# ── optimiselib ────────────────────────────────────────────────────────
+# ── vidlib ────────────────────────────────────────────────────────
 
 
 def _db(root: Path) -> LibraryDB:
@@ -44,11 +44,11 @@ def library(tmp_path, make_video):
 def test_dry_run_plans_but_changes_nothing(library, run_cli):
     (library / ".optimiselib.json").write_text("{}")
     before = _files(library)
-    result = run_cli("optimiselib", [str(library), "-n", "-O", "-S"])
+    result = run_cli("vidlib", [str(library), "-n", "-O", "-S"])
     assert result.returncode == 0, result.stderr
     assert "Dave - Hike - Lakes [720p].mp4" in result.stdout
     assert _files(library) == before
-    assert not (library / ".optimiselib.db").exists()       # worked on an in-memory copy
+    assert not (library / ".vidlib.db").exists()       # worked on an in-memory copy
     assert (library / ".optimiselib.json").exists()          # old log not migrated away
 
 
@@ -58,7 +58,7 @@ def test_dry_run_finds_a_duplicate_with_reordered_people_in_another_folder(tmp_p
     root = tmp_path / "lib"
     make_video(root / "Staging" / "Alice, Bob - Day 1 - Lakes [1080p].mp4", "1920x1080")
     make_video(root / "bob and ALICE - day 1 - lakes.mp4", "1280x720")
-    result = run_cli("optimiselib", [str(root), "-n", "-O", "-S"])
+    result = run_cli("vidlib", [str(root), "-n", "-O", "-S"])
     assert result.returncode == 0, result.stderr
     assert "downgrade of Staging/Alice, Bob - Day 1 - Lakes [1080p].mp4" in result.stdout
 
@@ -72,7 +72,7 @@ def test_old_log_migrates_and_reconciled_files_sort_without_encoding(library, ru
         "Dave - Hike - Lakes.mp4": {"status": "reconciled", "reconciled": True},
         "Eve - Untitled.mp4": {"status": "reconciled", "reconciled": True},
     }))
-    result = run_cli("optimiselib", [str(library), "-O", "-S", "-g", "cpu"])
+    result = run_cli("vidlib", [str(library), "-O", "-S", "-g", "cpu"])
     assert result.returncode == 0, result.stderr
     assert "Imported 3 entries" in result.stdout
     assert (library / ".optimiselib.json.migrated").exists()
@@ -97,7 +97,7 @@ def test_new_file_is_encoded_tagged_and_sorted(tmp_path, make_video, run_cli):
     root = tmp_path / "lib"
     make_video(root / "Lakes" / "Alice - Day 1 - Lakes.mp4", "1920x1080")
     make_video(root / "Bob - Swim - Lakes.mkv", "1280x720", seconds=3)
-    result = run_cli("optimiselib", [str(root), "-O", "-S", "-g", "cpu"])
+    result = run_cli("vidlib", [str(root), "-O", "-S", "-g", "cpu"])
     assert result.returncode == 0, result.stderr + result.stdout
     files = _files(root)
     # Kept as a re-encoded .mp4 when that came out smaller, else the original retagged.
@@ -115,12 +115,12 @@ def test_new_file_is_encoded_tagged_and_sorted(tmp_path, make_video, run_cli):
 def test_a_file_renamed_by_hand_is_sorted_not_re_encoded(tmp_path, make_video, run_cli):
     root = tmp_path / "lib"
     make_video(root / "Eve - Untitled.mp4", "640x480")
-    assert run_cli("optimiselib", [str(root), "-O", "-S", "-g", "cpu"]).returncode == 0
+    assert run_cli("vidlib", [str(root), "-O", "-S", "-g", "cpu"]).returncode == 0
     waiting = next(p for p in root.iterdir() if p.name.startswith("Eve - Untitled ["))
     # Add the missing collection field by hand.
     waiting.rename(root / waiting.name.replace("Eve - Untitled", "Eve - Untitled - Lakes"))
 
-    result = run_cli("optimiselib", [str(root), "-O", "-S", "-g", "cpu"])
+    result = run_cli("vidlib", [str(root), "-O", "-S", "-g", "cpu"])
     assert result.returncode == 0, result.stderr
     assert "already optimised" in result.stdout
     sorted_file = next(iter(_files(root)))
@@ -137,14 +137,14 @@ def test_sync_follows_moves_records_folders_and_marks_missing(tmp_path):
     staged.write_bytes(b"a" * 10)
     gone = root / "Lakes" / "Bob - Gone - Lakes.mp4"
     with _db(root) as db:
-        optimiselib.record(db, root, staged, "awaiting_trip", height=720)
-        db.upsert(Video(path=optimiselib.rel_path(root, gone), size=3, mtime=1.0))
+        vidlib.record(db, root, staged, "awaiting_trip", height=720)
+        db.upsert(Video(path=vidlib.rel_path(root, gone), size=3, mtime=1.0))
 
         moved = root / "Lakes" / staged.name
         staged.rename(moved)                                         # a hand move
         (root / "Lakes" / "Carol - New - Lakes.mp4").write_bytes(b"c")   # added by hand
         (root / "Dan - Fresh - Lakes.mp4").write_bytes(b"d")             # new root input
-        optimiselib.sync_library(root, db)
+        vidlib.sync_library(root, db)
 
         follow = db.get("Lakes/Alice - Day 1 - Lakes [720p].mp4")
         assert follow is not None and follow.height == 720            # row followed the file
@@ -156,10 +156,23 @@ def test_sync_follows_moves_records_folders_and_marks_missing(tmp_path):
         assert bob is not None and bob.status == "missing"
 
         gone.write_bytes(b"b" * 3)                                   # it comes back
-        optimiselib.sync_library(root, db)
+        vidlib.sync_library(root, db)
         bob = db.get("Lakes/Bob - Gone - Lakes.mp4")
         assert bob is not None and bob.status == "sorted"
 
+
+
+def test_downloads_in_incoming_are_never_recorded(tmp_path):
+    root = tmp_path
+    (root / "_incoming").mkdir()
+    (root / "_incoming" / "Alice - Half - Lakes.mp4").write_bytes(b"partial")
+    (root / "Lakes").mkdir()
+    (root / "Lakes" / "_incoming").mkdir()                 # only the root's is special
+    (root / "Lakes" / "_incoming" / "Bob - Kept - Lakes.mp4").write_bytes(b"b")
+    with _db(root) as db:
+        vidlib.sync_library(root, db)
+        assert [v.path for v in db.all()] == ["Lakes/_incoming/Bob - Kept - Lakes.mp4"]
+    assert vidlib.all_videos(root) == [root / "Lakes" / "_incoming" / "Bob - Kept - Lakes.mp4"]
 
 @pytest.fixture
 def catalogue(tmp_path, make_video):
@@ -190,7 +203,7 @@ def _listed(stdout: str) -> set[str]:
 ])
 def test_list_filters(catalogue, run_cli, filters, expected):
     # Filters on their own imply -l.
-    result = run_cli("optimiselib", [str(catalogue), *filters] if filters else [str(catalogue), "-l"])
+    result = run_cli("vidlib", [str(catalogue), *filters] if filters else [str(catalogue), "-l"])
     assert result.returncode == 0, result.stderr
     assert _listed(result.stdout) == expected
     assert f"{len(expected)} file" in result.stdout
@@ -202,19 +215,19 @@ def test_unnamed_files_are_listed_and_counted(tmp_path, make_video, run_cli):
     make_video(root / "Lakes" / "Alice - Day 1 - Lakes.mp4", "640x480")
     make_video(root / "Lakes" / "Movie - Directors Cut.mp4", "640x480")
     make_video(root / "Misc" / "IMG_1234.mp4", "640x480")
-    listed = run_cli("optimiselib", [str(root), "-U"])
+    listed = run_cli("vidlib", [str(root), "-U"])
     assert listed.returncode == 0, listed.stderr
     assert "Movie - Directors Cut.mp4" in listed.stdout and "IMG_1234.mp4" in listed.stdout
     assert "Alice - Day 1" not in listed.stdout
     assert "2 files matching not named People - Title - Collection" in listed.stdout
-    report = run_cli("optimiselib", [str(root), "-r"])
+    report = run_cli("vidlib", [str(root), "-r"])
     assert "2 file(s) aren't named People - Title - Collection" in report.stdout
 
 
 @needs("ffmpeg", "ffprobe")
 def test_list_to_a_file_writes_plain_names(catalogue, run_cli, tmp_path):
     out = tmp_path / "list.txt"
-    result = run_cli("optimiselib", [str(catalogue), "-l", str(out), "-R", "720p"])
+    result = run_cli("vidlib", [str(catalogue), "-l", str(out), "-R", "720p"])
     assert result.returncode == 0, result.stderr
     assert out.read_text(encoding="utf-8").splitlines() == [
         "Bob and Alice - Day 1 - Lakes [720p].mp4",
@@ -225,7 +238,7 @@ def test_list_to_a_file_writes_plain_names(catalogue, run_cli, tmp_path):
 @needs("ffmpeg", "ffprobe")
 def test_duplicates_report_groups_reordered_people(catalogue, run_cli):
     before = _files(catalogue)
-    result = run_cli("optimiselib", [str(catalogue), "-D"])
+    result = run_cli("vidlib", [str(catalogue), "-D"])
     assert result.returncode == 0, result.stderr
     assert _listed(result.stdout) == {"Alice, Bob - Day 1", "Bob and Alice - Day 1"}
     assert "1 video(s) held more than once (2 files)" in result.stdout
@@ -236,7 +249,7 @@ def test_duplicates_report_groups_reordered_people(catalogue, run_cli):
 def test_duplicates_report_when_there_are_none(tmp_path, make_video, run_cli):
     root = tmp_path / "lib"
     make_video(root / "Lakes" / "Alice - Day 1 - Lakes.mp4", "640x480")
-    result = run_cli("optimiselib", [str(root), "-D"])
+    result = run_cli("vidlib", [str(root), "-D"])
     assert result.returncode == 0, result.stderr
     assert "No duplicates" in result.stdout
 
@@ -244,15 +257,15 @@ def test_duplicates_report_when_there_are_none(tmp_path, make_video, run_cli):
 def test_recover_interrupted_restores_sources_and_drops_temp_output(tmp_path):
     (tmp_path / "Clip.mkv.processing").write_bytes(b"source")
     (tmp_path / "Clip [720p].mp4.tmp").write_bytes(b"partial")
-    assert optimiselib.recover_interrupted(tmp_path) == ["Clip.mkv"]
+    assert vidlib.recover_interrupted(tmp_path) == ["Clip.mkv"]
     assert sorted(p.name for p in tmp_path.iterdir()) == ["Clip.mkv"]
 
 
 def test_unique_path_never_overwrites(tmp_path):
     taken = tmp_path / "A.mp4"
     taken.write_bytes(b"")
-    assert optimiselib.unique_path(tmp_path / "B.mp4") == tmp_path / "B.mp4"
-    assert optimiselib.unique_path(taken) == tmp_path / "A (2).mp4"
+    assert vidlib.unique_path(tmp_path / "B.mp4") == tmp_path / "B.mp4"
+    assert vidlib.unique_path(taken) == tmp_path / "A (2).mp4"
 
 
 @pytest.mark.parametrize("fields, expected", [
@@ -268,7 +281,7 @@ def test_should_process(tmp_path, fields, expected):
     with _db(tmp_path) as db:
         if fields:
             db.upsert(Video(path=video.name, **fields))
-        assert optimiselib.should_process(video, tmp_path, db) is expected
+        assert vidlib.should_process(video, tmp_path, db) is expected
 
 
 @pytest.mark.parametrize("status, pref, depth, done", [
@@ -283,7 +296,7 @@ def test_should_process(tmp_path, fields, expected):
 ])
 def test_already_done(status, pref, depth, done):
     row = Video(path="x.mp4", status=status) if status else None
-    assert optimiselib.already_done(row, depth, pref) is done
+    assert vidlib.already_done(row, depth, pref) is done
 
 
 # ── video-download ─────────────────────────────────────────────────────

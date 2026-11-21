@@ -1,6 +1,6 @@
-"""optimiselib's library database: a single SQLite file in the library root.
+"""vidlib's library database: a single SQLite file in the library root.
 
-`.optimiselib.db` replaces the old `.optimiselib.json` log. It needs no server (Python's
+`.vidlib.db` replaces the old `.optimiselib.json` log. It needs no server (Python's
 built-in sqlite3), and unlike the log it identifies a video by *what it is* — its set of
 people, title and collection (core.parse_name) — rather than by its exact filename, so
 reordered people or a hand rename don't make a known video look new, and duplicates are
@@ -11,7 +11,7 @@ Tables:
     people        each distinct person, by normalised name
     video_people  which people appear in which video
     video_tags    each [tag] on each video, for searching by tag
-    events        what optimiselib did (encoded, replaced, parked, migrated, ...)
+    events        what vidlib did (encoded, replaced, parked, migrated, ...)
 
 The name-derived columns (people, title, collection, tags, the match key) are always
 recomputed from the path on write, so they can never drift from the filename.
@@ -26,12 +26,19 @@ from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from toolboxcli.optimiselib import core
+from toolboxcli.vidlib import core
 
-DB_NAME = ".optimiselib.db"
+DB_NAME = ".vidlib.db"
+# What the database was called before optimiselib became vidlib; adopted on first open.
+LEGACY_DB_NAME = ".optimiselib.db"
+# SQLite's WAL-mode companions, which belong to the database file and move with it.
+_DB_SIDECARS = ("", "-wal", "-shm")
 JSON_LOG_NAME = ".optimiselib.json"
 MIGRATED_SUFFIX = ".migrated"
 REVIEW_DIR = "_review"
+# Where downloads are written until they finish; the library scan never looks inside, so a
+# half-downloaded file is never recorded (a file in any other subfolder counts as sorted).
+INCOMING_DIR = "_incoming"
 
 # 1: initial. 2: names that don't follow People - Title - Collection are no longer split
 # into fields (core.VideoName.complete); upgrading re-derives every row and drops the
@@ -100,6 +107,25 @@ CREATE TABLE events (
 """
 
 
+def adopt_legacy_db(root: Path) -> bool:
+    """Rename `.optimiselib.db` (and its -wal/-shm files) to `.vidlib.db`. True if it did.
+
+    Only when no `.vidlib.db` exists yet: with both present the old file is left alone (see
+    legacy_db_conflict), never merged or overwritten."""
+    if (root / DB_NAME).exists() or not (root / LEGACY_DB_NAME).is_file():
+        return False
+    for suffix in _DB_SIDECARS:
+        old = root / f"{LEGACY_DB_NAME}{suffix}"
+        if old.exists():
+            old.rename(root / f"{DB_NAME}{suffix}")
+    return True
+
+
+def legacy_db_conflict(root: Path) -> bool:
+    """Both `.optimiselib.db` and `.vidlib.db` exist, so the old one was never adopted."""
+    return (root / DB_NAME).is_file() and (root / LEGACY_DB_NAME).is_file()
+
+
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -152,7 +178,7 @@ def _resolution_query(text: str) -> str:
 
 
 class LibraryDB:
-    """An open `.optimiselib.db`. Use as a context manager, or call close()."""
+    """An open `.vidlib.db`. Use as a context manager, or call close()."""
 
     def __init__(self, path: Path, in_memory: bool = False) -> None:
         self.path = path
@@ -179,8 +205,18 @@ class LibraryDB:
 
     @classmethod
     def open(cls, root: Path, in_memory: bool = False) -> LibraryDB:
-        """The library's database; with in_memory, a throwaway copy of it (for -n)."""
-        return cls(root / DB_NAME, in_memory=in_memory)
+        """The library's database; with in_memory, a throwaway copy of it (for -n).
+
+        A library last used as optimiselib has `.optimiselib.db`; it's renamed `.vidlib.db`
+        here (a dry run reads it where it is instead, renaming nothing)."""
+        path = root / DB_NAME
+        if in_memory:
+            legacy = root / LEGACY_DB_NAME
+            if not path.exists() and legacy.is_file():
+                path = legacy
+        else:
+            adopt_legacy_db(root)
+        return cls(path, in_memory=in_memory)
 
     def close(self) -> None:
         self.conn.close()
@@ -208,7 +244,7 @@ class LibraryDB:
                 self.conn.execute("PRAGMA user_version = 2")
         if version > SCHEMA_VERSION:
             raise RuntimeError(
-                f"{self.path.name} was written by a newer optimiselib (schema {version}); "
+                f"{self.path.name} was written by a newer vidlib (schema {version}); "
                 "update the toolbox before using it"
             )
 

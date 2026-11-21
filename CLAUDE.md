@@ -13,7 +13,7 @@ Primarily used on Windows via Git Bash/MSYS2 and on macOS. Once installed with
 `uv tool install --managed-python -e .`, every script is a real executable on `PATH` — `addsub`, `autosub`,
 `check-deps`, `compressvid`, `concatvid`, `convertimg`, `cutvid`, `cybermod`,
 `downscalevid`, `finddupes`, `flatten`, `flipvid`, `jellyname`, `kavitaname`,
-`mergemanga`, `optimiselib`, `prunelib`, `sortmedia`, `toolbox`, `video-download`, `wallready` —
+`mergemanga`, `prunelib`, `sortmedia`, `toolbox`, `video-download`, `vidlib`, `wallready` —
 identically on both platforms. `inventory.html` is a standalone static HTML dashboard,
 unrelated to the Python package.
 
@@ -32,7 +32,7 @@ uv run python -m toolboxcli.<script>.cli --help
 # (tests/test_project.py already runs every command's --help from source)
 for cmd in addsub autosub check-deps compressvid concatvid convertimg cutvid cybermod \
            downscalevid finddupes flatten flipvid jellyname kavitaname mergemanga \
-           optimiselib prunelib sortmedia toolbox video-download wallready; do
+           prunelib sortmedia toolbox video-download vidlib wallready; do
   $cmd --help > /dev/null || echo "FAILED: $cmd"
 done
 
@@ -87,6 +87,10 @@ a `# type: ignore`.
 
 ## Architecture
 
+`vidlib` (formerly `optimiselib`) is being reworked in stages into one process that also
+downloads videos and serves a web UI, absorbing `video-download`; `docs/vidlib-plan.md` holds
+the decisions and the stage list. Read it before changing either script.
+
 ### Package layout
 
 ```
@@ -107,17 +111,17 @@ src/toolboxcli/
 ├── jellyname/{cli.py, core.py}
 ├── kavitaname/cli.py
 ├── mergemanga/{cli.py, data/volume_map.json}
-├── optimiselib/{cli.py, core.py, db.py}
 ├── prunelib/{cli.py, core.py}
 ├── sortmedia/cli.py
 ├── toolbox/cli.py
 ├── videodownload/{cli.py, core.py, engine.py, tui.py}
+├── vidlib/{cli.py, core.py, db.py}
 └── wallready/{cli.py, core.py}
 ```
 
 Each script is a `<name>/cli.py` with a `main()` function wired up in `pyproject.toml`'s
 `[project.scripts]` table as the console-script entry point. `concatvid`, `cybermod`,
-`downscalevid`, `jellyname`, `optimiselib`, `prunelib` and `wallready` additionally split their logic into
+`downscalevid`, `jellyname`, `prunelib`, `vidlib` and `wallready` additionally split their logic into
 `core.py`, keeping `cli.py`
 to argparse wiring, filesystem I/O and subprocess calls only — follow this `cli.py`/`core.py`
 split for any future script whose logic grows beyond simple argument-parsing-and-dispatch.
@@ -168,7 +172,7 @@ Every script should reach for these instead of reimplementing the same logic:
   `KeyboardInterrupt` itself (`transcode()` does; `subprocess.run` already kills its child).
 - **`handbrake.py`** — `wait_stable(path)`, `load_preset(name)`, `read_preset_settings(name)`,
   `list_presets()`, `transcode(...)`, `available_encoders()`, `presets_dir()`/`set_presets_dir()`.
-  Everything HandBrake-related that `compressvid` and `optimiselib` share, including the
+  Everything HandBrake-related that `compressvid` and `vidlib` share, including the
   stderr-scraping progress parser. `transcode()` takes `extra_args` (CLI flags that override
   preset fields) and `low_priority` (de-prioritises the child process). Preset stems still
   resolve against `compressvid`'s bundled `data/handbrake-presets/` via `importlib.resources`.
@@ -245,14 +249,14 @@ Progress *factories* themselves) were extracted from it.
 - `downscalevid` writes through `_common/output.py` like `cutvid`/`flipvid`, but its
   overwrite flag is `-o/--overwrite` because `-f/--force` already meant "allow upscaling"
   — `check_output_path(..., flag=...)` exists so the error message names the right flag.
-- `optimiselib` deliberately does **not** compose `compressvid` + `sortmedia`, even though it
+- `vidlib` deliberately does **not** compose `compressvid` + `sortmedia`, even though it
   does what they do: `compressvid` takes one preset per run and writes to a `compressed/`
-  subfolder, while `optimiselib` needs a per-file preset and an in-place result; and
+  subfolder, while `vidlib` needs a per-file preset and an in-place result; and
   `sortmedia`'s last-whitespace-token rule breaks outright once a ` [1080p]` suffix exists
-  (every file would sort into a folder named `[1080p]`). `optimiselib` splits on `" - "` and
+  (every file would sort into a folder named `[1080p]`). `vidlib` splits on `" - "` and
   takes the last **field** instead, so multi-word trip names work. Both original scripts remain
   the right tools when run by hand — don't "unify" them.
-- `optimiselib` owns the resolution *and* bit-depth tokens in a filename's trailing `[...]`
+- `vidlib` owns the resolution *and* bit-depth tokens in a filename's trailing `[...]`
   group (`core.apply_tags`): it *replaces* a matching `^\d{3,4}[pi]$` or `^(8|10|12)bit$` token
   rather than appending a second one, while every other token survives verbatim in its original
   order — `[Restored HDR 720p]` becomes `[Restored HDR 1080p 10bit]`. That's what lets an
@@ -262,7 +266,7 @@ Progress *factories* themselves) were extracted from it.
   for being larger, the tag reverts to the original's real depth rather than the intent. It also
   treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
   that guard those files sort into a folder called `Sub`.
-- `optimiselib/db.py` is the library database (`.optimiselib.db`, stdlib `sqlite3`, WAL; the
+- `vidlib/db.py` is the library database (`.vidlib.db`, stdlib `sqlite3`, WAL; the
   library is always on a local disk, never a network share, where SQLite's locking is
   unreliable). It identifies a video by `core.parse_name(...).key` — the *set* of people
   (split on commas, `&` and the whole word `and`, any case), the title and the collection,
@@ -275,8 +279,13 @@ Progress *factories* themselves) were extracted from it.
   prunes people no video mentions (`prune_people`, also run at the end of each sync). Name-derived columns are recomputed from the path
   on every write and never set directly. The schema is versioned with `PRAGMA user_version`:
   a change to it needs a migration step in `_migrate_schema`, not an edit to `_SCHEMA`.
-  `import_json_log` migrates the old `.optimiselib.json` once (renaming it `.migrated`).
-- `optimiselib`'s "already done" test is `already_done()`: the database knows *this exact
+  `import_json_log` migrates the old `.optimiselib.json` once (renaming it `.migrated`), and
+  `LibraryDB.open` renames a library's `.optimiselib.db` (+ `-wal`/`-shm`) to `.vidlib.db`
+  when there's no `.vidlib.db` yet — with both present the old one is left alone and warned
+  about. `_incoming/` at the root is where downloads are written; every walk of the library
+  (`library_files`, `all_videos`) prunes it, because `sync_library` records any unknown file
+  in a subfolder as already sorted — a half-downloaded file would never be encoded.
+- `vidlib`'s "already done" test is `already_done()`: the database knows *this exact
   file* (by path) with a done status — not a guess from the filename's tags, which is what
   let a hand-renamed file be re-encoded before. `sync_library()` keeps paths true before each
   poll: a file at a new path with the exact size + mtime of a vanished row was renamed or
@@ -287,11 +296,11 @@ Progress *factories* themselves) were extracted from it.
   be matched. Duplicate lookup (`resolve_duplicate`) is library-wide by match key, ignoring
   `_review/` copies (a decision still waiting on the user). A dry run opens an in-memory copy
   (`LibraryDB.open(root, in_memory=True)`), so a JSON import or sync it does vanishes.
-- `optimiselib`'s queries (`-l` with `-a/-c/-R/-T`, `-D`) read the database after a
+- `vidlib`'s queries (`-l` with `-a/-c/-R/-T`, `-D`) read the database after a
   `sync_library()`, never the filesystem, so they see people/collection/tags as parsed and
   matched by the same rules duplicate detection uses. A filter alone implies `-l`. `-D` is a
   report only — unlike the pipeline's own duplicate handling it never moves or trashes.
-- `optimiselib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
+- `vidlib` picks its HandBrake encoder at *runtime* from `core.BACKENDS`, overriding only
   `-e`/`-q` on the command line so the bundled presets are never edited: if the preset's own
   encoder is available it's used with **no** override at all. Unlike `ffmpeg -encoders`, which
   is why `_common/encoders.py` probes with a throwaway encode, `HandBrakeCLI --help` omits
@@ -300,7 +309,7 @@ Progress *factories* themselves) were extracted from it.
   (0–100, higher better) and must be remapped; passing the presets' CQ 25 straight through
   would silently produce near-worst quality. As with `encoders.py`, an *auto*-selected backend
   that fails mid-encode retries once on CPU; an explicitly requested one does not.
-- `optimiselib`'s `BatchDisplay` is two `Progress` instances in one `Live` (per-file bars on
+- `vidlib`'s `BatchDisplay` is two `Progress` instances in one `Live` (per-file bars on
   top, the overall bar beneath) rather than one `Progress`, because a `Progress` lists tasks in
   creation order and per-file tasks come and go — in a single `Progress` the overall bar could
   only sit at the top. `transcode()` only ever calls `progress.update(task_id, completed=pct)`,
@@ -413,7 +422,7 @@ Progress *factories* themselves) were extracted from it.
   `auto_label` moves a known name out of the title when it leads the title or is its own
   segment, but keeps it in the title too (`people`+`title`) mid-sentence, so the title still
   reads; everything after the last `|` is a site name and skipped; one collection only.
-  `NameParts.problems()` checks the result with optimiselib's own `parse_name`, so the two
+  `NameParts.problems()` checks the result with vidlib's own `parse_name`, so the two
   scripts can't drift. `tests/fixtures/videodownload_titles.json` is the spec — change a rule
   by changing the code and the affected rows.
 - `videodownload/engine.py` runs yt-dlp (+ aria2c) jobs in worker threads and reports only
@@ -429,7 +438,7 @@ Progress *factories* themselves) were extracted from it.
   thread-safe and non-blocking) — never `call_from_thread`, which blocks a worker on the UI
   thread and can deadlock against a shutdown. The queue (`.video-download-queue.json` in the
   folder) is saved after every change; a `downloading` item loads back as `queued`. The
-  optimiselib library is opened read-only (`mode=ro` URI) for name suggestions, so the UI can
+  vidlib library is opened read-only (`mode=ro` URI) for name suggestions, so the UI can
   never create or migrate a library database. Don't name an App attribute `workers`: that's
   Textual's worker manager. `tests/test_videodownload_tui.py` drives the app headlessly with
   Textual's pilot; the downloading tests use a fake `yt-dlp` (POSIX only).
@@ -443,7 +452,7 @@ Progress *factories* themselves) were extracted from it.
   content, walking upward but never removing the scan root.
 - `prunelib`'s history (`.prunelib-history.json`, in the directory it's run from) records
   files that were *shown and kept*, keyed by root-relative POSIX path with size + mtime: a
-  file that changes (an `optimiselib` re-encode in place) is suggested again. It's only
+  file that changes (a `vidlib` re-encode in place) is suggested again. It's only
   written on a normal finish (`q`/EOF); Ctrl+C means "didn't really review these". The scan
   skips NAS recycle bins (`#recycle`, `@Recycle`, `$RECYCLE.BIN`) as well as dot-folders —
   trashing on a Synology SMB share lands files in `#recycle`, which would otherwise offer

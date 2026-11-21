@@ -1,4 +1,4 @@
-"""optimiselib's library identity rules (core) and its SQLite database (db)."""
+"""vidlib's library identity rules (core) and its SQLite database (db)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,16 @@ import json
 
 import pytest
 
-from toolboxcli.optimiselib import core
-from toolboxcli.optimiselib.db import JSON_LOG_NAME, LibraryDB, Video, import_json_log
+from toolboxcli.vidlib import core
+from toolboxcli.vidlib.db import (
+    DB_NAME,
+    JSON_LOG_NAME,
+    LEGACY_DB_NAME,
+    LibraryDB,
+    Video,
+    import_json_log,
+    legacy_db_conflict,
+)
 
 # ── Identity rules ─────────────────────────────────────────────────────
 
@@ -217,8 +225,46 @@ def test_reopening_keeps_data_and_rejects_a_newer_schema(tmp_path):
     with LibraryDB.open(tmp_path) as db:
         assert len(db.all()) == 1
         db.conn.execute("PRAGMA user_version = 99")
-    with pytest.raises(RuntimeError, match="newer optimiselib"):
+    with pytest.raises(RuntimeError, match="newer vidlib"):
         LibraryDB.open(tmp_path)
+
+
+# ── The database's old name ──────────────────────────────────────────
+
+
+def _legacy_db(root):
+    """A database as optimiselib left it: under its old name, with an unflushed WAL."""
+    with LibraryDB.open(root) as db:
+        db.upsert(Video(path="A - B - C.mp4"))
+    (root / DB_NAME).rename(root / LEGACY_DB_NAME)
+    (root / f"{LEGACY_DB_NAME}-wal").write_bytes(b"")
+
+
+def test_an_optimiselib_database_is_renamed_on_first_open(tmp_path):
+    _legacy_db(tmp_path)
+    with LibraryDB.open(tmp_path) as db:
+        assert [v.path for v in db.all()] == ["A - B - C.mp4"]
+    assert not (tmp_path / LEGACY_DB_NAME).exists()
+    assert not (tmp_path / f"{LEGACY_DB_NAME}-wal").exists()
+    assert (tmp_path / DB_NAME).is_file()
+
+
+def test_a_dry_run_reads_the_old_database_without_renaming_it(tmp_path):
+    _legacy_db(tmp_path)
+    with LibraryDB.open(tmp_path, in_memory=True) as db:
+        assert len(db.all()) == 1
+    assert (tmp_path / LEGACY_DB_NAME).is_file() and not (tmp_path / DB_NAME).exists()
+
+
+def test_with_both_databases_the_old_one_is_left_alone(tmp_path):
+    _legacy_db(tmp_path)
+    with LibraryDB.open(tmp_path):                                # adopts it
+        pass
+    (tmp_path / LEGACY_DB_NAME).write_bytes(b"stale")
+    assert legacy_db_conflict(tmp_path)
+    with LibraryDB.open(tmp_path) as db:
+        assert len(db.all()) == 1
+    assert (tmp_path / LEGACY_DB_NAME).read_bytes() == b"stale"
 
 
 # ── JSON log import ────────────────────────────────────────────────────
