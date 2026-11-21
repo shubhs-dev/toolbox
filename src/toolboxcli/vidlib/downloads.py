@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 from collections.abc import Callable
@@ -30,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from toolboxcli.vidlib import core, fetcher, naming
 from toolboxcli.vidlib.db import INCOMING_DIR, Download, LibraryDB
@@ -40,6 +42,23 @@ MIGRATED_SUFFIX = ".migrated"
 ACTIVE = ("queued", "downloading")
 # Finished one way or another: what "clear finished" removes.
 FINISHED = ("imported", "cancelled")
+
+
+_YOUTUBE_ID = re.compile(r"(?:v=|youtu\.be/|/shorts/|/live/|/embed/)([\w-]{11})")
+
+
+def url_key(url: str) -> str:
+    """What two links to the same video share. YouTube by video id, whatever the host or
+    the extra parameters (youtu.be/x, m.youtube.com/watch?v=x&t=42); anything else without
+    its #fragment and trailing slash, host in lower case."""
+    url = url.strip()
+    parts = urlsplit(url)
+    host = parts.netloc.lower().removeprefix("www.").removeprefix("m.")
+    if host in ("youtube.com", "youtu.be", "music.youtube.com", "youtube-nocookie.com"):
+        m = _YOUTUBE_ID.search(url)
+        if m:
+            return f"youtube:{m.group(1)}"
+    return urlunsplit((parts.scheme.lower(), host, parts.path.rstrip("/"), parts.query, ""))
 
 
 def move_file(src: Path, dest_dir: Path) -> Path:
@@ -237,7 +256,8 @@ class DownloadManager:
         if not url:
             raise ValueError("a URL is needed")
         with self.lock:
-            if any(d.url == url and d.status in (*ACTIVE, "naming")
+            key = url_key(url)
+            if any(url_key(d.url) == key and d.status in (*ACTIVE, "naming")
                    for d in self.items.values()):
                 raise ValueError("that URL is already in the queue")
             dl = self.db.save_download(Download(url=url, name=name.strip(),
@@ -252,10 +272,11 @@ class DownloadManager:
         """Each new URL waits in `naming` while its title is fetched, to be named by hand."""
         added: list[Download] = []
         with self.lock:
-            known = {d.url for d in self.items.values() if d.status not in FINISHED}
+            known = {url_key(d.url) for d in self.items.values() if d.status not in FINISHED}
             for url in dict.fromkeys(u.strip() for u in urls):
-                if not url or url in known:
+                if not url or url_key(url) in known:
                     continue
+                known.add(url_key(url))
                 dl = self.db.save_download(Download(url=url, status="naming"))
                 assert dl.id is not None
                 self.items[dl.id] = dl
@@ -307,16 +328,48 @@ class DownloadManager:
                 raise KeyError(download_id)
             if download_id in self.jobs:
                 raise ValueError("cancel it first")
-            self.db.delete_download(download_id)
+            self._forget(self.items[download_id])
             del self.items[download_id]
             self.live.pop(download_id, None)
             self._bump()
+
+    def _forget(self, dl: Download) -> None:
+        """Off the list. A download that got somewhere stays on record, so the same link
+        pasted again can say so; the rest go."""
+        assert dl.id is not None
+        if dl.status in ("downloaded", "imported"):
+            self.db.clear_download(dl.id)
+        else:
+            self.db.delete_download(dl.id)
+
+    def seen(self, url: str) -> list[dict[str, Any]]:
+        """Earlier downloads of the same video (by url_key), newest first, each with where
+        it is now and whether it's still there."""
+        key = url_key(url)
+        if not url.strip():
+            return []
+        found: list[dict[str, Any]] = []
+        with self.lock:
+            for dl in reversed(self.db.downloads(include_cleared=True)):
+                if dl.status not in ("downloaded", "imported") or url_key(dl.url) != key:
+                    continue
+                if dl.status == "imported":
+                    row = self.db.get(dl.library_path) if dl.library_path else None
+                    where = dl.library_path
+                    present = (row is not None and row.status != "missing"
+                               and (self.library / dl.library_path).is_file())
+                else:
+                    where = dl.file
+                    present = bool(dl.file) and Path(dl.file).is_file()
+                found.append({"added_at": dl.added_at, "name": dl.name, "status": dl.status,
+                              "where": where, "present": present})
+        return found
 
     def clear_finished(self) -> int:
         with self.lock:
             done = [i for i, d in self.items.items() if d.status in FINISHED]
             for i in done:
-                self.db.delete_download(i)
+                self._forget(self.items[i])
                 del self.items[i]
                 self.live.pop(i, None)
             self._bump()

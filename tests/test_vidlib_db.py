@@ -213,7 +213,7 @@ def test_upgrading_a_v1_database_re_derives_names_and_drops_junk_people(tmp_path
         db.conn.commit()
 
     with LibraryDB.open(tmp_path) as db:
-        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         row = db.conn.execute("SELECT people_key, title, title_key FROM videos "
                               "WHERE path LIKE 'Movie%'").fetchone()
         assert tuple(row) == ("", "Movie - Director's Cut", "")
@@ -232,7 +232,7 @@ def test_upgrading_adds_the_downloads_table(tmp_path):
     with LibraryDB.open(tmp_path) as db:
         saved = db.save_download(Download("https://x/a", "Alice - Day 1 - Lakes"))
         assert saved.id is not None and saved.added_at
-        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_downloads_round_trip_and_feed_the_spellings(tmp_path):

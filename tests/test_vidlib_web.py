@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -399,3 +400,47 @@ def test_an_unplugged_target_is_never_recreated(tmp_path):
     with pytest.raises(FileNotFoundError, match="disk connected"):
         move_file(src, gone)
     assert src.exists() and not (tmp_path / "Volumes").exists()
+
+
+# ── "you downloaded this before" ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("a, b", [
+    ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ?t=42"),
+    ("https://m.youtube.com/watch?v=dQw4w9WgXcQ&list=PL1", "https://youtube.com/shorts/dQw4w9WgXcQ"),
+    ("https://Example.com/videos/123/", "https://example.com/videos/123#comments"),
+])
+def test_links_to_the_same_video_share_a_key(a, b):
+    from toolboxcli.vidlib.downloads import url_key
+    assert url_key(a) == url_key(b)
+
+
+def test_different_videos_dont():
+    from toolboxcli.vidlib.downloads import url_key
+    assert url_key("https://youtu.be/dQw4w9WgXcQ") != url_key("https://youtu.be/aaaaaaaaaaa")
+    assert url_key("https://example.com/v?id=1") != url_key("https://example.com/v?id=2")
+
+
+def test_an_earlier_download_is_reported_even_after_clearing(serve, library):
+    with LibraryDB.open(library) as db:
+        db.save_download(Download("https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                                  "A - Song - Clips", status="imported",
+                                  library_path="Clips/A - Song - Clips [1080p].mp4",
+                                  added_at="2026-11-14T10:00:00"))
+        db.save_download(Download("https://x/failed", "B", status="failed"))
+        (library / "Clips").mkdir()
+        (library / "Clips" / "A - Song - Clips [1080p].mp4").write_bytes(b"v")
+        db.upsert(Video(path="Clips/A - Song - Clips [1080p].mp4"))
+    client, _ = serve()
+    assert any(d["status"] == "imported" for d in client.downloads())
+    assert client.post("/api/downloads/clear")[1] == {"removed": 1}
+    assert all(d["status"] != "imported" for d in client.downloads())        # off the list
+    _, data = client.get("/api/downloads/seen?url=" + quote("https://youtu.be/dQw4w9WgXcQ?t=5"))
+    [seen] = data["seen"]                                                   # …but remembered
+    assert seen["name"] == "A - Song - Clips" and seen["present"]
+    assert seen["where"] == "Clips/A - Song - Clips [1080p].mp4"
+    assert client.get("/api/downloads/seen?url=" + quote("https://x/failed"))[1]["seen"] == []
+    assert client.get("/api/downloads/seen?url=")[1]["seen"] == []
+    (library / "Clips" / "A - Song - Clips [1080p].mp4").unlink()
+    [seen] = client.get("/api/downloads/seen?url=" + quote("https://youtu.be/dQw4w9WgXcQ"))[1]["seen"]
+    assert not seen["present"]

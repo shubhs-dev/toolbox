@@ -43,8 +43,9 @@ INCOMING_DIR = "_incoming"
 # 1: initial. 2: names that don't follow People - Title - Collection are no longer split
 # into fields (core.VideoName.complete); upgrading re-derives every row and drops the
 # people that only those mis-split names had created. 3: the downloads table. 4: sets of
-# videos the user said aren't parts of one (part_dismissals).
-SCHEMA_VERSION = 4
+# videos the user said aren't parts of one (part_dismissals). 5: downloads.cleared, so a
+# download cleared from the page stays on record ("you downloaded this link before").
+SCHEMA_VERSION = 5
 
 # Statuses a row can have. "compressed" is a known, already-compressed file that hasn't been
 # sorted yet (the old log's "reconciled"); "missing" is a row whose file has disappeared.
@@ -151,6 +152,7 @@ class Download:
     library_path: str = ""
     added_at: str = ""
     updated_at: str = ""
+    cleared: int = 0          # taken off the page's list, kept as history
     id: int | None = None
 
 
@@ -302,6 +304,11 @@ class LibraryDB:
             with self.conn:
                 self.conn.executescript(_DISMISSALS_SCHEMA)
                 self.conn.execute("PRAGMA user_version = 4")
+        if version < 5:
+            with self.conn:
+                self.conn.execute("ALTER TABLE downloads ADD COLUMN cleared INTEGER NOT NULL "
+                                  "DEFAULT 0")
+                self.conn.execute("PRAGMA user_version = 5")
         if version > SCHEMA_VERSION:
             raise RuntimeError(
                 f"{self.path.name} was written by a newer vidlib (schema {version}); "
@@ -490,10 +497,17 @@ class LibraryDB:
                     "WHERE id = ?", [*values, dl.id])
         return dl
 
-    def downloads(self) -> list[Download]:
-        """Every download, oldest first."""
-        rows = self.conn.execute("SELECT * FROM downloads ORDER BY id").fetchall()
+    def downloads(self, include_cleared: bool = False) -> list[Download]:
+        """Every download on the page's list (with *include_cleared*, every one ever),
+        oldest first."""
+        where = "" if include_cleared else "WHERE cleared = 0 "
+        rows = self.conn.execute(f"SELECT * FROM downloads {where}ORDER BY id").fetchall()
         return [Download(**{k: r[k] for k in r.keys()}) for r in rows]
+
+    def clear_download(self, download_id: int) -> None:
+        """Take a download off the list but keep it on record."""
+        with self.conn:
+            self.conn.execute("UPDATE downloads SET cleared = 1 WHERE id = ?", (download_id,))
 
     def delete_download(self, download_id: int) -> None:
         with self.conn:

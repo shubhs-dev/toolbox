@@ -159,6 +159,29 @@ function renderDraft(data) {
   updateAddButton();
 }
 
+// "You've downloaded this link before" — a warning, not a block: re-downloading for a
+// better copy is a fair thing to do.
+const checkSeen = debounce(async () => {
+  const url = $("url").value.trim();
+  const note = $("url-seen");
+  if (!url) { note.hidden = true; return; }
+  const data = await api("GET", `/api/downloads/seen?${new URLSearchParams({ url })}`).catch(() => ({ seen: [] }));
+  if ($("url").value.trim() !== url) return;
+  const last = data.seen[0];
+  note.hidden = !last;
+  if (!last) return;
+  const when = last.added_at ? new Date(last.added_at).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) : "before";
+  const name = document.createElement("code");
+  name.textContent = last.name || "the video's own title";
+  const where = document.createElement("code");
+  where.textContent = last.where;
+  const parts = [`Already downloaded on ${when} as `, name];
+  if (last.present && last.where) parts.push(" — now at ", where, ".");
+  else parts.push(" — it's no longer where it was put, so it may have been removed.");
+  if (data.seen.length > 1) parts.push(` (${data.seen.length} times in all.)`);
+  note.replaceChildren(...parts);
+}, 250);
+
 function updateAddButton() {
   const hasUrl = $("url").value.trim() !== "" || form.namingId !== null;
   const complete = !!(form.draft && form.draft.complete);
@@ -1312,7 +1335,7 @@ const fieldsChanged = debounce(() => {
 
 $("page-title").addEventListener("input", titleChanged);
 for (const id of ["people", "title", "collection"]) $(id).addEventListener("input", fieldsChanged);
-$("url").addEventListener("input", updateAddButton);
+$("url").addEventListener("input", () => { updateAddButton(); checkSeen(); });
 $("add-form").addEventListener("submit", (e) => {
   e.preventDefault();
   if (!$("add-btn").disabled) submit();

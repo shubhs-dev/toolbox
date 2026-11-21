@@ -500,6 +500,11 @@ Progress *factories* themselves) were extracted from it.
   connection on the main thread (WAL). On shutdown the running rows keep `downloading`
   (`_closing` stops `_on_done` from marking them cancelled) and `start()` requeues them.
   `.video-download-queue.json` (the old TUI's queue) in the target folder is imported once.
+  Clearing or removing a download that got somewhere (`downloaded`/`imported`) only sets
+  `cleared` (schema 5) — it stays on record so `seen()` can say "already downloaded on …,
+  now at …" when the same video's link is pasted again (a warning, never a block). Links
+  are compared by `url_key`: YouTube by video id across hosts and parameters, anything else
+  without its fragment and trailing slash; the in-queue duplicate check uses it too.
 - `vidlib/status.py`'s `PipelineStatus` is how the pipeline loop (main thread) and the page
   (server threads) see each other: the loop reports states, the batch, the current file and
   each result; the page pauses, stops or resumes. The loop waits between polls with

@@ -779,7 +779,9 @@ pipeline picks it up like any other new file; a name that's already taken there 
 page instead of overwriting anything. The page shows each download's progress, speed and time
 left, an overall bar, and Retry / Cancel / Remove. **Paste many URLs** fetches each one's title
 and lists them under *Needs naming* to name one by one. The queue is kept in the library
-database, so quitting mid-download resumes next time. The page only listens on `127.0.0.1`
+database, so quitting mid-download resumes next time. Paste a link you've downloaded before
+— even written differently, like `youtu.be/…` for a `youtube.com/watch?v=…` — and the form says
+when, under which name, and where that video is now (or that it's gone). The page only listens on `127.0.0.1`
 and refuses requests from other websites.
 
 **The library on the page** — the **Library** tab is a browsable view of the database: search

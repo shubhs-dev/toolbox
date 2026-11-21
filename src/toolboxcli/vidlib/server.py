@@ -190,6 +190,9 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/events":
             self._events()
             return
+        if method == "GET" and path == "/api/downloads/seen":
+            self._json({"seen": mgr.seen((query.get("url") or [""])[0])})
+            return
         if method == "GET" and path == "/api/suggest":
             kind = (query.get("kind") or ["people"])[0]
             if kind not in ("people", "collections"):
