@@ -106,6 +106,8 @@ import errno
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import time
 import webbrowser
 from collections.abc import Callable, Iterator
@@ -141,7 +143,7 @@ from toolboxcli._common.handbrake import (
 )
 from toolboxcli._common.humanize import human_size as fmt_size
 from toolboxcli._common.progress import bar as progress_bar
-from toolboxcli._common.tooling import require_tool
+from toolboxcli._common.tooling import detached_kwargs, require_tool
 from toolboxcli._common.trash import move_to_trash
 from toolboxcli.vidlib import core
 from toolboxcli.vidlib.db import (
@@ -155,7 +157,7 @@ from toolboxcli.vidlib.db import (
 )
 from toolboxcli.vidlib.downloads import DownloadManager
 from toolboxcli.vidlib.server import DEFAULT_PORT, VidlibServer
-from toolboxcli.vidlib.status import KeepAwake, PipelineStatus
+from toolboxcli.vidlib.status import KeepAwake, MergeJob, PipelineStatus
 
 VIDEO_EXTS = core.VIDEO_EXTS
 
@@ -941,6 +943,108 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
             "original_size": orig_size, "compressed_size": comp_size}
 
 
+# ── Merging parts ────────────────────────────────────────────────────
+
+def run_merge(root: Path, db: LibraryDB, job: MergeJob, status: PipelineStatus) -> None:
+    """Join *job*'s parts with concatvid, which re-encodes only what doesn't match, checks
+    the result's length against the parts and only then trashes them.
+
+    The joined file is written to _incoming/merge-<id>/ (never scanned) and moved into the
+    root only once its parts are gone — i.e. concatvid's check passed. There the pipeline
+    files it: sorted only when every part was encoded by vidlib (its row is recorded as
+    compressed), encoded like any new arrival otherwise. A join that failed the check stays
+    put, `unverified`, with the parts untouched, for the page to discard."""
+    parts = [root / p for p in job.paths]
+    if any(not p.is_file() for p in parts):
+        status.update_merge(job, "failed", "a part was moved or removed while it waited")
+        return
+    rows = [db.get(p) for p in job.paths]
+    all_encoded = all(r is not None and r.backend for r in rows)
+    backend = next((r.backend for r in rows if r is not None and r.backend), "")
+
+    staging = root / INCOMING_DIR / f"merge-{job.id}"
+    staging.parent.mkdir(exist_ok=True)       # never parents=True: the root must exist
+    staging.mkdir(exist_ok=True)
+    out = staging / f"{job.stem}{job.ext}"
+    status.update_merge(job, "running", f"joining {len(parts)} parts")
+    info(f"Merging {len(parts)} parts → {out.name}")
+    cmd = [sys.executable, "-m", "toolboxcli.concatvid.cli", *map(str, parts),
+           "-o", str(out), "-y"]
+    # UTF-8 output, read back as such: on Windows a piped child otherwise writes in the
+    # legacy code page and concatvid dies printing its first "→".
+    env = {**os.environ, "NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200",
+           "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace", env=env,
+                                **detached_kwargs())
+    except OSError as exc:
+        status.update_merge(job, "failed", f"couldn't run concatvid: {exc}")
+        return
+
+    def watch() -> None:                       # Stop now on the page ends the merge
+        while proc.poll() is None:
+            if status.cancel.wait(0.5) and proc.poll() is None:
+                proc.terminate()
+                return
+    threading.Thread(target=watch, daemon=True).start()
+    last = ""
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            text = line.strip()
+            if text:
+                last = text
+                status.update_merge(job, detail=text[:200])
+        proc.wait()
+    except BaseException:
+        proc.terminate()
+        proc.wait()
+        raise
+
+    parts_gone = all(not p.exists() for p in parts)
+    if out.is_file() and parts_gone:
+        final = unique_path(root / out.name)
+        out.rename(final)
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
+        for path in job.paths:
+            db.remove(path)
+            db.log_event(path, "merged", f"into {final.name}")
+        if all_encoded:
+            probed = probe(final)
+            height, duration, depth, has_sub = probed or (0, 0.0, 8, False)
+            record(db, root, final, "compressed", height=height, duration=duration,
+                   bit_depth=depth, has_sub=has_sub, source_height=height, backend=backend)
+        db.log_event(rel_path(root, final), "merged", f"from {len(parts)} parts")
+        ok(f"Merged → {final.name}")
+        status.update_merge(job, "done", f"→ {final.name}", rel_path(root, final))
+        return
+    if status.cancel.is_set():
+        if out.is_file() and not parts_gone:
+            out.unlink()
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
+        status.update_merge(job, "stopped", "stopped; the parts are untouched")
+        return
+    if out.is_file():
+        warn(f"Merged {out.name}, but couldn't confirm it holds every part — parts kept")
+        status.update_merge(job, "unverified",
+                            "the joined file couldn't be confirmed to hold every part, so "
+                            "the parts were kept", rel_path(root, out))
+        return
+    try:
+        staging.rmdir()
+    except OSError:
+        pass
+    warn(f"Merge failed: {last or f'concatvid exited {proc.returncode}'}")
+    status.update_merge(job, "failed", last or f"concatvid exited {proc.returncode}")
+
+
 # ── Subtitle merging ─────────────────────────────────────────────────
 
 def merge_subtitles(root: Path, db: LibraryDB, args) -> list[dict]:
@@ -1540,6 +1644,14 @@ def run(root: Path, db: LibraryDB, args, status: PipelineStatus | None = None,
                 info(f"Load above {args.max_load} — waiting {args.interval}s")
                 status.sleep(args.interval)
                 continue
+
+            # Merges queued from the page run first, one at a time, on this thread.
+            while not status.paused and (job := status.next_merge()) is not None:
+                status.set_state("merging", job.stem)
+                run_merge(root, db, job, status)
+                if on_settled is not None and job.state == "done":
+                    for part in job.paths:      # a download that was a part follows too
+                        on_settled(part, job.output)
 
             # Hand renames and moves, and files added to folders by hand, are picked up
             # before anything in the root is judged new.

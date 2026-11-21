@@ -127,6 +127,7 @@
       <div class="row-stats dim" id="pipe-stats"></div>
     </div>
     <p class="hint" id="pipe-line"></p>
+    <ul class="rows" id="pipe-merges"></ul>
     <ul class="recent" id="pipe-recent"></ul>
     <p class="hint settings" id="pipe-settings"></p>
   </section>
@@ -189,6 +190,11 @@
   <ul class="part-groups" id="lib-parts" hidden></ul>
   <p class="empty" id="lib-empty" hidden>Nothing matches.</p>
   <button type="button" id="lib-more" hidden>Show more</button>
+  <div class="select-bar" id="select-bar" hidden>
+    <span id="select-count"></span>
+    <button type="button" class="primary" id="select-merge">Merge selected…</button>
+    <button type="button" id="select-clear">Clear</button>
+  </div>
 </main>
 
 <main class="library review-page" id="view-review" hidden>
@@ -247,6 +253,52 @@
         <button type="button" class="danger" id="detail-confirm-yes">Move to Trash</button>
         <button type="button" id="detail-confirm-no">Keep it</button>
       </p>
+    </div>
+  </div>
+</dialog>
+
+<dialog class="detail merge" id="merge" aria-labelledby="merge-title">
+  <div class="detail-inner">
+    <div class="detail-head">
+      <h2 id="merge-title">Merge parts</h2>
+      <button type="button" class="link" id="merge-x" aria-label="Close">Close</button>
+    </div>
+    <div class="detail-scroll">
+    <div class="detail-body">
+    <form class="rename" id="merge-form" autocomplete="off">
+      <h3>Merged video</h3>
+      <label class="field"><span class="label">People</span>
+        <span class="combo"><input id="mg-people" type="text" placeholder="Unknown">
+          <ul class="suggest" id="mg-people-suggest" role="listbox" hidden></ul></span></label>
+      <div class="pills" id="mg-people-pills"></div>
+      <label class="field"><span class="label">Title</span><input id="mg-title" type="text" placeholder="Unknown"></label>
+      <div class="pills" id="mg-title-pills"></div>
+      <label class="field"><span class="label">Collection</span>
+        <span class="combo"><input id="mg-collection" type="text" placeholder="Unknown">
+          <ul class="suggest" id="mg-collection-suggest" role="listbox" hidden></ul></span></label>
+      <div class="pills" id="mg-collection-pills"></div>
+      <div class="preview"><span class="label">Saved as</span>
+        <code class="stem" id="mg-stem"></code>
+        <ul class="problems" id="mg-problems"></ul></div>
+      <ul class="notes" id="mg-notes"></ul>
+      <label class="gap-ok" id="mg-gap" hidden><input type="checkbox" id="mg-gap-ok">
+        <span id="mg-gap-text"></span></label>
+    </form>
+    <aside class="detail-info" aria-label="Parts, in order">
+      <h3>Parts, in order</h3>
+      <ol class="merge-parts" id="mg-parts"></ol>
+      <label class="field"><span class="label">Add a part</span>
+        <input id="mg-search" type="search" placeholder="Search the library"></label>
+      <ul class="merge-results" id="mg-results"></ul>
+    </aside>
+    </div>
+    </div>
+    <div class="detail-foot">
+      <div class="actions">
+        <button type="submit" form="merge-form" class="primary" id="mg-go" disabled>Merge</button>
+        <button type="button" id="mg-cancel">Cancel</button>
+        <span class="form-msg" id="mg-msg" role="status"></span>
+      </div>
     </div>
   </div>
 </dialog>

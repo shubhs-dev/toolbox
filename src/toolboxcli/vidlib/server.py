@@ -17,6 +17,7 @@ faster than anyone reads them), with a comment every few seconds to keep the lin
 from __future__ import annotations
 
 import json
+import re
 import sys
 import threading
 import time
@@ -318,6 +319,29 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):  # pyright: ignore[reportUnknownVariableType]
                 raise ApiError(HTTPStatus.BAD_REQUEST, "ids must be a list of numbers")
             lib.dismiss_parts(ids)  # pyright: ignore[reportUnknownArgumentType]
+            self._json({"ok": True})
+            return
+        if method == "POST" and path in ("/api/library/merge/plan", "/api/library/merge"):
+            body = self._body()
+            ids: Any = body.get("ids")
+            if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):  # pyright: ignore[reportUnknownVariableType]
+                raise ApiError(HTTPStatus.BAD_REQUEST, "ids must be a list of numbers")
+            if path.endswith("/plan"):
+                self._json(lib.merge_plan(ids))  # pyright: ignore[reportUnknownArgumentType]
+            else:
+                self._json(lib.queue_merge(ids, str(body.get("people") or ""),  # pyright: ignore[reportUnknownArgumentType]
+                                           str(body.get("title") or ""),
+                                           str(body.get("collection") or "")),
+                           HTTPStatus.CREATED)
+            return
+        merge_action = re.fullmatch(r"/api/library/merge/(\d+)/(discard|forget)", path)
+        if method == "POST" and merge_action:
+            self._body()
+            job_id = int(merge_action.group(1))
+            if merge_action.group(2) == "discard":
+                lib.discard_merge(job_id)
+            elif self.server.pipeline is not None:
+                self.server.pipeline.forget_merge(job_id)
             self._json({"ok": True})
             return
         if method == "GET" and path == "/api/library/review":

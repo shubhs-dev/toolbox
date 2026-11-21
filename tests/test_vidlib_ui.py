@@ -174,3 +174,65 @@ def test_pills_fill_the_fields_and_the_dialog_closes_easily(library_url):
         sync_api.expect(page.locator("#stem")).to_have_text("Carol, Bob - hiking - Clips.ext")
         assert errors == []
         browser.close()
+
+
+@pytest.fixture
+def parts_url(tmp_path):
+    from toolboxcli.vidlib.status import PipelineStatus
+    root = tmp_path / "lib"
+    (root / "Trips").mkdir(parents=True)
+    with LibraryDB.open(root) as db:
+        for path in ("Trips/Alice - Lake P1 - Trips.mp4", "Trips/Alice - Lake P2 - Trips.mp4",
+                     "Odd clip.mp4", "Another clip.mp4"):
+            (root / path).write_bytes(b"x")
+            db.upsert(Video(path=path, height=720, duration=60))
+    db = LibraryDB.open(root, shared=True)
+    manager = DownloadManager(root, db)
+    status = PipelineStatus()
+    server = VidlibServer(manager, port=0, pipeline=status)
+    manager.start()
+    server.start()
+    yield server.url, status
+    server.stop()
+    manager.shutdown()
+    db.close()
+
+
+def test_merging_from_the_parts_view_and_by_hand(parts_url):
+    url, status = parts_url
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"no Chromium for Playwright: {exc}")
+        page = browser.new_page(viewport={"width": 1200, "height": 800})
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url + "#library")
+        page.click(".seg button[data-view='parts']")
+        page.get_by_role("button", name="Merge…").click()
+        sync_api.expect(page.locator("#mg-title")).to_have_value("Lake")
+        sync_api.expect(page.locator("#mg-stem")).to_have_text("Alice - Lake - Trips")
+        sync_api.expect(page.locator(".merge-part")).to_have_count(2)
+        # Reorder, then put it back.
+        page.get_by_role("button", name="Move Alice - Lake P1 - Trips.mp4 down").click()
+        sync_api.expect(page.locator(".merge-part").first).to_contain_text("P2")
+        page.get_by_role("button", name="Move Alice - Lake P1 - Trips.mp4 up").click()
+        sync_api.expect(page.locator("#mg-go")).to_be_enabled()
+        page.click("#mg-go")
+        sync_api.expect(page.locator("#merge")).to_be_hidden()
+        [job] = status.snapshot()["merges"]
+        assert job["state"] == "queued" and job["name"] == "Alice - Lake - Trips.mp4"
+        assert job["paths"] == ["Trips/Alice - Lake P1 - Trips.mp4", "Trips/Alice - Lake P2 - Trips.mp4"]
+
+        # By hand: pick two cards in the grid.
+        page.click(".seg button[data-view='all']")
+        sync_api.expect(page.locator("#lib-grid .card")).to_have_count(4)
+        page.get_by_role("checkbox", name="Select Another clip.mp4 to merge").check()
+        page.get_by_role("checkbox", name="Select Odd clip.mp4 to merge").check()
+        sync_api.expect(page.locator("#select-count")).to_have_text("2 selected")
+        page.click("#select-merge")
+        sync_api.expect(page.locator(".merge-part")).to_have_count(2)
+        sync_api.expect(page.locator(".merge-part").first).to_contain_text("Another clip.mp4")
+        assert errors == []
+        browser.close()

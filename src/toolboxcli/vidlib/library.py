@@ -90,7 +90,10 @@ class Library:
         if view != "duplicates":
             videos.sort(key=lambda v: v.filename.casefold())
         page = videos[offset:offset + limit]
-        rows = [_video_json(v) | ({"group": group_of[v.path]} if group_of else {}) for v in page]
+        with self.lock:
+            ids = {path: i for i, path in self.db.conn.execute("SELECT id, path FROM videos")}
+        rows = [_video_json(v) | {"id": ids.get(v.path)}
+                | ({"group": group_of[v.path]} if group_of else {}) for v in page]
         return {"total": len(videos), "offset": offset, "videos": rows, **facets}
 
     def _facets(self) -> dict[str, Any]:
@@ -305,6 +308,108 @@ class Library:
             raise LibraryError("a set of parts has at least two videos")
         with self.lock:
             self.db.dismiss_parts(video_ids)
+
+    def _merge_rows(self, ids: list[int]) -> list[tuple[int, Video]]:
+        if len(ids) < 2 or len(set(ids)) != len(ids):
+            raise LibraryError("pick at least two different videos to merge")
+        with self.lock:
+            by_id = dict(self.db.videos_with_ids())
+        missing = [i for i in ids if i not in by_id]
+        if missing:
+            raise LibraryError("one of those videos isn't in the library any more")
+        rows = [(i, by_id[i]) for i in ids]
+        for _, row in rows:
+            if not (self.root / row.path).is_file():
+                raise LibraryError(f"{row.path} isn't there any more")
+            self._not_busy(row)
+        return rows
+
+    def merge_plan(self, ids: list[int]) -> dict[str, Any]:
+        """What merging these videos, in this order, would do: the proposed name, and what
+        concatvid would have to re-encode (from the same checks it makes itself)."""
+        from toolboxcli.concatvid import cli as concat_cli, core as concat_core
+
+        rows = self._merge_rows(ids)
+        people, title, collection = parts.proposal(
+            [parts.Video(i, v.name.title, tuple(v.name.people), v.name.collection)
+             for i, v in rows])
+        notes: list[dict[str, str]] = []
+        blocking = False
+        files = [self.root / v.path for _, v in rows]
+        infos = concat_cli.probe_group(files)
+        if infos is None:
+            notes.append({"level": "warn", "text": "Couldn't read every part with ffprobe, so "
+                          "what needs re-encoding isn't known until the merge runs."})
+        else:
+            streams = [infos[f] for f in files]
+            if concat_core.audio_presence_mismatch(streams):
+                blocking = True
+                notes.append({"level": "block", "text": "Some parts have sound and others "
+                              "don't, so they can't be joined."})
+            else:
+                target = concat_core.choose_target(streams)
+                extras = any(i.has_extra_streams for i in streams)
+                changed = False
+                for n, (info, (_, row)) in enumerate(zip(streams, rows, strict=True), 1):
+                    if not concat_core.video_matches(info, target):
+                        changed = True
+                        size = (f" (down from {info.height}p)"
+                                if info.height > target.height else "")
+                        notes.append({"level": "warn", "text": f"Part {n} ({row.filename}) "
+                                      f"will be re-encoded to {target.height}p{size}."})
+                    elif not concat_core.audio_matches(info, target):
+                        changed = True
+                        notes.append({"level": "info", "text": f"Part {n}'s sound will be "
+                                      "re-encoded to match the others."})
+                if changed and extras:
+                    notes.append({"level": "warn", "text": "Extra audio and subtitle tracks "
+                                  "will be dropped, so every part has the same tracks."})
+                if not changed:
+                    notes.append({"level": "ok", "text": "The parts match, so they're joined "
+                                  "as they are — no re-encoding."})
+        suffixes = {Path(v.path).suffix.lower() for _, v in rows}
+        return {
+            "ids": [i for i, _ in rows],
+            "members": [_video_json(v) | {"id": i} for i, v in rows],
+            "name": {"people": ", ".join(people), "title": title, "collection": collection},
+            "ext": suffixes.pop() if len(suffixes) == 1 else ".mkv",
+            "notes": notes, "blocking": blocking,
+        }
+
+    def queue_merge(self, ids: list[int], people: str, title: str,
+                    collection: str) -> dict[str, Any]:
+        """Queue the merge on the pipeline, which runs it between encodes."""
+        if self.pipeline is None:
+            raise LibraryError("nothing is merged in download-only mode")
+        plan = self.merge_plan(ids)
+        if plan["blocking"]:
+            raise LibraryError(next(n["text"] for n in plan["notes"] if n["level"] == "block"))
+        draft = self._draft(*naming.fill_unknown(people, title, collection))
+        paths = [m["path"] for m in plan["members"]]
+        try:
+            job = self.pipeline.queue_merge(paths, draft.stem, plan["ext"])
+        except ValueError as exc:
+            raise LibraryError(str(exc)) from exc
+        return job.to_json()
+
+    def discard_merge(self, job_id: int) -> None:
+        """Send an unverified join (its parts were kept) to the Trash."""
+        if self.pipeline is None:
+            raise LibraryError("nothing is merged in download-only mode")
+        try:
+            job = self.pipeline.merge(job_id)
+        except KeyError as exc:
+            raise LibraryError("no such merge") from exc
+        if job.state != "unverified" or not job.output:
+            raise LibraryError("only a merge that couldn't be checked can be discarded")
+        out = self.root / job.output
+        if out.is_file():
+            move_to_trash(str(out))
+        try:
+            out.parent.rmdir()
+        except OSError:
+            pass
+        self.pipeline.update_merge(job, state="discarded", detail="sent to the Trash")
 
     # ── the review queue ──
 
