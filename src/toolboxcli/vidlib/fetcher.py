@@ -21,7 +21,14 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ARIA2C_ARGS = "-x 16 -k 1M"
+# yt-dlp runs aria2c with its live readout on and its summary off. Into a pipe the readout is
+# buffered until aria2c exits, so the page saw 0% and then 100%. A one-line summary every
+# second is flushed as it goes, and _ARIA2C_RE reads its "[#id 3MiB/9MiB(30%) … DL:…]" line.
+# These come after yt-dlp's own aria2c options, so they win.
+ARIA2C_ARGS = "aria2c:-x 16 -k 1M --summary-interval=1 --show-console-readout=false"
+# The rest of each summary: banner, rules and the file name. Kept out of a job's tail, whose
+# last line is shown as the reason a download failed.
+_SUMMARY_NOISE = re.compile(r"^(?:\*\*\* Download Progress Summary|[=-]{20,}$|FILE: )")
 TAIL_LINES = 15
 
 
@@ -238,7 +245,7 @@ class Engine:
             assert proc.stdout is not None
             for raw in proc.stdout:
                 line = raw.strip()
-                if line:
+                if line and not _SUMMARY_NOISE.match(line):
                     job.tail.append(line)
                     self.on_line(job, line, parse_progress(line))
             job.returncode = proc.wait()

@@ -13,8 +13,9 @@ with " - " in their original order (core.parse_name reads every middle field bac
 title); there is one collection. The order of segments in the pasted title doesn't matter:
 roles decide where each piece goes.
 
-Names are matched against a Vocabulary two ways. An *exact* match (core.normalize: case and
-spacing) rewrites the name to the library's spelling. A *loose* match (also ignoring
+Names are matched against a Vocabulary two ways. An *exact* match (case and spaces, even
+spaces missing or added: "LemonadeStand" is "Lemonade Stand") rewrites the name to the
+library's spelling. A *loose* match (also ignoring
 punctuation, inner spaces and accents: "Doug-Doug" ~ "DougDoug") only counts for guessing
 roles and offers the library's spelling as a suggestion — it's never applied silently.
 """
@@ -83,11 +84,22 @@ class Match:
     spelling: str = ""   # the library's spelling, for exact and loose matches
 
 
+def _spaceless(text: str) -> str:
+    return re.sub(r"\s+", "", normalize(text))
+
+
 class _Names:
     """One kind of name (people or collections): exact and loose lookups to a spelling."""
 
     def __init__(self, names: dict[str, str]) -> None:
         self.exact = names
+        # Names that differ only in where (or whether) there are spaces are the same name:
+        # "LemonadeStand" is the library's "Lemonade Stand" — applied, not asked about.
+        self.spaced: dict[str, str | None] = {}
+        for spelling in names.values():
+            key = _spaceless(spelling)
+            existing = self.spaced.get(key, spelling)
+            self.spaced[key] = spelling if existing == spelling else None
         self.loose: dict[str, str | None] = {}
         for spelling in names.values():
             key = loose_key(spelling)
@@ -98,7 +110,7 @@ class _Names:
             self.loose[key] = spelling if existing == spelling else None
 
     def match(self, name: str) -> Match:
-        spelling = self.exact.get(normalize(name))
+        spelling = self.exact.get(normalize(name)) or self.spaced.get(_spaceless(name))
         if spelling is not None:
             return Match("exact", spelling)
         loose = self.loose.get(loose_key(name))
