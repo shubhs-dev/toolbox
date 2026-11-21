@@ -100,6 +100,8 @@ class DownloadManager:
     title_fetcher: Callable[[str], str] = fetcher.fetch_title
     lock: threading.RLock = field(default_factory=threading.RLock)
     version: int = 0
+    # Called (under the lock) after every change, e.g. to re-check KeepAwake.
+    after_change: Callable[[], None] | None = None
 
     def __post_init__(self) -> None:
         self.changed = threading.Condition(self.lock)
@@ -192,6 +194,28 @@ class DownloadManager:
     def _bump(self) -> None:
         self.version += 1
         self.changed.notify_all()
+        if self.after_change is not None:
+            self.after_change()
+
+    def notify(self) -> None:
+        """Something else the page shows (the pipeline) changed: wake the event stream."""
+        with self.lock:
+            self._bump()
+
+    @property
+    def busy(self) -> bool:
+        with self.lock:
+            return any(d.status in ACTIVE for d in self.items.values()) or bool(self.fetching)
+
+    def video_settled(self, name: str, path: str) -> None:
+        """The pipeline is done with root file *name*, now at *path* (root-relative): an
+        imported download that was dropped in as *name* follows it there."""
+        with self.lock:
+            for dl in self.items.values():
+                if dl.status == "imported" and dl.library_path == name:
+                    dl.library_path = path
+                    self.db.save_download(dl)
+                    self._bump()
 
     def wait_for_change(self, seen: int, timeout: float) -> int:
         """Block until `version` moves past *seen* (or *timeout*); returns the version."""

@@ -101,6 +101,28 @@
     </details>
   </section>
 
+  <div class="side">
+  <section class="panel pipeline" id="pipeline" aria-labelledby="pipeline-heading" hidden>
+    <div class="panel-head">
+      <h2 id="pipeline-heading">Encoding <span class="pill" id="pipe-state">starting</span></h2>
+      <span class="row-actions">
+        <button type="button" class="small" id="pipe-pause">Pause</button>
+        <button type="button" class="small" id="pipe-stop" title="Stop the current encode too; the file is left as it was">Stop now</button>
+        <button type="button" class="small primary" id="pipe-resume" hidden>Resume</button>
+      </span>
+    </div>
+    <p class="disk-banner" id="pipe-disk" hidden></p>
+    <div class="pipe-current" id="pipe-current" hidden>
+      <div class="row-name" id="pipe-file"></div>
+      <div class="row-sub dim" id="pipe-meta"></div>
+      <div class="bar"><div class="bar-fill" id="pipe-bar"></div></div>
+      <div class="row-stats dim" id="pipe-stats"></div>
+    </div>
+    <p class="hint" id="pipe-line"></p>
+    <ul class="recent" id="pipe-recent"></ul>
+    <p class="hint settings" id="pipe-settings"></p>
+  </section>
+
   <section class="panel queue" aria-labelledby="queue-heading">
     <div class="panel-head">
       <h2 id="queue-heading">Downloads</h2>
@@ -133,6 +155,7 @@
       <ul class="rows" id="rows-done"></ul>
     </div>
   </section>
+  </div>
 </main>
 
 <template id="row-template">

@@ -153,11 +153,13 @@ def _low_priority_popen_kwargs():
 
 
 def transcode(src, dst, preset_file, preset_label, progress=None, task_id=None,
-              extra_args=None, low_priority=False):
+              extra_args=None, low_priority=False, cancel=None):
     """Run HandBrakeCLI, stream-parse its progress, return True on success.
 
     *extra_args* are appended after the preset flags, so they override preset fields
     (that's how the encoder and quality get swapped without editing preset files).
+    *cancel* is an optional threading.Event: once it's set, HandBrake is stopped and False
+    returned (the caller tells a cancel from a failure by checking the event).
     """
     cmd = [
         HANDBRAKE,
@@ -204,24 +206,35 @@ def transcode(src, dst, preset_file, preset_label, progress=None, task_id=None,
     err_t.start()
 
     try:
-        proc.wait()
+        while proc.poll() is None:
+            if cancel is not None and cancel.wait(0.5):
+                _stop(proc)
+                break
+            if cancel is None:
+                proc.wait()
     except BaseException:
         # Detached from the terminal, HandBrake doesn't see Ctrl+C itself — stop it here
         # rather than leave an orphaned encode running.
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        _stop(proc)
         raise
     out_t.join(timeout=5)
     err_t.join(timeout=5)
 
+    if cancel is not None and cancel.is_set():
+        return False
     if progress is not None and task_id is not None:
         progress.update(task_id, completed=100)
 
     return proc.returncode == 0
+
+
+def _stop(proc):
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 def available_encoders():
