@@ -280,6 +280,14 @@ Progress *factories* themselves) were extracted from it.
   for being larger, the tag reverts to the original's real depth rather than the intent. It also
   treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
   that guard those files sort into a folder called `Sub`.
+- `vidlib -w` (`cli.swap_order`, `core.swap_title_people`) is a one-off fix for a library
+  named `Title - People - Collection`: the next-to-last field is the people, so a title with
+  `" - "` in it moves whole; a trailing `" - Sub"` field and the `[tags]` stay. It can't tell
+  which order a name is in, so it relies on the user running it once (a `swapped order` event
+  is logged per file; `last_event` warns on a re-run). Renames go through a hidden temporary
+  name in two passes, so two files that trade names don't collide, and an interrupted run puts
+  every still-temporary file back. `db.move` repoints `compared_with` and
+  `downloads.library_path`, so a rename never strands a parked copy or a download's link.
 - `vidlib/db.py` is the library database (`.vidlib.db`, stdlib `sqlite3`, WAL; the
   library is always on a local disk, never a network share, where SQLite's locking is
   unreliable). It identifies a video by `core.parse_name(...).key` — the *set* of people

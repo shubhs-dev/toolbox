@@ -639,6 +639,7 @@ vidlib -R 720p -c Lakes               # filters combine: 720p videos in Lakes
 vidlib -T Restored                    # by [tag]
 vidlib -U                             # files not named People - Title - Collection
 vidlib -D                             # videos the library holds more than once
+vidlib -w                             # rename Title - People - Collection files the right way round
 vidlib -s                             # merge waiting subtitles only, then exit
 vidlib -H 01:00-07:00 -L 4            # only encode off-hours, and back off under load
 ```
@@ -674,6 +675,14 @@ pinned to the bottom of the screen: files done and left (`Overall 3/10 · 7 left
 tally (`✓ 3 done  1 skipped`), elapsed time and an ETA. The overall bar advances during each
 encode rather than only when a file finishes, so the ETA is meaningful even with a few long
 files.
+
+**A library named the other way round** — `vidlib -w` renames every video from
+`Title - People - Collection` to `People - Title - Collection` (and every subtitle waiting in
+the root), keeping its `[tags]` and carrying its database row along, so its history and
+duplicate matching follow it. The collection stays last, so nothing changes folder. Names
+with fewer than three fields are left alone, and so is any rename onto a file that exists.
+It can't tell which way round a name is, so run it once, with vidlib stopped — a second run
+warns that the library was already swapped.
 
 **Subtitles** — on every poll, vidlib also looks for subtitle files sitting in the root
 and matches each one to a video by the first `' - '`-separated field of its name (e.g. `People`
@@ -723,6 +732,7 @@ size and folder. It's a report only: nothing is moved or deleted.
 | `-T, --tag` | — | With `-l`: only videos carrying this `[tag]` (case-insensitive, partial) |
 | `-U, --unnamed` | off | With `-l`: only videos not named `People - Title - Collection` |
 | `-D, --duplicates` | off | List videos the library holds more than once, then exit (report only) |
+| `-w, --swap-order` | off | Rename every video from `Title - People - Collection` to `People - Title - Collection` (lists them and asks first; `-n` only lists), then exit |
 | `-F, --force` | off | Re-process files the library database already knows as done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `VIDLIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |

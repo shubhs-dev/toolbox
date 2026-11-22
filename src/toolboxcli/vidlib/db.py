@@ -377,6 +377,12 @@ class LibraryDB:
         with self.conn:
             self.conn.execute("DELETE FROM videos WHERE path = ?", (new_path,))
             self.conn.execute("DELETE FROM videos WHERE path = ?", (old_path,))
+            # What else points at the file: a parked copy's "compared with", and the
+            # download it came from.
+            self.conn.execute("UPDATE videos SET compared_with = ? WHERE compared_with = ?",
+                              (new_path, old_path))
+            self.conn.execute("UPDATE downloads SET library_path = ? WHERE library_path = ?",
+                              (new_path, old_path))
         video.path = new_path
         video.updated_at = ""
         self.upsert(video)
@@ -549,6 +555,12 @@ class LibraryDB:
                 people.extend(name.people)
                 collections.append(name.collection)
         return people, collections
+
+    def last_event(self, action: str) -> sqlite3.Row | None:
+        row: sqlite3.Row | None = self.conn.execute(
+            "SELECT * FROM events WHERE action = ? ORDER BY id DESC LIMIT 1", (action,)
+        ).fetchone()
+        return row
 
     def events(self, path: str | None = None) -> Iterator[sqlite3.Row]:
         if path is None:

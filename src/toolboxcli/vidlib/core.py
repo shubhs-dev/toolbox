@@ -213,6 +213,29 @@ def parse_name(stem: str) -> VideoName:
     return VideoName((), re.sub(r"\s+", " ", parsed.base).strip(), "", tags)
 
 
+def swap_title_people(stem: str) -> str | None:
+    """*stem* written Title - People - Collection, rewritten People - Title - Collection, its
+    [tags] and any trailing " - Sub" field kept: "Day 1 - Alice - Lakes [720p]" →
+    "Alice - Day 1 - Lakes [720p]". The people are the next-to-last field, so a title with
+    " - " in it ("Day 1 - Part 2 - Alice - Lakes") moves as a whole. None when there aren't
+    three fields to swap.
+
+    It can't tell which order a name is in, so it swaps whatever it's given: applied to a
+    name already People - Title - Collection, it gets it wrong (and with a " - " in the
+    title, a second swap doesn't even put it back).
+    """
+    parsed = parse_stem(stem)
+    fields = parsed.fields
+    sub = fields[-1] if fields and fields[-1].lower() == SUB_FIELD else ""
+    if sub:
+        fields = fields[:-1]
+    if len(fields) < 3:
+        return None
+    swapped = [fields[-2], FIELD_SEP.join(fields[:-2]), fields[-1]] + ([sub] if sub else [])
+    parsed.base = FIELD_SEP.join(swapped)
+    return parsed.render()
+
+
 # ── Subtitle matching ────────────────────────────────────────────────
 
 def first_field(stem: str) -> str:
