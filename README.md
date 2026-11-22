@@ -676,8 +676,10 @@ encode rather than only when a file finishes, so the ETA is meaningful even with
 files.
 
 **Subtitles** — on every poll, vidlib also looks for subtitle files sitting in the root
-and matches each one to a video by the first `' - '`-separated field of its name (e.g. `People`
-in `People - Title - Trip`). Only an unambiguous 1:1 match is merged — a subtitle matching more
+and matches each one to the video with the same name — language/flag suffixes (`.en`, `.pt-BR`,
+`.forced`) and the video's `[tags]` ignored, people in any order, case and spacing ignored, as
+duplicate detection reads names. Only when no video has the same name does it fall back to the
+video's first `' - '` field appearing in the subtitle's name (clip codes like `A001C003`). Only an unambiguous 1:1 match is merged — a subtitle matching more
 than one video, or a video claimed by more than one subtitle, is left alone and retried next
 poll rather than guessed at. A match is merged in with `addsub` and tagged `[... Sub]` in the
 bracket group instead of getting `addsub -u`'s `" - Sub"` filename suffix. This works whether

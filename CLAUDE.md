@@ -280,6 +280,12 @@ Progress *factories* themselves) were extracted from it.
   for being larger, the tag reverts to the original's real depth rather than the intent. It also
   treats a final `" - Sub"` field as `addsub -u`'s marker rather than a trip name — without
   that guard those files sort into a folder called `Sub`.
+- `vidlib`'s subtitle matcher (`core.match_subtitles`) tries, per subtitle, the same match key
+  as duplicate detection, then the same base name, and only then the old "video's first
+  `" - "` field appears in the subtitle's name" rule — in a People - Title - Collection
+  library the first field is the people, shared by many videos, so on its own it found every
+  subtitle ambiguous. `subtitle_base` strips language/flag suffixes (`.en`, `.pt-BR`,
+  `.forced`) first. Still 1:1 only: never guess.
 - `vidlib/db.py` is the library database (`.vidlib.db`, stdlib `sqlite3`, WAL; the
   library is always on a local disk, never a network share, where SQLite's locking is
   unreliable). It identifies a video by `core.parse_name(...).key` — the *set* of people

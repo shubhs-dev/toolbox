@@ -35,9 +35,11 @@ While a batch runs, an overall progress bar is pinned beneath the current file's
 done and left, a tally of outcomes (done / review / skipped / failed), elapsed time and ETA.
 
 On every poll it also looks for subtitle files sitting in the root. A subtitle is matched to
-a video by the first " - " field of its name (e.g. "People" in "People - Title - Trip") —
-only an unambiguous 1:1 match is merged; anything ambiguous is left alone and retried next
-poll. A match is merged in with `addsub` and the file is tagged [... Sub] instead of getting
+the video with the same name, ignoring language/flag suffixes (".en", ".forced") and the
+video's [tags]: the same people (any order), title and collection, or else the same whole
+name. Only when neither finds a video does it fall back to the video's first " - " field
+appearing in the subtitle's name (clip codes like "A001C003"). Only an unambiguous 1:1 match
+is merged; anything ambiguous is left alone and retried next poll. A match is merged in with `addsub` and the file is tagged [... Sub] instead of getting
 an addsub-style " - Sub" filename suffix. This works both for a subtitle already sitting next
 to a brand-new video, and for one dropped in later for a video that's already been optimised
 and filed into a trip folder.

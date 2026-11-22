@@ -221,8 +221,50 @@ def first_field(stem: str) -> str:
     return fields[0] if fields else ""
 
 
+# Trailing ".xx" parts of a subtitle's name that say what it is, not which video it's for:
+# languages ("en", "eng", "pt-BR"), and the usual flags.
+_SUB_LANGUAGE = re.compile(r"^[a-z]{2,3}(?:[-_][a-z]{2,4})?$", re.IGNORECASE)
+_SUB_FLAGS = {"forced", "sdh", "cc", "hi", "default", "full", "signs", "songs"}
+
+
+def subtitle_base(sub_name: str) -> str:
+    """A subtitle's name without its extension and language/flag suffixes:
+    "Alice - Day 1 - Lakes.en.forced.srt" → "Alice - Day 1 - Lakes"."""
+    stem = sub_name.rsplit(".", 1)[0] if "." in sub_name else sub_name
+    while "." in stem:
+        head, last = stem.rsplit(".", 1)
+        if not head or not (_SUB_LANGUAGE.match(last) or last.lower() in _SUB_FLAGS):
+            break
+        stem = head
+    return stem
+
+
+def _subtitle_candidates(video_stems: list[str], sub: str) -> list[str]:
+    """The videos a subtitle could belong to, by the first rule that finds any:
+    1. the same video by name — people, title and collection as duplicate detection reads
+       them (any order or case, tags ignored);
+    2. the same base name, for names that don't follow People - Title - Collection;
+    3. the video's first " - " field appearing in the subtitle's name — the original rule,
+       for clip-code names ("A001C003 - …"). In a People - Title - Collection library the
+       first field is the people, shared by many videos, so it only decides when 1 and 2
+       find nothing."""
+    base = subtitle_base(sub)
+    key = parse_name(base).key
+    if key is not None:
+        by_name = [vs for vs in video_stems if parse_name(vs).key == key]
+        if by_name:
+            return by_name
+    wanted = normalize(parse_stem(base).base)
+    by_base = [vs for vs in video_stems if normalize(parse_stem(vs).base) == wanted]
+    if by_base:
+        return by_base
+    sub_lower = sub.lower()
+    return [vs for vs in video_stems
+            if first_field(vs) and first_field(vs).lower() in sub_lower]
+
+
 def match_subtitles(video_stems: list[str], sub_names: list[str]) -> tuple[dict[str, str], dict[str, str]]:
-    """Match subtitles to videos by first-field code substring, 1:1 only.
+    """Match subtitles to videos (see _subtitle_candidates), 1:1 only.
 
     Returns (matches, skipped): matches maps sub_name -> video_stem for every pair safe to
     merge unattended; skipped maps sub_name -> a reason for every subtitle left alone. Never
@@ -230,13 +272,8 @@ def match_subtitles(video_stems: list[str], sub_names: list[str]) -> tuple[dict[
     one video, or a video claimed by more than one subtitle, is left for a human (or a later
     poll, once the filenames are disambiguated) rather than picked at random.
     """
-    candidates: dict[str, list[str]] = {}
-    for sub in sub_names:
-        sub_lower = sub.lower()
-        candidates[sub] = [
-            vs for vs in video_stems
-            if first_field(vs) and first_field(vs).lower() in sub_lower
-        ]
+    candidates: dict[str, list[str]] = {
+        sub: _subtitle_candidates(video_stems, sub) for sub in sub_names}
 
     claims: dict[str, list[str]] = {}
     for sub, vs_list in candidates.items():

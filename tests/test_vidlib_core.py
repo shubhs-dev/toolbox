@@ -74,6 +74,34 @@ def test_match_subtitles_only_merges_unambiguous_pairs():
     assert skipped["Bob.forced.srt"].startswith("video also claimed")
 
 
+
+def test_subtitles_match_their_video_by_name_not_by_people():
+    # Every video here starts with "DougDoug", which the first-field rule alone found
+    # ambiguous for every subtitle.
+    videos = ["DougDoug - Lemonade Stand Finale - Lemonade Stand [1080p]",
+              "DougDoug, Atrioc - The Conspiracy Episode - Lemonade Stand [720p 10bit]",
+              "DougDoug - Ranking Snacks - Clips", "IMG_2041"]
+    subs = ["DougDoug - Lemonade Stand Finale - Lemonade Stand.en.srt",
+            "Atrioc, dougdoug - the conspiracy episode - Lemonade Stand.eng.forced.vtt",
+            "img_2041.pt-BR.srt",
+            "DougDoug - Something Else - Clips.srt"]
+    matches, skipped = core.match_subtitles(videos, subs)
+    assert matches == {
+        subs[0]: videos[0],
+        subs[1]: videos[1],                         # people in any order, tags ignored
+        subs[2]: videos[3],                         # a plain name matches as a whole
+    }
+    assert skipped[subs[3]] == "matches 2 videos"   # falls back to the first field: shared
+
+
+@pytest.mark.parametrize("name, base", [
+    ("A - B - C.srt", "A - B - C"), ("A - B - C.en.srt", "A - B - C"),
+    ("A - B - C.pt-BR.forced.vtt", "A - B - C"), ("Vol. 2.srt", "Vol. 2"),
+    ("Movie.2024.srt", "Movie.2024"),
+])
+def test_subtitle_base(name, base):
+    assert core.subtitle_base(name) == base
+
 @pytest.mark.parametrize("height, preset", [
     (2160, "hw-1080"), (1080, "hw-1080"), (721, "hw-1080"),
     (720, "hw-720"), (480, "hw-720"), (0, "hw-1080"),
