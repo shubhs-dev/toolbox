@@ -316,7 +316,9 @@ Progress *factories* themselves) were extracted from it.
   poll: a file at a new path with the exact size + mtime of a vanished row was renamed or
   moved by hand and its row follows it; unknown files in folders (or `_review/`) are recorded
   as already compressed, since the pipeline never touches subfolders; unknown *root* files are
-  left as pipeline input; vanished rows become `missing`. Every pipeline write goes through
+  left as pipeline input; vanished rows become `missing`; a known file's size + mtime are refreshed
+  when they differ on disk — copying the library to another filesystem rounds mtimes (HFS+
+  keeps whole seconds, exFAT 10 ms), and stale ones would stop every later rename matching. Every pipeline write goes through
   `record()`, which re-reads size + mtime from disk — skip that and the next hand rename can't
   be matched. Duplicate lookup (`resolve_duplicate`) is library-wide by match key, ignoring
   `_review/` copies (a decision still waiting on the user). A dry run opens an in-memory copy

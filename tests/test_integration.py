@@ -7,6 +7,7 @@ isn't installed is skipped. Its web page and downloads are tested in test_vidlib
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -158,6 +159,32 @@ def test_sync_follows_moves_records_folders_and_marks_missing(tmp_path):
         vidlib.sync_library(root, db)
         bob = db.get("Lakes/Bob - Gone - Lakes.mp4")
         assert bob is not None and bob.status == "sorted"
+
+
+def test_sync_refreshes_mtimes_so_renames_still_match_after_a_disk_move(tmp_path):
+    root = tmp_path
+    (root / "Lakes").mkdir()
+    video = root / "Lakes" / "Alice - Day 1 - Lakes [720p].mp4"
+    video.write_bytes(b"a" * 10)
+    os.utime(video, (1_700_000_000.37, 1_700_000_000.37))         # exFAT keeps 10 ms
+    with _db(root) as db:
+        vidlib.sync_library(root, db)
+        before = db.get(vidlib.rel_path(root, video))
+        assert before is not None and before.status == "sorted"
+
+        os.utime(video, (1_700_000_000, 1_700_000_000))            # copied to HFS+: whole s
+        vidlib.sync_library(root, db)
+        row = db.get(vidlib.rel_path(root, video))
+        assert row is not None and row.mtime == 1_700_000_000
+
+        renamed = video.with_name("Alice - Day One - Lakes [720p].mp4")
+        video.rename(renamed)                                      # a later hand rename
+        vidlib.sync_library(root, db)
+        assert db.get(vidlib.rel_path(root, video)) is None
+        follow = db.get(vidlib.rel_path(root, renamed))
+        assert follow is not None and follow.status == "sorted"
+        actions = [e["action"] for e in db.events()]
+        assert "renamed" in actions and "missing" not in actions
 
 
 

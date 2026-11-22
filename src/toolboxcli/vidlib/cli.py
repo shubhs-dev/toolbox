@@ -249,6 +249,8 @@ def sync_library(root: Path, db: LibraryDB) -> None:
       vidlib never touches subfolders, so whatever is there is already compressed.
     - A file in the root it doesn't know is left alone: that's new input for the pipeline.
     - A row whose file has gone, and wasn't found elsewhere, is marked missing.
+    - A known file whose size or mtime changed (e.g. the library was copied to a disk with
+      coarser timestamps) has them refreshed, so the rename match above keeps working.
     - A row in a folder marked with .vidlib-ignore, or whose file was moved into one, is
       dropped: that folder isn't part of the library.
     """
@@ -280,12 +282,22 @@ def sync_library(root: Path, db: LibraryDB) -> None:
         elif "/" in path:
             unknown_in_folders.append(path)
 
-    for path in on_disk:
+    for path, st in on_disk.items():
         row = known.get(path)
-        if row is not None and row.status == "missing":
+        if row is None:
+            continue
+        # Keep the stored size + mtime true to the disk, or the next hand rename can't be
+        # matched: copying a library to another filesystem changes mtimes (HFS+ keeps whole
+        # seconds, exFAT 10 ms), and nothing else re-reads a file vidlib doesn't touch.
+        changed = row.size != st.st_size or abs(row.mtime - st.st_mtime) >= 0.001
+        if changed:
+            row.size, row.mtime = st.st_size, st.st_mtime
+        if row.status == "missing":
             row.status = "sorted" if "/" in path else "compressed"
-            db.upsert(row)
             db.log_event(path, "reappeared")
+        elif not changed:
+            continue
+        db.upsert(row)
 
     for row in gone:
         if row.status != "missing":
