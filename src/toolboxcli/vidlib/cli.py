@@ -26,7 +26,10 @@ For every video that appears directly in the library root it will:
 
 Only files sitting directly in the root are touched. Subfolders — including the trip
 folders and any folder you use to stage files by hand — are left completely alone.
-_incoming/ is skipped entirely: it holds downloads that are still being written.
+_incoming/ is skipped entirely: it holds downloads that are still being written. So is any
+folder holding an empty file named .vidlib-ignore: what's in it isn't part of the library —
+never recorded, shown, compared as a duplicate or filed into. Rows already recorded there
+(or for files you move into one) are forgotten.
 
 While a batch runs, an overall progress bar is pinned beneath the current file's: files
 done and left, a tally of outcomes (done / review / skipped / failed), elapsed time and ETA.
@@ -147,6 +150,7 @@ from toolboxcli._common.tooling import detached_kwargs, require_tool
 from toolboxcli._common.trash import move_to_trash
 from toolboxcli.vidlib import core
 from toolboxcli.vidlib.db import (
+    IGNORE_FILE,
     INCOMING_DIR,
     LEGACY_DB_NAME,
     REVIEW_DIR,
@@ -193,22 +197,44 @@ def forget(db: LibraryDB, root: Path, *paths: Path) -> None:
             db.remove(rel_path(root, path))
 
 
-def _skip_incoming(root: Path, dirpath: str, dirnames: list[str]) -> None:
-    """Prune _incoming/ (downloads still being written) from an os.walk of the root."""
+def _skip_incoming(root: Path, dirpath: str, dirnames: list[str],
+                   ignored: list[Path] | None = None) -> None:
+    """Prune what isn't part of the library from an os.walk of the root: _incoming/
+    (downloads still being written) and any folder holding a .vidlib-ignore file. Pruned
+    ignored folders are appended to *ignored*, when given."""
     if INCOMING_DIR in dirnames and Path(dirpath) == root:
         dirnames.remove(INCOMING_DIR)
+    for d in list(dirnames):
+        if (Path(dirpath) / d / IGNORE_FILE).is_file():
+            dirnames.remove(d)
+            if ignored is not None:
+                ignored.append(Path(dirpath) / d)
 
 
-def library_files(root: Path) -> dict[str, os.stat_result]:
-    """Every video under *root*, _review/ included and _incoming/ not, keyed by rel_path."""
+def library_files(root: Path, ignored: list[Path] | None = None) -> dict[str, os.stat_result]:
+    """Every video under *root*, _review/ included and _incoming/ and ignored folders not,
+    keyed by rel_path. The ignored folders found are appended to *ignored*, when given."""
     found: dict[str, os.stat_result] = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        _skip_incoming(root, dirpath, dirnames)
+        _skip_incoming(root, dirpath, dirnames, ignored)
         for name in filenames:
             path = Path(dirpath) / name
             if _is_video(path):
                 found[rel_path(root, path)] = path.stat()
     return found
+
+
+def ignored_videos(folders: list[Path]) -> list[os.stat_result]:
+    """Size and mtime of every video in the ignored folders — only to recognise a recorded
+    file that was moved into one, whose row is then dropped rather than marked missing."""
+    stats: list[os.stat_result] = []
+    for folder in folders:
+        for dirpath, _dirnames, filenames in os.walk(folder):
+            for name in filenames:
+                path = Path(dirpath) / name
+                if _is_video(path):
+                    stats.append(path.stat())
+    return stats
 
 
 def sync_library(root: Path, db: LibraryDB) -> None:
@@ -221,10 +247,24 @@ def sync_library(root: Path, db: LibraryDB) -> None:
       vidlib never touches subfolders, so whatever is there is already compressed.
     - A file in the root it doesn't know is left alone: that's new input for the pipeline.
     - A row whose file has gone, and wasn't found elsewhere, is marked missing.
+    - A row in a folder marked with .vidlib-ignore, or whose file was moved into one, is
+      dropped: that folder isn't part of the library.
     """
-    on_disk = library_files(root)
+    ignored: list[Path] = []
+    on_disk = library_files(root, ignored)
     known = {v.path: v for v in db.all(include_missing=True)}
     gone = [v for path, v in known.items() if path not in on_disk]
+
+    if ignored:
+        prefixes = tuple(f"{rel_path(root, f)}/" for f in ignored)
+        hidden = [(s.st_size, s.st_mtime) for s in ignored_videos(ignored)]
+        for row in list(gone):
+            moved_in = any(row.size == size and abs(row.mtime - mtime) < 0.001
+                           for size, mtime in hidden)
+            if row.path.startswith(prefixes) or moved_in:
+                gone.remove(row)
+                db.remove(row.path)
+                db.log_event(row.path, "ignored", "in a folder marked .vidlib-ignore")
 
     unknown_in_folders: list[str] = []
     for path in sorted(p for p in on_disk if p not in known):
@@ -427,10 +467,14 @@ def all_videos(root: Path) -> list[Path]:
     return found
 
 
+IGNORED_DESTINATION = "collection folder ignored"
+
+
 def find_folder(base: Path, name: str) -> Path | None:
     """Case-insensitive recursive search for a folder called *name*."""
     name_lower = name.lower()
     for dirpath, dirnames, _files in os.walk(base):
+        _skip_incoming(base, dirpath, dirnames)   # never file into an ignored folder
         if REVIEW_DIR in dirnames:
             dirnames.remove(REVIEW_DIR)
         for d in dirnames:
@@ -574,7 +618,7 @@ def should_process(video: Path, root: Path, db: LibraryDB) -> bool:
         return False   # nothing changed since we last warned about it
     if row.status == "failed" and row.failures >= MAX_FAILURES:
         return False   # give up rather than retry a broken file forever
-    if row.status == "skipped" and row.reason == "destination exists":
+    if row.status == "skipped" and row.reason in ("destination exists", IGNORED_DESTINATION):
         # Stays in the root until you move or rename something, and re-encoding it on
         # every poll in the meantime would burn the GPU indefinitely. -F retries it.
         return False
@@ -909,6 +953,17 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
                 "original_size": orig_size, "compressed_size": comp_size}
 
     if dest_folder is None:
+        if (root / trip / IGNORE_FILE).is_file():
+            # The collection's folder exists but is marked .vidlib-ignore (find_folder
+            # skipped it): filing into it would put a library video among files that
+            # aren't part of the library. It waits in the root instead.
+            warn(f"{trip}/ is marked {IGNORE_FILE}, leaving in root: {final.name}")
+            record(db, root, final, "skipped", reason=IGNORED_DESTINATION,
+                   **fields)  # pyright: ignore[reportArgumentType]
+            forget(db, root, video)
+            return {"file": name, "status": "skipped", "reason": IGNORED_DESTINATION,
+                    "path": rel_path(root, final),
+                    "original_size": orig_size, "compressed_size": comp_size}
         dest_folder = root / trip
         dest_folder.mkdir(parents=True, exist_ok=True)
 

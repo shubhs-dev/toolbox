@@ -173,6 +173,47 @@ def test_downloads_in_incoming_are_never_recorded(tmp_path):
         assert [v.path for v in db.all()] == ["Lakes/_incoming/Bob - Kept - Lakes.mp4"]
     assert vidlib.all_videos(root) == [root / "Lakes" / "_incoming" / "Bob - Kept - Lakes.mp4"]
 
+
+def test_a_folder_marked_vidlib_ignore_is_not_part_of_the_library(tmp_path):
+    root = tmp_path
+    (root / "Lakes").mkdir()
+    (root / "Not mine" / "deep").mkdir(parents=True)
+    (root / "Not mine" / ".vidlib-ignore").write_text("")
+    (root / "Not mine" / "deep" / "Alice - Theirs - Lakes.mp4").write_bytes(b"t")
+    kept = root / "Lakes" / "Alice - Day 1 - Lakes.mp4"
+    kept.write_bytes(b"k")
+    moving = root / "Lakes" / "Bob - Old - Lakes.mp4"
+    moving.write_bytes(b"m" * 5)
+    with _db(root) as db:
+        vidlib.sync_library(root, db)
+        assert sorted(v.path for v in db.all()) == [
+            "Lakes/Alice - Day 1 - Lakes.mp4", "Lakes/Bob - Old - Lakes.mp4"]   # not recorded
+
+        # A recorded file moved into the ignored folder is forgotten, not "missing"…
+        moving.rename(root / "Not mine" / moving.name)
+        # …and so is a row whose whole folder gets marked later.
+        (root / "Lakes" / ".vidlib-ignore").write_text("")
+        vidlib.sync_library(root, db)
+        assert db.all(include_missing=True) == []
+        assert {e["action"] for e in db.events()} >= {"ignored"}
+    assert vidlib.all_videos(root) == []
+    assert vidlib.find_folder(root, "lakes") is None          # never chosen to file into
+
+
+@needs("ffmpeg", "ffprobe", "HandBrakeCLI")
+def test_nothing_is_filed_into_an_ignored_collection_folder(tmp_path, make_video, run_cli):
+    root = tmp_path / "lib"
+    (root / "Clips").mkdir(parents=True)
+    (root / "Clips" / ".vidlib-ignore").write_text("")
+    make_video(root / "Eve - Short - Clips.mp4", "640x480")
+    result = run_cli("vidlib", [str(root), "-O", "-S", "-g", "cpu"])
+    assert result.returncode == 0, result.stderr
+    assert "marked .vidlib-ignore" in result.stdout
+    assert sorted(p.name for p in (root / "Clips").iterdir()) == [".vidlib-ignore"]
+    [left] = [p for p in root.glob("*.mp4")]
+    assert left.name.startswith("Eve - Short - Clips")
+
+
 @pytest.fixture
 def catalogue(tmp_path, make_video):
     """A sorted library to query: a reordered-people duplicate pair, and a tagged file."""

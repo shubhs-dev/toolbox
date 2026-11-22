@@ -343,3 +343,12 @@ def test_parts_are_offered_and_a_dismissal_sticks(client, library):
     assert client("GET", "/api/library/parts")[1]["groups"] == []
     assert client("POST", "/api/library/parts/dismiss", {"ids": [1]})[0] == 409
     assert client("POST", "/api/library/parts/dismiss", {"ids": "x"})[0] == 400
+
+
+
+def test_rename_wont_file_into_an_ignored_folder(client, library):
+    (library / "Peaks" / ".vidlib-ignore").write_text("")
+    status, err = client("POST", "/api/library/rename", {
+        "path": "Odd name.mp4", "people": "Dee", "title": "Hike", "collection": "Peaks"})
+    assert status == 409 and ".vidlib-ignore" in err["error"]
+    assert (library / "Odd name.mp4").exists()

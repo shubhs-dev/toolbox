@@ -297,8 +297,13 @@ Progress *factories* themselves) were extracted from it.
   `LibraryDB.open` renames a library's `.optimiselib.db` (+ `-wal`/`-shm`) to `.vidlib.db`
   when there's no `.vidlib.db` yet — with both present the old one is left alone and warned
   about. `_incoming/` at the root is where downloads are written; every walk of the library
-  (`library_files`, `all_videos`) prunes it, because `sync_library` records any unknown file
-  in a subfolder as already sorted — a half-downloaded file would never be encoded.
+  (`library_files`, `all_videos`, `find_folder`) prunes it, because `sync_library` records any
+  unknown file in a subfolder as already sorted — a half-downloaded file would never be
+  encoded. The same walks prune any folder holding a `.vidlib-ignore` file (`IGNORE_FILE`):
+  the user's way to keep files out of the library. `sync_library` drops rows inside such a
+  folder, and rows whose file turns up in one (by size + mtime), instead of marking them
+  missing; `_finish` won't file into a collection folder that's marked (the file waits in
+  the root, `skipped` with reason `IGNORED_DESTINATION`, not retried), nor will a rename.
 - `vidlib`'s "already done" test is `already_done()`: the database knows *this exact
   file* (by path) with a done status — not a guess from the filename's tags, which is what
   let a hand-renamed file be re-encoded before. `sync_library()` keeps paths true before each

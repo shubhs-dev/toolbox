@@ -25,7 +25,7 @@ from typing import Any
 from toolboxcli._common.tooling import detached_kwargs
 from toolboxcli._common.trash import move_to_trash
 from toolboxcli.vidlib import core, naming, parts
-from toolboxcli.vidlib.db import LibraryDB, Video
+from toolboxcli.vidlib.db import IGNORE_FILE, LibraryDB, Video
 from toolboxcli.vidlib.status import PipelineStatus
 
 CACHE_DIR = ".vidlib-cache"
@@ -244,6 +244,9 @@ class Library:
         else:
             folder = find_folder(self.root, draft.collection.text) or (
                 self.root / draft.collection.text)
+            if (folder / IGNORE_FILE).is_file():
+                raise LibraryError(f"{folder.name}/ is marked {IGNORE_FILE} — it isn't part "
+                                   "of the library, so nothing is filed into it")
         dest = folder / f"{stem}{file.suffix}"
         if dest == file:
             return _video_json(row)

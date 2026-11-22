@@ -39,6 +39,9 @@ REVIEW_DIR = "_review"
 # Where downloads are written until they finish; the library scan never looks inside, so a
 # half-downloaded file is never recorded (a file in any other subfolder counts as sorted).
 INCOMING_DIR = "_incoming"
+# An empty file of this name in a folder takes the folder (and everything under it) out of
+# the library: never scanned, recorded, shown, matched as a duplicate or chosen to file into.
+IGNORE_FILE = ".vidlib-ignore"
 
 # 1: initial. 2: names that don't follow People - Title - Collection are no longer split
 # into fields (core.VideoName.complete); upgrading re-derives every row and drops the

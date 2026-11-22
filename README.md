@@ -851,6 +851,11 @@ Windows scheduled task all work. It de-prioritises the encoder by default, and
 `-H`/`-L` keep it out of the way of live playback. A run killed mid-encode restores the source
 file on restart.
 
+**Keeping files out** — files in folders are left alone, but they *are* recorded as part of the
+library (shown on the page, compared as duplicates). To keep a folder out altogether, put an
+empty `.vidlib-ignore` file in it (`touch "Not mine/.vidlib-ignore"`): nothing in it is recorded,
+shown, matched as a duplicate or filed into, and anything already recorded there is forgotten.
+
 **Library database** — everything vidlib knows lives in `.vidlib.db` at the library
 root: a single SQLite file, no server, and you can open it with any SQLite viewer. Before each
 poll it's synced with the disk — a file you rename or move by hand keeps its history and is
