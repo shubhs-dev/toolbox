@@ -50,15 +50,6 @@ log is imported on the first run and kept as .optimiselib.json.migrated, and a l
 used as optimiselib has its .optimiselib.db renamed .vidlib.db. A dry run works on an
 in-memory copy, so it changes nothing.
 
-A library named the other way round, Title - People - Collection, is put right once with
--w: every video in it (and every subtitle waiting in the root) is renamed People - Title -
-Collection, its tags kept and its history following it. The collection stays last, so
-nothing changes folder. You're shown every rename and asked first (-n just shows them);
-names with fewer than three fields are left alone, as is any rename onto a file that
-exists. It can't tell which way round a name is, so it swaps whatever it finds: run it
-once, on a library named the other way round — it warns you if it was swapped before. Stop
-vidlib while it runs.
-
 DOWNLOADS
 
 A pasted title is split into segments on " - " and "|"; each gets a role, guessed from the
@@ -106,8 +97,6 @@ Usage:
     vidlib -T Restored                    # by [tag]
     vidlib -U                             # files not named People - Title - Collection
     vidlib -D                             # videos the library holds more than once
-    vidlib -w                             # rename Title - People - Collection files
-                                          # to People - Title - Collection (asks first)
     vidlib -H 01:00-07:00 -L 4            # only encode off-hours, and back off under load
     vidlib -S                             # don't scan for or merge subtitle files
     vidlib -s                             # merge waiting subtitles only, then exit
@@ -124,7 +113,6 @@ import sys
 import threading
 import time
 import webbrowser
-from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -477,106 +465,6 @@ def all_videos(root: Path) -> list[Path]:
             if _is_video(p):
                 found.append(p)
     return found
-
-
-SWAP_EVENT = "swapped order"
-
-
-def plan_swap(root: Path) -> tuple[list[tuple[Path, Path]], list[tuple[Path, str]]]:
-    """(renames, skipped) for -w: every video under the library (_review/ included) and
-    every subtitle in the root, renamed by core.swap_title_people. Skipped files carry why:
-    too few fields, or a destination that exists or that another file is renamed onto."""
-    files = [root / p for p in library_files(root)] + list(scan_subs(root))
-    renames: list[tuple[Path, Path]] = []
-    skipped: list[tuple[Path, str]] = []
-    for file in sorted(files, key=lambda f: rel_path(root, f).lower()):
-        stem = core.swap_title_people(file.stem)
-        if stem is None:
-            skipped.append((file, "not three fields"))
-        elif stem != file.stem:
-            renames.append((file, file.with_name(stem + file.suffix)))
-    targets = Counter(str(dest).casefold() for _, dest in renames)
-    clashes = {d for d, n in targets.items() if n > 1}
-    leaving = {str(src).casefold() for src, _ in renames}
-    safe: list[tuple[Path, Path]] = []
-    for src, dest in renames:
-        key = str(dest).casefold()
-        if key in clashes:
-            skipped.append((src, f"another file would also become {dest.name}"))
-        elif dest.exists() and key not in leaving and not _same_path(src, dest):
-            skipped.append((src, f"{dest.name} already exists"))
-        else:
-            safe.append((src, dest))
-    return safe, skipped
-
-
-def _same_path(a: Path, b: Path) -> bool:
-    try:
-        return os.path.samefile(a, b)
-    except OSError:
-        return False
-
-
-def swap_order(root: Path, db: LibraryDB, dry_run: bool = False) -> None:
-    """-w: rename the library from Title - People - Collection to People - Title -
-    Collection, carrying each row with its file (db.move)."""
-    renames, skipped = plan_swap(root)
-    if skipped:
-        tbl = Table(box=box.SIMPLE_HEAD, show_edge=False, title="Left alone")
-        tbl.add_column("File", style="yellow", overflow="fold")
-        tbl.add_column("Why")
-        for file, why in skipped:
-            tbl.add_row(escape(rel_path(root, file)), escape(why))
-        console.print(tbl)
-    if not renames:
-        info("Nothing to rename")
-        return
-    tbl = Table(box=box.SIMPLE_HEAD, show_edge=False)
-    tbl.add_column("Now", style="dim", overflow="fold")
-    tbl.add_column("Becomes", style="cyan", overflow="fold")
-    for src, dest in renames:
-        tbl.add_row(escape(rel_path(root, src)), escape(dest.name))
-    console.print(tbl)
-    count = f"{len(renames)} file{'' if len(renames) == 1 else 's'}"
-    if dry_run:
-        info(f"Dry run — would rename {count}")
-        return
-    before = db.last_event(SWAP_EVENT)
-    if before is not None:
-        warn(f"This library was already swapped on {before['at'][:10]} — swapping again "
-             "turns those names the wrong way round")
-    if confirm(f"Rename {count}?", default="n") != "y":
-        info("Cancelled")
-        return
-    # Two passes through a temporary name, so a file whose new name is another's old one
-    # (A - B - C and B - A - C) never lands on a file that hasn't moved yet.
-    # Interrupted (Ctrl+C, a file that vanished), every file still under its temporary name
-    # goes back to its old one: a hidden name would take it out of the library.
-    staged: list[tuple[Path, Path, Path]] = []
-    done = 0
-    try:
-        for i, (src, dest) in enumerate(renames):
-            tmp = src.with_name(f".{src.name}.vidlib-swap{i}")
-            os.rename(src, tmp)
-            staged.append((src, tmp, dest))
-        while staged:
-            src, tmp, dest = staged[0]
-            if dest.exists():
-                warn(f"{rel_path(root, dest)} appeared meanwhile — left {src.name} as it was")
-                os.rename(tmp, src)
-            else:
-                os.rename(tmp, dest)
-                old, new = rel_path(root, src), rel_path(root, dest)
-                db.move(old, new)
-                db.log_event(new, SWAP_EVENT, f"from {old}")
-                done += 1
-            staged.pop(0)
-    finally:
-        for src, tmp, _dest in staged:
-            if tmp.exists() and not src.exists():
-                os.rename(tmp, src)
-        db.prune_people()
-    ok(f"Renamed {done} file{'' if done == 1 else 's'}")
 
 
 IGNORED_DESTINATION = "collection folder ignored"
@@ -1503,9 +1391,6 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("-D", "--duplicates", action="store_true",
                     help="List videos the library holds more than once, then exit "
                          "(report only; nothing is moved)")
-    ap.add_argument("-w", "--swap-order", action="store_true",
-                    help="Rename every video named Title - People - Collection to "
-                         "People - Title - Collection (lists them and asks first), then exit")
     ap.add_argument("-F", "--force", action="store_true",
                     help="Re-process files the library database already knows as done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
@@ -1562,7 +1447,7 @@ def main() -> None:
         die("--subs-only and --no-subs contradict each other")
     if args.download_only is not None and not wants_web(args):
         die("-X/--download-only serves the web page, so it can't be combined with -W, -n, "
-            "-O, -r, -l (or its filters), -D, -s or -w")
+            "-O, -r, -l (or its filters), -D or -s")
 
     # A dry run works on an in-memory copy of the database, so importing the old log or
     # syncing the library changes nothing on disk.
@@ -1600,7 +1485,7 @@ def wants_web(args) -> bool:
     """The web page runs alongside the continuous watch only; reports, queries, one-shot
     runs, dry runs and subtitle-only merges are terminal commands that exit."""
     return not (args.no_web or args.dry_run or args.once or args.report or args.duplicates
-                or args.subs_only or args.swap_order or args.list_files is not None)
+                or args.subs_only or args.list_files is not None)
 
 
 @dataclass
@@ -1720,11 +1605,6 @@ def run(root: Path, db: LibraryDB, args, status: PipelineStatus | None = None,
     if args.subs_only:
         sync_library(root, db)
         merge_only(root, db, args)
-        return
-
-    if args.swap_order:
-        sync_library(root, db)
-        swap_order(root, db, dry_run=args.dry_run)
         return
 
     require_tool("ffprobe", "part of ffmpeg")

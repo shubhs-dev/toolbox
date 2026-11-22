@@ -556,12 +556,6 @@ class LibraryDB:
                 collections.append(name.collection)
         return people, collections
 
-    def last_event(self, action: str) -> sqlite3.Row | None:
-        row: sqlite3.Row | None = self.conn.execute(
-            "SELECT * FROM events WHERE action = ? ORDER BY id DESC LIMIT 1", (action,)
-        ).fetchone()
-        return row
-
     def events(self, path: str | None = None) -> Iterator[sqlite3.Row]:
         if path is None:
             yield from self.conn.execute("SELECT * FROM events ORDER BY id")

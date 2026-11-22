@@ -32,3 +32,7 @@ env/
 # Archives & temp
 *.tmp
 *.bak
+
+# vidlib state, if it is ever run inside the repo
+.vidlib.db*
+.vidlib-cache/
