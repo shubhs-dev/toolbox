@@ -457,7 +457,13 @@ Progress *factories* themselves) were extracted from it.
   suggestion, and a loose key two library spellings share suggests nothing. `Draft.problems()`
   checks the result with `parse_name`, so naming and the library can't drift.
   `tests/fixtures/vidlib_titles.json` is the spec — change a rule by changing the code and the
-  affected rows. Colons don't split: `Part 2: The Return` would come back as
+  affected rows. Segments the user skips are remembered (`skipped_segments`, schema 6, by
+  `loose_key`; `Vocabulary.skips`) and guessed skip next time — *after* known people and
+  collections, so a creator's name once skipped as a channel name is still their name — and
+  set aside before the position rules. Saving a name (`/api/downloads`, `/api/downloads/<id>/name`)
+  sends the segment roles; `naming.skip_changes` compares them with a fresh guess: a
+  segment skipped by hand is remembered, a remembered one given a role is forgotten. Site
+  segments are never remembered — they're skipped by position, not by choice. Colons don't split: `Part 2: The Return` would come back as
   `Part 2 - The Return`.
   `find_in_title` powers the forms' pills: whole-word runs of the title that are a known
   person or collection (exact or loose), longest first, the *first* mention of a person and
@@ -540,7 +546,10 @@ Progress *factories* themselves) were extracted from it.
   only), except a `downgrade` parked before any encode (`backend` empty), whose row is
   dropped so the pipeline encodes it as new input — `review` is in `DONE_STATUSES`, so
   keeping that row would file a raw source unencoded.
-- `vidlib/library.py` is the Library tab's backend. Every action takes a root-relative path
+- `vidlib/library.py` is the Library tab's backend. Its person and collection filters match
+  *exactly* (`db.search(exact=True)`): the page only sends values picked from its lists, and
+  picking "Ali" mustn't show Alice. The search box (`q`) and the CLI's `-a`/`-c` stay partial.
+  Every action takes a root-relative path
   and first checks the *database* knows it (`_known`), so a crafted path (`../x`) can never
   reach a file outside the library. It shares the download manager's connection and lock.
   Rename builds the name with `naming.from_fields` (so the library's spellings and the same

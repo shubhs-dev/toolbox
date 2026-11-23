@@ -239,6 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self._body()
             dl = mgr.add(str(body.get("url") or ""), str(body.get("name") or ""),
                          str(body.get("page_title") or ""))
+            self._learn_skips(body)
             self._json({"id": dl.id}, HTTPStatus.CREATED)
             return
         if method == "POST" and path == "/api/downloads/bulk":
@@ -290,9 +291,18 @@ class Handler(BaseHTTPRequestHandler):
                     title: Any = body.get("page_title")
                     mgr.name_item(download_id, str(body.get("name") or ""),
                                   title if isinstance(title, str) else None)
+                    self._learn_skips(body)
                 self._json({"ok": True})
                 return
         raise ApiError(HTTPStatus.NOT_FOUND, f"no such endpoint: {method} {path}")
+
+    def _learn_skips(self, body: dict[str, Any]) -> None:
+        """A name saved with the segment roles it was made from (`roles`, as /api/name
+        answered them for `page_title`) teaches which segments to skip next time."""
+        title: Any = body.get("page_title")
+        roles: Any = body.get("roles")
+        if isinstance(title, str) and title.strip() and isinstance(roles, list):
+            self.server.manager.learn_skips(title, [str(r) for r in roles])
 
     def _library(self, method: str, path: str, query: dict[str, list[str]]) -> None:
         lib = self.server.library

@@ -316,3 +316,38 @@ def test_the_header_shows_downloads_and_encoding_apart(parts_url):
         sync_api.expect(page.locator("#encode-counts")).not_to_contain_text("file")
         assert errors == []
         browser.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fake yt-dlp is a POSIX script")
+def test_a_skipped_segment_is_skipped_next_time(page_url, tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "yt-dlp"
+    script.write_text(BUSY_YTDLP.format(python=sys.executable))
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"no Chromium for Playwright: {exc}")
+        page = browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(page_url)
+        stem = page.locator("#stem")
+        page.fill("#url", "https://example.com/one")
+        page.fill("#page-title", "Carol - Hike - Peaks - Promo Clip")
+        sync_api.expect(stem).to_have_text("Carol - Hike - Peaks - Promo Clip.ext")
+        page.get_by_role("button", name="Promo Clip: skip").click()
+        page.get_by_role("button", name="Peaks: collection").click()
+        sync_api.expect(stem).to_have_text("Carol - Hike - Peaks.ext")
+        page.click("#add-btn")
+        sync_api.expect(page.locator("#page-title")).to_have_value("")
+        page.fill("#url", "https://example.com/two")
+        page.fill("#page-title", "Dan - Ski - Alps - Promo Clip")
+        sync_api.expect(stem).to_have_text("Dan - Ski - Alps.ext")
+        sync_api.expect(page.get_by_role("button", name="Promo Clip: skip")).to_have_attribute(
+            "aria-pressed", "true")
+        assert errors == []
+        browser.close()

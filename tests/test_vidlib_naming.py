@@ -15,7 +15,8 @@ from toolboxcli.vidlib.core import parse_name
 from toolboxcli.vidlib.naming import Vocabulary, compose, guess_roles, split_segments
 
 FIXTURE = load_fixture("vidlib_titles.json")
-VOCAB = Vocabulary.from_spellings(FIXTURE["known"]["people"], FIXTURE["known"]["collections"])
+VOCAB = Vocabulary.from_spellings(FIXTURE["known"]["people"], FIXTURE["known"]["collections"],
+                                  FIXTURE["known"]["skipped"])
 CASES = FIXTURE["cases"]
 
 
@@ -165,3 +166,15 @@ def test_a_difference_only_in_spaces_takes_the_library_spelling_without_asking()
     assert vocab.collection("Lemonade-Stand").kind == "loose"      # punctuation still asks
     draft = naming.from_fields("doug doug", "Ep", "lemonadestand", vocab)
     assert draft.stem == "DougDoug - Ep - Lemonade Stand"
+
+
+def test_skip_changes_remembers_choices_and_forgets_reversals():
+    segments = split_segments("Official Video - Carol - Hike - Peaks - Promo | YouTube")
+    guessed = guess_roles(segments, VOCAB)
+    assert guessed == ["skip", "people", "title", "title", "collection", "skip"]
+    # The user skips "Hike" and gives the remembered "Official Video" a role. "YouTube" is a
+    # site segment, skipped by position rather than by choice, so it isn't remembered.
+    chosen: list[naming.Role] = ["title", "people", "skip", "title", "collection", "skip"]
+    remember, forget = naming.skip_changes(segments, guessed, chosen)
+    assert remember == ["Hike"]
+    assert forget == ["Official Video"]

@@ -209,9 +209,10 @@ async function submit() {
   const pageTitle = $("page-title").value;
   try {
     if (form.namingId !== null) {
-      await api("POST", `/api/downloads/${form.namingId}/name`, { name, page_title: pageTitle });
+      await api("POST", `/api/downloads/${form.namingId}/name`, { name, page_title: pageTitle, roles: form.roles });
     } else {
-      await api("POST", "/api/downloads", { url: $("url").value, name, page_title: pageTitle });
+      // The segment roles go along so the server can remember what was skipped.
+      await api("POST", "/api/downloads", { url: $("url").value, name, page_title: pageTitle, roles: form.roles });
     }
     message(`Queued ${name || "the video"}`);
     resetForm();

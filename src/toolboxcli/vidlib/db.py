@@ -48,7 +48,7 @@ IGNORE_FILE = ".vidlib-ignore"
 # people that only those mis-split names had created. 3: the downloads table. 4: sets of
 # videos the user said aren't parts of one (part_dismissals). 5: downloads.cleared, so a
 # download cleared from the page stays on record ("you downloaded this link before").
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Statuses a row can have. "compressed" is a known, already-compressed file that hasn't been
 # sorted yet (the old log's "reconciled"); "missing" is a row whose file has disappeared.
@@ -135,6 +135,16 @@ CREATE TABLE part_dismissals (
     id        INTEGER PRIMARY KEY,
     video_ids TEXT NOT NULL,             -- JSON list of videos.id, sorted
     at        TEXT NOT NULL
+);
+"""
+
+# Added in schema 6: title segments the user skipped when naming a download ("Official
+# Video", a channel name), so they're guessed skip next time. Keyed by naming.loose_key.
+_SKIPPED_SCHEMA = """
+CREATE TABLE skipped_segments (
+    key   TEXT PRIMARY KEY,
+    text  TEXT NOT NULL,                 -- as last skipped, for showing
+    at    TEXT NOT NULL
 );
 """
 
@@ -321,6 +331,10 @@ class LibraryDB:
                 self.conn.execute("ALTER TABLE downloads ADD COLUMN cleared INTEGER NOT NULL "
                                   "DEFAULT 0")
                 self.conn.execute("PRAGMA user_version = 5")
+        if version < 6:
+            with self.conn:
+                self.conn.executescript(_SKIPPED_SCHEMA)
+                self.conn.execute("PRAGMA user_version = 6")
         if version > SCHEMA_VERSION:
             raise RuntimeError(
                 f"{self.path.name} was written by a newer vidlib (schema {version}); "
@@ -566,6 +580,22 @@ class LibraryDB:
                 people.extend(name.people)
                 collections.append(name.collection)
         return people, collections
+
+    def skipped_segments(self) -> list[str]:
+        return [r[0] for r in self.conn.execute("SELECT text FROM skipped_segments ORDER BY at")]
+
+    def remember_skips(self, keyed: list[tuple[str, str]]) -> None:
+        """(key, text) pairs to guess skip from now on; an existing key takes the new text."""
+        with self.conn:
+            self.conn.executemany(
+                "INSERT INTO skipped_segments (key, text, at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET text = excluded.text, at = excluded.at",
+                [(key, text, _now()) for key, text in keyed if key])
+
+    def forget_skips(self, keys: list[str]) -> None:
+        with self.conn:
+            self.conn.executemany("DELETE FROM skipped_segments WHERE key = ?",
+                                  [(k,) for k in keys])
 
     def events(self, path: str | None = None) -> Iterator[sqlite3.Row]:
         if path is None:

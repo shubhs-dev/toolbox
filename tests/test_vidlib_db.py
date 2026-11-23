@@ -209,11 +209,12 @@ def test_upgrading_a_v1_database_re_derives_names_and_drops_junk_people(tmp_path
                         (cut,))
         db.conn.execute("DROP TABLE downloads")              # added in schema 3
         db.conn.execute("DROP TABLE part_dismissals")        # added in schema 4
+        db.conn.execute("DROP TABLE skipped_segments")       # added in schema 6
         db.conn.execute("PRAGMA user_version = 1")
         db.conn.commit()
 
     with LibraryDB.open(tmp_path) as db:
-        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 6
         row = db.conn.execute("SELECT people_key, title, title_key FROM videos "
                               "WHERE path LIKE 'Movie%'").fetchone()
         assert tuple(row) == ("", "Movie - Director's Cut", "")
@@ -227,12 +228,26 @@ def test_upgrading_adds_the_downloads_table(tmp_path):
     with LibraryDB.open(tmp_path) as db:
         db.conn.execute("DROP TABLE downloads")
         db.conn.execute("DROP TABLE part_dismissals")
+        db.conn.execute("DROP TABLE skipped_segments")
         db.conn.execute("PRAGMA user_version = 2")
         db.conn.commit()
     with LibraryDB.open(tmp_path) as db:
         saved = db.save_download(Download("https://x/a", "Alice - Day 1 - Lakes"))
         assert saved.id is not None and saved.added_at
-        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 6
+
+
+def test_upgrading_a_v5_database_adds_the_skipped_segments(tmp_path):
+    with LibraryDB.open(tmp_path) as db:
+        db.conn.execute("DROP TABLE skipped_segments")
+        db.conn.execute("PRAGMA user_version = 5")
+        db.conn.commit()
+    with LibraryDB.open(tmp_path) as db:
+        db.remember_skips([("officialvideo", "Official Video"), ("promo", "Promo")])
+        db.remember_skips([("officialvideo", "official video")])   # same key: new spelling
+        assert sorted(db.skipped_segments()) == ["Promo", "official video"]
+        db.forget_skips(["promo"])
+        assert db.skipped_segments() == ["official video"]
 
 
 def test_downloads_round_trip_and_feed_the_spellings(tmp_path):

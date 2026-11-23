@@ -18,6 +18,9 @@ spaces missing or added: "LemonadeStand" is "Lemonade Stand") rewrites the name 
 library's spelling. A *loose* match (also ignoring
 punctuation, inner spaces and accents: "Doug-Doug" ~ "DougDoug") only counts for guessing
 roles and offers the library's spelling as a suggestion — it's never applied silently.
+
+The Vocabulary also holds the segments the user has skipped before (by loose key), so a
+recurring "Official Video" or channel name is guessed skip next time (`skip_changes`).
 """
 
 from __future__ import annotations
@@ -130,17 +133,20 @@ class _Names:
 
 @dataclass
 class Vocabulary:
-    """People and collections the library already uses: normalised key → spelling."""
+    """People and collections the library already uses: normalised key → spelling. And
+    the segments the user has skipped before, by `loose_key`."""
 
     people: dict[str, str] = field(default_factory=dict[str, str])
     collections: dict[str, str] = field(default_factory=dict[str, str])
+    skips: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         self._people = _Names(self.people)
         self._collections = _Names(self.collections)
 
     @classmethod
-    def from_spellings(cls, people: list[str], collections: list[str]) -> Vocabulary:
+    def from_spellings(cls, people: list[str], collections: list[str],
+                       skipped: list[str] | None = None) -> Vocabulary:
         """From names as written; the first spelling of each key wins."""
         p: dict[str, str] = {}
         c: dict[str, str] = {}
@@ -150,13 +156,19 @@ class Vocabulary:
         for name in collections:
             if name.strip():
                 c.setdefault(normalize(name), name.strip())
-        return cls(p, c)
+        skips = frozenset(k for k in map(loose_key, skipped or []) if k)
+        return cls(p, c, skips)
 
     def person(self, name: str) -> Match:
         return self._people.match(name)
 
     def collection(self, name: str) -> Match:
         return self._collections.match(name)
+
+    def skipped(self, text: str) -> bool:
+        """The user has skipped this segment before."""
+        key = loose_key(text)
+        return bool(key) and key in self.skips
 
     def suggest(self, kind: Literal["people", "collections"], query: str,
                 limit: int = 8) -> list[str]:
@@ -178,7 +190,9 @@ def guess_roles(segments: list[Segment], vocab: Vocabulary | None = None) -> lis
     - Site segments (after the last "|") are skipped.
     - A segment whose names are all known people (exactly or loosely) is people.
     - A segment that is a known collection is the collection — the last one, if several.
-    - What's left goes by position: the first is people if no segment was recognised as
+    - A segment the user has skipped before is skipped. Known people and collections come
+      first: a creator's name skipped where it was a channel name is still their name.
+    - What's left goes by position, among the segments not skipped: the first is people if no segment was recognised as
       people, the last is the collection if none was recognised and at least three
       segments remain to share out, everything else is title. A lone segment is title.
     """
@@ -191,14 +205,35 @@ def guess_roles(segments: list[Segment], vocab: Vocabulary | None = None) -> lis
                    if roles[i] is None and vocab.collection(seg.text).kind != "new"]
     if collections:
         roles[collections[-1]] = "collection"
+    for i, seg in enumerate(segments):
+        if roles[i] is None and vocab.skipped(seg.text):
+            roles[i] = "skip"
 
     rest = [i for i, r in enumerate(roles) if r is None]
-    content = [i for i, s in enumerate(segments) if not s.site]
+    content = [i for i, r in enumerate(roles) if r != "skip"]
     if "people" not in roles and len(content) >= 2 and rest:
         roles[rest.pop(0)] = "people"
     if "collection" not in roles and len(content) >= 3 and len(rest) >= 2:
         roles[rest.pop()] = "collection"
     return [r if r is not None else "title" for r in roles]
+
+
+def skip_changes(segments: list[Segment], guessed: list[Role],
+                 chosen: list[Role]) -> tuple[list[str], list[str]]:
+    """What to remember and forget from the roles a name was saved with, against the guess:
+    a segment the user skipped that wasn't guessed skip is remembered; one guessed skip
+    (remembered before) that the user gave another role is forgotten. Site segments (after
+    the last "|") are skipped by position, not by choice, so they're never remembered."""
+    remember: list[str] = []
+    forget: list[str] = []
+    for seg, guess, role in zip(segments, guessed, chosen, strict=True):
+        if seg.site:
+            continue
+        if role == "skip" and guess != "skip":
+            remember.append(seg.text)
+        elif role != "skip" and guess == "skip":
+            forget.append(seg.text)
+    return remember, forget
 
 
 def set_role(roles: list[Role], index: int, role: Role) -> list[Role]:

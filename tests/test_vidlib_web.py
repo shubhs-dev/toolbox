@@ -162,6 +162,27 @@ def test_naming_with_chosen_roles_and_with_fields(serve):
     assert data["problems"] == ["no collection — vidlib won't be able to sort it"]
 
 
+@posix_only
+def test_skipped_segments_are_remembered_and_forgotten(serve, fake_ytdlp):
+    client, _ = serve()
+    title = "Carol - Hike - Peaks - Official Video"
+
+    def guess(t=title):
+        return [s["role"] for s in client.post("/api/name", {"title": t})[1]["segments"]]
+
+    assert guess() == ["people", "title", "title", "collection"]
+    roles = ["people", "title", "collection", "skip"]
+    client.post("/api/downloads", {"url": "https://x/a", "name": "Carol - Hike - Peaks",
+                                   "page_title": title, "roles": roles})
+    # Next time it's skipped, and spelt differently still is; Peaks is then the collection.
+    assert guess() == roles
+    assert guess("Dan - Ski - Alps - official-video") == ["people", "title", "collection", "skip"]
+    # Giving it a role again forgets it.
+    client.post("/api/downloads", {"url": "https://x/b", "name": "Carol - Hike - Peaks - Official Video",
+                                   "page_title": title, "roles": ["people", "title", "title", "collection"]})
+    assert guess() == ["people", "title", "title", "collection"]
+
+
 def test_suggestions(serve):
     client, _ = serve()
     assert client.get("/api/suggest?kind=people&q=doug")[1] == {"suggestions": ["DougDoug"]}

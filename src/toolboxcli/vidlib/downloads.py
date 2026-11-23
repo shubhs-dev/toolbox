@@ -247,7 +247,23 @@ class DownloadManager:
     def vocabulary(self) -> naming.Vocabulary:
         with self.lock:
             people, collections = self.db.spellings()
-        return naming.Vocabulary.from_spellings(people, collections)
+            skipped = self.db.skipped_segments()
+        return naming.Vocabulary.from_spellings(people, collections, skipped)
+
+    def learn_skips(self, page_title: str, roles: list[str]) -> None:
+        """A name was saved from `page_title` with these segment roles: remember the segments
+        the user skipped, and forget remembered ones they gave a role (`naming.skip_changes`).
+        Roles that don't fit the title's segments (it was edited since) teach nothing."""
+        segments = naming.split_segments(page_title)
+        if len(roles) != len(segments) or not all(r in naming.ROLES for r in roles):
+            return
+        chosen: list[naming.Role] = [next(r for r in naming.ROLES if r == given)
+                                     for given in roles]
+        guessed = naming.guess_roles(segments, self.vocabulary())
+        remember, forget = naming.skip_changes(segments, guessed, chosen)
+        with self.lock:
+            self.db.remember_skips([(naming.loose_key(t), t) for t in remember])
+            self.db.forget_skips([naming.loose_key(t) for t in forget])
 
     # ── actions (each raises KeyError for an unknown id, ValueError for a bad request) ──
 

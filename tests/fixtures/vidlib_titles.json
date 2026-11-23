@@ -12,6 +12,10 @@
       "Lemonade Stand",
       "Lakes",
       "Japan 2024"
+    ],
+    "skipped": [
+      "Official Video",
+      "Bob"
     ]
   },
   "cases": [
@@ -158,6 +162,52 @@
         "collection"
       ],
       "name": "Alice - Part 2-3 the end - Lakes"
+    },
+    {
+      "title": "Alice - Swim - Lakes - OFFICIAL video!",
+      "segments": [
+        "Alice",
+        "Swim",
+        "Lakes",
+        "OFFICIAL video!"
+      ],
+      "roles": [
+        "people",
+        "title",
+        "collection",
+        "skip"
+      ],
+      "name": "Alice - Swim - Lakes"
+    },
+    {
+      "title": "Official-Video - Carol - Hike - Peaks",
+      "segments": [
+        "Official-Video",
+        "Carol",
+        "Hike",
+        "Peaks"
+      ],
+      "roles": [
+        "skip",
+        "people",
+        "title",
+        "collection"
+      ],
+      "name": "Carol - Hike - Peaks"
+    },
+    {
+      "title": "Bob - Swim - Lakes",
+      "segments": [
+        "Bob",
+        "Swim",
+        "Lakes"
+      ],
+      "roles": [
+        "people",
+        "title",
+        "collection"
+      ],
+      "name": "Bob - Swim - Lakes"
     }
   ]
 }
