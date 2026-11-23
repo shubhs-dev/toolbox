@@ -195,7 +195,7 @@ def parts_url(tmp_path):
             db.upsert(Video(path=path, height=720, duration=60))
     db = LibraryDB.open(root, shared=True)
     manager = DownloadManager(root, db)
-    status = PipelineStatus()
+    status = PipelineStatus(on_change=manager.notify)   # as cli wires it
     server = VidlibServer(manager, port=0, pipeline=status)
     manager.start()
     server.start()
@@ -285,5 +285,34 @@ def test_cancel_works_while_progress_streams_in(page_url, tmp_path, monkeypatch)
         page.wait_for_timeout(400)      # at least one state update between down and up
         page.mouse.up()
         sync_api.expect(page.locator("#rows-done .row .pill")).to_have_text("cancelled")
+        assert errors == []
+        browser.close()
+
+
+def test_the_header_shows_downloads_and_encoding_apart(parts_url):
+    url, status = parts_url
+    status.begin_batch(["a.mp4", "b.mp4", "c.mp4", "d.mp4"])
+    for name in ("a.mp4", "b.mp4"):
+        status.begin_file(name)
+        status.end_file({"file": name, "status": "sorted"})
+    status.begin_file("c.mp4")
+    status.encoding("preset", "x265")
+    status.progress(50)
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"no Chromium for Playwright: {exc}")
+        page = browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(url)
+        sync_api.expect(page.locator("#overall-counts")).to_have_text("Nothing queued")
+        # The whole batch: 2 of 4 done and half of the third is 62.5%.
+        sync_api.expect(page.locator("#encode-counts")).to_have_text("file 3 of 4 · 63%")
+        assert page.locator("#encode-bar").evaluate("e => e.style.width") == "62.5%"
+        status.end_file({"file": "c.mp4", "status": "sorted"})
+        status.end_batch()
+        sync_api.expect(page.locator("#encode-counts")).not_to_contain_text("file")
         assert errors == []
         browser.close()

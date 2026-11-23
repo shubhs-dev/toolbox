@@ -431,8 +431,10 @@ function renderState(state) {
   $("overall-counts").textContent = parts.join(" · ") || "Nothing queued";
   $("overall-speed").textContent = formatRate(o.speed);
   $("overall-bar").style.width = `${o.percent}%`;
-  document.title = o.running ? `vidlib · ${Math.round(o.percent)}%` : "vidlib";
   renderPipeline(state.pipeline);
+  const enc = renderEncodeOverall(state.pipeline);
+  document.title = o.running ? `vidlib · ${Math.round(o.percent)}%`
+    : enc !== null ? `vidlib · encoding ${Math.round(enc)}%` : "vidlib";
   const count = $("review-count");
   count.hidden = !state.review_count;
   count.textContent = String(state.review_count || "");
@@ -508,6 +510,30 @@ function renderMerges(merges) {
     mergesDone = done;
     if (!$("view-library").hidden) loadLibrary().catch(showLibError);
   }
+}
+
+// The header's encoding bar: the whole batch, so 2 of 4 files done and half of the third is
+// 62%. The time left is the current file's: there's no honest estimate for files not yet
+// probed. Returns that percent while encoding, else null. No pipeline (download-only): hidden.
+function renderEncodeOverall(p) {
+  $("encode-overall").hidden = !p;
+  if (!p) return null;
+  const cur = p.current;
+  let percent = 0;
+  let counts = PIPE_STATE[p.state] || p.state;
+  let eta = "";
+  if (cur) {
+    const total = Math.max(p.batch_total, 1);
+    percent = Math.min(100, ((p.batch_done + cur.percent / 100) / total) * 100);
+    counts = total > 1 ? `file ${p.batch_done + 1} of ${total}` : "1 file";
+    counts += cur.step === "encoding" ? ` · ${percent.toFixed(0)}%` : " · checking";
+    if (p.paused) counts += " · pausing after this file";
+    if (cur.eta != null) eta = `${duration(cur.eta)} left`;
+  }
+  $("encode-counts").textContent = counts;
+  $("encode-eta").textContent = eta;
+  $("encode-bar").style.width = `${percent}%`;
+  return cur ? percent : null;
 }
 
 function renderPipeline(p) {

@@ -18,12 +18,23 @@
       <a href="#library" id="tab-library" class="tab">Library</a>
       <a href="#review" id="tab-review" class="tab">Review <span class="count" id="review-count" hidden></span></a>
     </nav>
-    <div class="overall" id="overall" aria-live="polite">
-      <div class="overall-text">
-        <span id="overall-counts">Nothing queued</span>
-        <span id="overall-speed" class="dim"></span>
+    <div class="progress-pair">
+      <div class="overall" id="overall" aria-live="polite">
+        <div class="overall-text">
+          <span class="overall-label">Downloads</span>
+          <span id="overall-counts">Nothing queued</span>
+          <span id="overall-speed" class="dim"></span>
+        </div>
+        <div class="bar" aria-hidden="true"><div class="bar-fill" id="overall-bar"></div></div>
       </div>
-      <div class="bar" aria-hidden="true"><div class="bar-fill" id="overall-bar"></div></div>
+      <div class="overall" id="encode-overall" aria-live="polite" hidden>
+        <div class="overall-text">
+          <span class="overall-label">Encoding</span>
+          <span id="encode-counts">idle</span>
+          <span id="encode-eta" class="dim"></span>
+        </div>
+        <div class="bar" aria-hidden="true"><div class="bar-fill" id="encode-bar"></div></div>
+      </div>
     </div>
     <span class="conn" id="conn" title="Live updates">●</span>
   </div>

@@ -92,7 +92,10 @@ textarea { font-family: var(--font-mono); font-size: 12.5px; resize: vertical; }
   padding: 1px 8px; max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mode.download-only { color: var(--warn); border-color: var(--warn); font-size: 11px;
   text-transform: uppercase; letter-spacing: .08em; }
+.progress-pair { flex: 1; min-width: 0; display: flex; gap: 20px; }
 .overall { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.overall[hidden] { display: none; }
+.overall-label { font-weight: 600; }
 .overall-text { display: flex; gap: 12px; font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .conn { color: var(--ok); font-size: 10px; flex: none; }
 .conn.off { color: var(--bad); }
@@ -191,7 +194,7 @@ textarea { font-family: var(--font-mono); font-size: 12.5px; resize: vertical; }
 @media (max-width: 520px) {
   .row { flex-direction: column; }
   .row-side { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; text-align: left; }
-  .overall-text #overall-speed { display: none; }
+  .overall-text #overall-speed, .overall-text #encode-eta { display: none; }
 }
 
 /* ── pipeline ── */
@@ -215,7 +218,8 @@ textarea { font-family: var(--font-mono); font-size: 12.5px; resize: vertical; }
 .tab { color: var(--muted); text-decoration: none; padding: 4px 10px; border-radius: 6px; font-weight: 550; }
 .tab:hover { color: var(--fg); background: var(--sunken); }
 .tab[aria-current="page"] { color: var(--fg); background: var(--sunken); }
-@media (max-width: 640px) { .top-inner { flex-wrap: wrap; } .overall { order: 3; flex-basis: 100%; } }
+@media (max-width: 640px) { .top-inner { flex-wrap: wrap; } .progress-pair { order: 3; flex-basis: 100%; } }
+@media (max-width: 760px) { .progress-pair { flex-direction: column; gap: 6px; } }
 
 /* ── library ── */
 .library {
