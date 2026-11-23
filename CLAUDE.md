@@ -561,7 +561,16 @@ Progress *factories* themselves) were extracted from it.
   with `-W`, `-n`, `-O`, reports or queries. `tests/test_vidlib_web.py` drives the API with a
   fake `yt-dlp` (POSIX only); `tests/test_vidlib_ui.py` is a Playwright smoke test that skips
   unless run with `uv run --with playwright` (CI doesn't install it; `CHROMIUM_PATH` picks the
-  browser binary).
+  browser binary). A taken port isn't fatal: `bind_server` moves the page to the next free one
+  (up to `PORT_TRIES`) with a warning, so vidlibs on different libraries run side by side.
+  `allow_reuse_address` is off on Windows, where SO_REUSEADDR would let a second server bind a
+  port that's already listening, and a busy port is `EADDRINUSE` or Windows' `WSAEADDRINUSE`.
+- `vidlib/instance.py`'s `LibraryLock` is what keeps two vidlibs off one library — two
+  pipelines would encode and move the same files. Before the port fallback the busy port was
+  the only guard, and only by accident. It's an OS lock (`flock`, Windows `msvcrt.locking` on
+  byte 0) on `.vidlib.lock` in the root, so a crash releases it and the leftover file never
+  blocks; after byte 0 it holds a note (pid, page URL) for the refusal message. Every run but
+  a dry run, reports and queries (`read_only`) takes it, before the database is opened.
 - `prunelib` deletes files the user *picked*, rather than files it
   produced, so everything it removes is listed and confirmed first, and it trashes by default
   (`-p/--permanent` requires typing the item count, not a y/n keypress). Sidecars are files

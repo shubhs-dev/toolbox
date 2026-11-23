@@ -75,6 +75,11 @@ Stop now also stops its encode, leaving the file in the root as it was. While an
 downloads or encodes, the Mac is kept from idle-sleeping (caffeinate). If the library's disk
 is unplugged, vidlib waits — nothing is synced, so nothing is marked missing — until it's back.
 
+One vidlib runs per library: a second one started on the same library (other than -n, -r,
+-l or -D, which only read) stops and says where the first one's page is. vidlibs on
+different libraries run side by side — when the port is taken, the page moves to the next
+free one, with a warning.
+
 With -X DIR (download-only), nothing is encoded: downloads go into DIR (default: the current
 folder) and wait there, recorded in ROOT's database, until "Move into library" on the page
 moves them into ROOT. Useful while the library's disk is full.
@@ -107,7 +112,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import errno
 import os
 import shutil
 import subprocess
@@ -162,7 +166,14 @@ from toolboxcli.vidlib.db import (
     legacy_db_conflict,
 )
 from toolboxcli.vidlib.downloads import DownloadManager
-from toolboxcli.vidlib.server import DEFAULT_PORT, VidlibServer
+from toolboxcli.vidlib.instance import LibraryBusy, LibraryLock
+from toolboxcli.vidlib.server import (
+    DEFAULT_PORT,
+    PORT_TRIES,
+    VidlibServer,
+    bind_server,
+    port_busy,
+)
 from toolboxcli.vidlib.status import KeepAwake, MergeJob, PipelineStatus
 
 VIDEO_EXTS = core.VIDEO_EXTS
@@ -1437,7 +1448,8 @@ def build_parser() -> argparse.ArgumentParser:
                     metavar="DIR",
                     help="Serve only downloads, into DIR (default: .); encode nothing")
     ap.add_argument("-P", "--port", type=int, default=DEFAULT_PORT,
-                    help=f"Port for the web page on 127.0.0.1 (default: {DEFAULT_PORT})")
+                    help=f"Port for the web page on 127.0.0.1 (default: {DEFAULT_PORT}); "
+                         "if it's taken, the next free one is used")
     ap.add_argument("-b", "--no-browser", action="store_true",
                     help="Don't open the web page in a browser on start")
     ap.add_argument("-j", "--jobs", type=int, default=2, metavar="N",
@@ -1462,7 +1474,35 @@ def main() -> None:
     if args.download_only is not None and not wants_web(args):
         die("-X/--download-only serves the web page, so it can't be combined with -W, -n, "
             "-O, -r, -l (or its filters), -D or -s")
+    if not 1 <= args.port <= 65535:
+        die(f"Not a port: {args.port}")
 
+    # Anything that encodes, moves or downloads holds the library's lock, so a second vidlib
+    # on the same library can't run its own pipeline over the same files. A dry run, reports
+    # and queries only read, and may run alongside.
+    lock = None
+    if not read_only(args):
+        try:
+            lock = LibraryLock(root).acquire()
+        except LibraryBusy as busy:
+            die("vidlib is already running on this library"
+                + (f" ({busy})" if str(busy) else "")
+                + " — use that one, or stop it first")
+        except OSError as exc:
+            die(f"Can't lock the library: {exc}")
+    try:
+        _run_library(root, args, lock)
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def read_only(args) -> bool:
+    """Runs that change nothing in the library: a dry run, reports and queries."""
+    return bool(args.dry_run or args.report or args.duplicates or args.list_files is not None)
+
+
+def _run_library(root: Path, args, lock: LibraryLock | None) -> None:
     # A dry run works on an in-memory copy of the database, so importing the old log or
     # syncing the library changes nothing on disk.
     try:
@@ -1480,10 +1520,10 @@ def main() -> None:
         if migrated:
             info(f"Imported {migrated} entries from the old log into {db.path.name}")
         if args.download_only is not None:
-            run_download_only(root, args)
+            run_download_only(root, args, lock)
             return
         if wants_web(args):
-            with web_ui(root, args) as web:
+            with web_ui(root, args, lock=lock) as web:
                 run(root, db, args, web.status, web.manager.video_settled)
         else:
             keep_awake = KeepAwake()
@@ -1510,7 +1550,8 @@ class WebUI:
 
 
 @contextmanager
-def web_ui(root: Path, args, dest: Path | None = None) -> Iterator[WebUI]:
+def web_ui(root: Path, args, dest: Path | None = None,
+           lock: LibraryLock | None = None) -> Iterator[WebUI]:
     """The download manager, the pipeline's status and the web server, for as long as the
     block runs. The manager has its own database connection, shared by the server's threads
     under its lock. In download-only mode (*dest* set) there's no pipeline to report on.
@@ -1540,13 +1581,18 @@ def web_ui(root: Path, args, dest: Path | None = None) -> Iterator[WebUI]:
     if status is not None:
         status.on_change = manager.notify
     try:
-        server = VidlibServer(manager, args.port, pipeline=status)
+        server = bind_server(manager, args.port, pipeline=status)
     except OSError as exc:
         db.close()
-        if exc.errno == errno.EADDRINUSE:
-            die(f"Port {args.port} is in use — is vidlib already running? Open "
-                f"http://127.0.0.1:{args.port}/, or pick another port with -P")
+        if port_busy(exc):
+            last = min(args.port + PORT_TRIES, 65536) - 1
+            die(f"Ports {args.port}–{last} are all in use — pick another with -P")
         die(f"Can't start the web page: {exc}")
+    if server.server_address[1] != args.port:
+        warn(f"Port {args.port} is in use (another vidlib, or another app) — "
+             f"using {server.server_address[1]} instead")
+    if lock is not None:
+        lock.note(f"pid {os.getpid()}, page at {server.url}")
     try:
         imported = manager.start()
         if imported:
@@ -1570,7 +1616,7 @@ def _pipeline_settings(args) -> dict[str, object]:
             "on_duplicate": args.on_duplicate, "bit_depth": args.bit_depth}
 
 
-def run_download_only(root: Path, args) -> None:
+def run_download_only(root: Path, args, lock: LibraryLock | None = None) -> None:
     dest = Path(args.download_only).expanduser().resolve()
     if not dest.is_dir():
         die(f"Not a directory: {dest}")
@@ -1584,7 +1630,7 @@ def run_download_only(root: Path, args) -> None:
     banner.add_row("Downloads", f"{dest}  [dim](download only — nothing is encoded)[/]")
     console.print(Panel(banner, title="[bold cyan]vidlib[/]", border_style="cyan",
                         expand=False))
-    with web_ui(root, args, dest=dest):
+    with web_ui(root, args, dest=dest, lock=lock):
         console.print("[dim]Ctrl+C to stop; unfinished downloads resume next time.[/]")
         try:
             while True:

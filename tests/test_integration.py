@@ -401,18 +401,41 @@ def test_download_only_needs_another_folder(tmp_path, run_cli, fake_downloader):
 
 
 @posix_only
-def test_a_busy_port_is_an_error_naming_the_flag(tmp_path, run_cli, fake_downloader):
+def test_a_busy_port_moves_the_page_to_the_next_one(tmp_path, sandbox_env, fake_downloader):
     import os
+    import queue
     import socket
-    path = f"{fake_downloader}{os.pathsep}{os.environ['PATH']}"
+    import subprocess
+    import threading
+    import time
+    env = dict(sandbox_env, PATH=f"{fake_downloader}{os.pathsep}{os.environ['PATH']}")
     with socket.socket() as busy:
         busy.bind(("127.0.0.1", 0))
         busy.listen()
         port = busy.getsockname()[1]
         dest = tmp_path / "dl"
         dest.mkdir()
-        result = run_cli("vidlib", [str(tmp_path), "-X", str(dest), "-b", "-P", str(port)],
-                         env_extra={"PATH": path})
-    assert result.returncode == 1
-    assert f"Port {port} is in use" in result.stderr and "-P" in result.stderr
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "toolboxcli.vidlib.cli", str(tmp_path), "-X", str(dest),
+             "-b", "-P", str(port)],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+        assert proc.stdout is not None
+        lines: queue.Queue[str] = queue.Queue()
+        threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout],
+                         daemon=True).start()
+        out = ""
+        try:
+            deadline = time.monotonic() + 60
+            while "Web page at" not in out and time.monotonic() < deadline:
+                try:
+                    out += lines.get(timeout=1)
+                except queue.Empty:
+                    if proc.poll() is not None:
+                        break
+        finally:
+            proc.terminate()
+            proc.wait(timeout=30)
+    assert f"Port {port} is in use" in out, out
+    assert "Web page at http://127.0.0.1:" in out and f":{port}/" not in out, out
 
