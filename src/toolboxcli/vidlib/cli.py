@@ -1489,7 +1489,7 @@ def main() -> None:
                 + (f" ({busy})" if str(busy) else "")
                 + " — use that one, or stop it first")
         except OSError as exc:
-            die(f"Can't lock the library: {exc}")
+            warn(f"Can't lock the library ({exc}) — nothing stops a second vidlib on it")
     try:
         _run_library(root, args, lock)
     finally:

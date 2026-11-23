@@ -80,3 +80,17 @@ def test_no_free_port_in_range_is_an_error(manager, taken_port):
     with pytest.raises(OSError) as raised:
         bind_server(manager, taken_port, tries=1)
     assert port_busy(raised.value)
+
+
+def test_a_filesystem_without_locks_is_not_a_busy_library(tmp_path, monkeypatch):
+    import errno
+
+    from toolboxcli.vidlib import instance
+
+    def unsupported(fd: int) -> None:
+        raise OSError(errno.ENOTSUP, "locks not supported")
+
+    monkeypatch.setattr(instance, "_lock", unsupported)
+    with pytest.raises(OSError) as raised:
+        LibraryLock(tmp_path).acquire()
+    assert not isinstance(raised.value, LibraryBusy)

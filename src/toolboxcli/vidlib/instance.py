@@ -13,12 +13,16 @@ a note for whoever finds the library busy (the holder's pid, and its page once i
 
 from __future__ import annotations
 
+import errno
 import os
 import sys
 from pathlib import Path
 from types import TracebackType
 
 LOCK_NAME = ".vidlib.lock"
+# What a lock held elsewhere raises: flock's EWOULDBLOCK (EAGAIN), msvcrt's EACCES/EDEADLOCK.
+# Anything else (a filesystem without locks) is a failure to lock, not a busy library.
+_HELD = {errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES, errno.EDEADLK}
 
 
 class LibraryBusy(Exception):
@@ -36,9 +40,11 @@ class LibraryLock:
         fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
             _lock(fd)
-        except OSError:
+        except OSError as exc:
             os.close(fd)
-            raise LibraryBusy(read_note(self.path)) from None
+            if exc.errno in _HELD:
+                raise LibraryBusy(read_note(self.path)) from None
+            raise
         self._fd = fd
         self.note(f"pid {os.getpid()}")
         return self
