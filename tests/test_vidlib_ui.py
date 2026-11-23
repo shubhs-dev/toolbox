@@ -104,8 +104,14 @@ def test_renaming_from_the_library_page(library_url):
         page.on("pageerror", lambda e: errors.append(str(e)))
         page.goto(url + "#library")
         sync_api.expect(page.locator(".card")).to_have_count(2)
-        page.select_option("#lib-person", "Bob")
+        # Typing only narrows the person list; Enter picks the highlighted one.
+        page.click("#lib-person")
+        page.keyboard.type("bo")
+        sync_api.expect(page.locator("#lib-person-list li")).to_have_text(["Bob 1"])
+        sync_api.expect(page.locator(".card")).to_have_count(2)
+        page.keyboard.press("Enter")
         sync_api.expect(page.locator(".card")).to_have_count(1)
+        sync_api.expect(page.locator("#lib-person")).to_have_value("Bob")
         page.locator(".card").first.click()
         sync_api.expect(page.locator("#detail")).to_be_visible()
         sync_api.expect(page.locator("#rn-save")).to_be_disabled()        # nothing changed yet

@@ -75,9 +75,11 @@ class Library:
                 videos = [v for g in groups for v in g]
                 group_of = {v.path: i for i, g in enumerate(groups) for v in g}
             else:
+                # The page's person and collection come from its lists: exactly that one,
+                # not every name containing it. The search box (`q`) is the partial match.
                 videos = self.db.search(person=person or None, collection=collection or None,
                                         resolution=resolution or None, tag=tag or None,
-                                        unnamed=view == "unnamed")
+                                        unnamed=view == "unnamed", exact=True)
                 group_of = {}
             facets = self._facets()
         if view == "review":

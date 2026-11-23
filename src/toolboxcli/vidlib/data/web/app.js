@@ -394,7 +394,7 @@ function startNaming(d) {
 function renderState(state) {
   const mode = $("mode");
   const downloadOnly = state.mode === "download-only";
-  mode.textContent = downloadOnly ? "download only" : "library";
+  mode.textContent = downloadOnly ? "download only" : state.library_name;
   mode.classList.toggle("download-only", downloadOnly);
   mode.title = downloadOnly ? `Saving into ${state.target}; library at ${state.library}`
                             : `Library at ${state.library}`;
@@ -611,18 +611,131 @@ function humanSize(n) {
 
 function libQuery(offset) {
   const params = new URLSearchParams({
-    view: lib.view, q: $("lib-q").value, person: $("lib-person").value,
-    collection: $("lib-collection").value, resolution: $("lib-resolution").value,
+    view: lib.view, q: $("lib-q").value, person: personFilter.value,
+    collection: collectionFilter.value, resolution: $("lib-resolution").value,
     offset: String(offset),
   });
   return `/api/library?${params}`;
 }
 
-function fillSelect(select, items, allLabel) {
-  const keep = select.value;
-  select.replaceChildren(new Option(allLabel, ""), ...items.map((it) => new Option(`${it.name} (${it.count})`, it.name)));
-  select.value = keep;
+// ── Person / Collection filters: a list you can type into ─────────────
+//
+// Typing only narrows the list; the library is filtered when a value is picked (click, or
+// arrows + Enter), and then by exactly that value. Leaving the box empty means everyone.
+
+const fold = (text) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+const PICK_LIMIT = 300;   // options drawn at once; typing narrows a longer list
+
+function pickCombo(input, list, allLabel, onPick) {
+  let items = [];       // {name, count} from the library
+  let shown = [];       // what the open list holds: "" (= all) first, then names
+  let active = -1;
+  let value = "";
+  let typed = "";       // what's been typed since the list opened (the box shows `value`)
+
+  const close = () => {
+    list.hidden = true;
+    active = -1;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  };
+  const restore = () => { input.value = value; };
+  const pick = (name) => {
+    const changed = name !== value;
+    value = name;
+    restore();
+    close();
+    if (changed) onPick();
+  };
+  const render = () => {
+    const counts = new Map(items.map((it) => [it.name, it.count]));
+    list.replaceChildren(...shown.map((name, i) => {
+      const li = document.createElement("li");
+      li.id = `${list.id}-${i}`;
+      li.setAttribute("role", "option");
+      li.setAttribute("aria-selected", String(i === active));
+      if (name === "") {
+        li.textContent = allLabel;
+        li.className = "pick-all";
+      } else {
+        li.textContent = name;
+        const n = document.createElement("span");
+        n.className = "dim";
+        n.textContent = ` ${counts.get(name) ?? ""}`;
+        li.append(n);
+      }
+      if (name === value) li.classList.add("current");
+      li.addEventListener("mousedown", (e) => { e.preventDefault(); pick(name); });
+      return li;
+    }));
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    const at = list.children[active];
+    if (at) {
+      input.setAttribute("aria-activedescendant", at.id);
+      at.scrollIntoView({ block: "nearest" });
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
+  };
+  // Names starting with the typed text first, then a word starting with it, then anywhere.
+  const filter = (text) => {
+    const q = fold(text.trim());
+    if (!q) return ["", ...items.map((it) => it.name)];
+    const rank = (name) => {
+      const f = fold(name);
+      if (f.startsWith(q)) return 0;
+      if (f.split(/[\s,&.'-]+/).some((w) => w.startsWith(q))) return 1;
+      return f.includes(q) ? 2 : -1;
+    };
+    return items.map((it) => [rank(it.name), it.name]).filter(([r]) => r >= 0)
+      .sort((a, b) => a[0] - b[0]).map(([, name]) => name);
+  };
+  const open = (text) => {
+    typed = text;
+    shown = filter(text).slice(0, PICK_LIMIT);
+    active = text.trim() ? (shown.length ? 0 : -1) : shown.indexOf(value);
+    render();
+  };
+
+  input.addEventListener("focus", () => { input.select(); open(""); });
+  input.addEventListener("mousedown", () => { if (list.hidden && document.activeElement === input) open(""); });
+  input.addEventListener("input", () => open(input.value));
+  input.addEventListener("blur", () => {
+    if (input.value.trim() === "") pick("");
+    else { restore(); close(); }
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (list.hidden) { open(""); return; }
+      if (!shown.length) return;
+      active = (active + (e.key === "ArrowDown" ? 1 : -1) + shown.length) % shown.length;
+      render();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (!list.hidden && active >= 0) pick(shown[active]);
+      else if (input.value.trim() === "") pick("");
+    } else if (e.key === "Escape") {
+      if (!list.hidden) { e.preventDefault(); e.stopPropagation(); }
+      restore();
+      close();
+    }
+  });
+
+  return {
+    get value() { return value; },
+    setItems(next) {
+      items = next;
+      if (!list.hidden) open(typed);
+    },
+  };
 }
+
+const personFilter = pickCombo($("lib-person"), $("lib-person-list"), "Everyone",
+  () => loadLibrary().catch(showLibError));
+const collectionFilter = pickCombo($("lib-collection"), $("lib-collection-list"), "All collections",
+  () => loadLibrary().catch(showLibError));
 
 function thumbUrl(path) {
   return `/api/thumb?path=${encodeURIComponent(path)}`;
@@ -635,9 +748,20 @@ const STRIP_FRAMES = 12;   // as vidlib/library.py makes them
 const canHover = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-function attachPreview(card, wrap, v) {
+// `contain` letterboxes each frame in the box, as the rename dialog's thumbnail is shown;
+// cards crop theirs to 16:9, so there the frames simply fill the box.
+function attachPreview(card, wrap, v, contain = false) {
   if (!canHover || !v.duration) return;
   let strip = null, dots = null, timer = null, delay = null, frame = 0, loaded = false;
+  let frameRatio = 16 / 9;
+  const fit = () => {
+    if (!contain) return;
+    const r = wrap.getBoundingClientRect();
+    const [w, h] = frameRatio > r.width / r.height
+      ? [r.width, r.width / frameRatio] : [r.height * frameRatio, r.height];
+    Object.assign(strip.style, { inset: "auto", width: `${w}px`, height: `${h}px`,
+      left: `${(r.width - w) / 2}px`, top: `${(r.height - h) / 2}px` });
+  };
   const show = (i) => {
     frame = i % STRIP_FRAMES;
     strip.style.backgroundPosition = `${(frame / (STRIP_FRAMES - 1)) * 100}% 0`;
@@ -655,6 +779,7 @@ function attachPreview(card, wrap, v) {
       const probe = new Image();
       probe.onload = () => {
         loaded = true;
+        if (probe.naturalHeight) frameRatio = probe.naturalWidth / STRIP_FRAMES / probe.naturalHeight;
         strip.style.backgroundImage = `url("${probe.src}")`;
         if (card.matches(":hover")) begin();
       };
@@ -664,6 +789,7 @@ function attachPreview(card, wrap, v) {
     if (loaded) begin();
   };
   const begin = () => {
+    fit();
     show(0);
     strip.classList.add("on");
     if (!reduceMotion) timer = setInterval(() => show(frame + 1), 400);
@@ -764,8 +890,8 @@ async function loadLibrary(append = false) {
   const data = await api("GET", libQuery(offset));
   if (seq !== lib.seq) return;
   lib.loaded = true;
-  fillSelect($("lib-person"), data.people, "Everyone");
-  fillSelect($("lib-collection"), data.collections, "All collections");
+  personFilter.setItems(data.people);
+  collectionFilter.setItems(data.collections);
   const grid = $("lib-grid");
   if (!append) { grid.replaceChildren(); lib.lastGroup = null; }
   for (const v of data.videos) {
@@ -1074,10 +1200,18 @@ async function openDetail(path) {
   detail.path = v.path;
   detail.video = v;
   $("detail-title").textContent = v.filename;
-  const thumb = $("detail-thumb");
-  thumb.classList.remove("none");
+  // A fresh thumbnail each time, so the last video's preview and listeners go with the old one.
+  const thumb = document.createElement("img");
+  thumb.className = "detail-thumb";
+  thumb.id = "detail-thumb";
+  thumb.alt = "";
   thumb.onerror = () => thumb.classList.add("none");
   thumb.src = thumbUrl(v.path);
+  const thumbWrap = document.createElement("span");
+  thumbWrap.className = "thumbwrap detail-thumbwrap";
+  thumbWrap.append(thumb);
+  $("detail-thumb").parentElement.replaceWith(thumbWrap);
+  attachPreview(thumbWrap, thumbWrap, v, true);
   const facts = $("detail-facts");
   facts.replaceChildren();
   fact(facts, "Folder", v.folder === "." ? "library root" : v.folder);
@@ -1394,9 +1528,7 @@ attachSuggest($("collection"), $("collection-suggest"), "collections", fromField
 
 // Library page
 $("lib-q").addEventListener("input", reloadLibrary);
-for (const id of ["lib-person", "lib-collection", "lib-resolution"]) {
-  $(id).addEventListener("change", () => loadLibrary().catch(showLibError));
-}
+$("lib-resolution").addEventListener("change", () => loadLibrary().catch(showLibError));
 for (const b of document.querySelectorAll(".seg button")) {
   b.addEventListener("click", () => {
     lib.view = b.dataset.view;

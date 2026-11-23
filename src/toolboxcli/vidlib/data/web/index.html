@@ -178,8 +178,14 @@
       <button type="button" data-view="review" aria-pressed="false">In review</button>
       <button type="button" data-view="parts" aria-pressed="false">Parts</button>
     </div>
-    <select id="lib-person" aria-label="Person"><option value="">Everyone</option></select>
-    <select id="lib-collection" aria-label="Collection"><option value="">All collections</option></select>
+  </div>
+  <div class="lib-bar lib-filters">
+    <span class="combo pick-combo"><input id="lib-person" type="text" role="combobox" aria-label="Person"
+        placeholder="Everyone" aria-autocomplete="list" aria-expanded="false" aria-controls="lib-person-list" spellcheck="false">
+      <ul class="suggest" id="lib-person-list" role="listbox" hidden></ul></span>
+    <span class="combo pick-combo"><input id="lib-collection" type="text" role="combobox" aria-label="Collection"
+        placeholder="All collections" aria-autocomplete="list" aria-expanded="false" aria-controls="lib-collection-list" spellcheck="false">
+      <ul class="suggest" id="lib-collection-list" role="listbox" hidden></ul></span>
     <select id="lib-resolution" aria-label="Resolution">
       <option value="">Any resolution</option>
       <option>2160p</option><option>1440p</option><option>1080p</option>
@@ -231,7 +237,7 @@
         <ul class="problems" id="rn-problems"></ul></div>
     </form>
     <aside class="detail-info" aria-label="About this video">
-      <img class="detail-thumb" id="detail-thumb" alt="">
+      <span class="thumbwrap detail-thumbwrap"><img class="detail-thumb" id="detail-thumb" alt=""></span>
       <dl class="facts" id="detail-facts"></dl>
     </aside>
     </div>

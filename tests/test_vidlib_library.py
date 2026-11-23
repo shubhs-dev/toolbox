@@ -92,6 +92,9 @@ def test_browsing_and_filtering(client):
     assert _names(client("GET", "/api/library?person=carol")[1]) == [
         "Carol - Summit - Peaks [720p Restored].mp4"]
     assert len(client("GET", "/api/library?resolution=720p&collection=lakes")[1]["videos"]) == 1
+    # A picked person or collection is that one only; partial matching is the search box's.
+    assert client("GET", "/api/library?person=car")[1]["videos"] == []
+    assert client("GET", "/api/library?collection=lake")[1]["videos"] == []
     assert _names(client("GET", "/api/library?q=summit")[1]) == [
         "Carol - Summit - Peaks [720p Restored].mp4"]
     assert _names(client("GET", "/api/library?view=unnamed")[1]) == ["Odd name.mp4"]

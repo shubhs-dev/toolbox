@@ -529,6 +529,7 @@ class DownloadManager:
                 "version": self.version,
                 "mode": "download-only" if self.download_only else "library",
                 "library": str(self.library),
+                "library_name": self.library.name or str(self.library),
                 "target": str(self.target),
                 "downloads": rows,
                 "overall": _overall(rows),

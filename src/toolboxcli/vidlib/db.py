@@ -222,6 +222,15 @@ class Video:
 _VIDEO_COLUMNS = [f.name for f in fields(Video)]
 
 
+def _matching(exact: bool) -> str:
+    return "= ?" if exact else "LIKE ? ESCAPE '\\'"
+
+
+def _pattern(value: str, exact: bool) -> str:
+    key = core.normalize(value)
+    return key if exact else f"%{_escape_like(key)}%"
+
+
 def _escape_like(text: str) -> str:
     return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
@@ -442,9 +451,11 @@ class LibraryDB:
 
     def search(self, person: str | None = None, collection: str | None = None,
                resolution: str | None = None, tag: str | None = None,
-               unnamed: bool = False) -> list[Video]:
+               unnamed: bool = False, exact: bool = False) -> list[Video]:
         """Videos matching every filter given. Text filters are case-insensitive and match
-        part of a value ("ali" finds Alice); resolution matches the rung ("720" = "720p")."""
+        part of a value ("ali" finds Alice) — or, with `exact`, a person or collection must
+        be the whole value, as when it was picked from a list; resolution matches the rung
+        ("720" = "720p")."""
         clauses = ["status != 'missing'"]
         if unnamed:
             # Names that don't follow People - Title - Collection have an empty match key.
@@ -453,12 +464,12 @@ class LibraryDB:
         if person:
             clauses.append(
                 "EXISTS (SELECT 1 FROM video_people vp JOIN people p ON p.id = vp.person_id "
-                "WHERE vp.video_id = videos.id AND p.key LIKE ? ESCAPE '\\')"
+                "WHERE vp.video_id = videos.id AND p.key " + _matching(exact) + ")"
             )
-            params.append(f"%{_escape_like(core.normalize(person))}%")
+            params.append(_pattern(person, exact))
         if collection:
-            clauses.append("collection_key LIKE ? ESCAPE '\\'")
-            params.append(f"%{_escape_like(core.normalize(collection))}%")
+            clauses.append("collection_key " + _matching(exact))
+            params.append(_pattern(collection, exact))
         if resolution:
             clauses.append("resolution = ?")
             params.append(_resolution_query(resolution))

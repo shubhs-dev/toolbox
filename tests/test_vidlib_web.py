@@ -321,6 +321,7 @@ def test_download_only_waits_in_its_folder_until_moved(serve, library, tmp_path,
     elsewhere.mkdir()
     client, _ = serve(dest=elsewhere)
     assert client.state()["mode"] == "download-only"
+    assert client.state()["library_name"] == library.name
     client.post("/api/downloads", {"url": "https://x/a", "name": "A - B - C"})
     until(lambda: client.downloads()[0]["status"] == "downloaded")
     row = client.downloads()[0]
