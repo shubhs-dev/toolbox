@@ -313,9 +313,20 @@ function action(label, fn, cls = "small") {
   return b;
 }
 
+// Rows are updated in place, never rebuilt: state arrives every quarter second while
+// something downloads, and a button replaced between mousedown and mouseup gets no click —
+// which made Cancel on a running download do nothing. Buttons are rebuilt only when the
+// row's status changes, and read the row's latest data when clicked.
+const rowsById = new Map();
+
 function renderRow(d) {
-  const li = $("row-template").content.firstElementChild.cloneNode(true);
-  li.classList.add(d.status);
+  let li = rowsById.get(d.id);
+  if (!li) {
+    li = $("row-template").content.firstElementChild.cloneNode(true);
+    rowsById.set(d.id, li);
+  }
+  li.download = d;
+  li.className = `row ${d.status}`;
   li.querySelector(".row-name").textContent =
     d.status === "naming" ? (d.page_title || (d.fetching ? "Fetching title…" : d.url))
       : (d.name || "Named after the video's own title");
@@ -341,20 +352,32 @@ function renderRow(d) {
   }
   li.querySelector(".row-stats").textContent = stats.join(" · ");
 
-  const acts = li.querySelector(".row-actions");
-  if (d.status === "naming") {
-    acts.append(action("Name", async () => startNaming(d), "small primary"));
-  }
-  if (d.status === "queued" || d.status === "downloading") {
-    acts.append(action("Cancel", () => api("POST", `/api/downloads/${d.id}/cancel`, {})));
-  }
-  if (d.status === "failed" || d.status === "cancelled") {
-    acts.append(action("Retry", () => api("POST", `/api/downloads/${d.id}/retry`, {})));
-  }
-  if (!["queued", "downloading"].includes(d.status)) {
-    acts.append(action("Remove", () => api("DELETE", `/api/downloads/${d.id}`)));
+  if (li.actionsFor !== d.status) {
+    li.actionsFor = d.status;
+    const acts = [];
+    if (d.status === "naming") {
+      acts.push(action("Name", async () => startNaming(li.download), "small primary"));
+    }
+    if (d.status === "queued" || d.status === "downloading") {
+      acts.push(action("Cancel", () => api("POST", `/api/downloads/${d.id}/cancel`, {})));
+    }
+    if (d.status === "failed" || d.status === "cancelled") {
+      acts.push(action("Retry", () => api("POST", `/api/downloads/${d.id}/retry`, {})));
+    }
+    if (!["queued", "downloading"].includes(d.status)) {
+      acts.push(action("Remove", () => api("DELETE", `/api/downloads/${d.id}`)));
+    }
+    li.querySelector(".row-actions").replaceChildren(...acts);
   }
   return li;
+}
+
+// Touch the list only when its rows or their order changed: even a node put straight back
+// can lose a click in progress.
+function placeRows(list, rows) {
+  const current = list.children;
+  if (current.length === rows.length && rows.every((li, i) => current[i] === li)) return;
+  list.replaceChildren(...rows);
 }
 
 function startNaming(d) {
@@ -386,8 +409,10 @@ function renderState(state) {
   }
   groups.active.sort((a, b) => (a.status === "downloading" ? -1 : 1) - (b.status === "downloading" ? -1 : 1) || a.id - b.id);
   groups.done.reverse();
+  const ids = new Set(state.downloads.map((d) => d.id));
+  for (const id of rowsById.keys()) if (!ids.has(id)) rowsById.delete(id);
   for (const [key, rows] of Object.entries(groups)) {
-    $(`rows-${key}`).replaceChildren(...rows.map(renderRow));
+    placeRows($(`rows-${key}`), rows.map(renderRow));
     if (key !== "active") $(`group-${key}`).hidden = rows.length === 0;
   }
   $("empty-active").hidden = groups.active.length > 0;

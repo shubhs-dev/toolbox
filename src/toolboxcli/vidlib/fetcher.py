@@ -21,6 +21,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from toolboxcli._common.tooling import detached_kwargs, terminate_tree
+
 # yt-dlp runs aria2c with its live readout on and its summary off. Into a pipe the readout is
 # buffered until aria2c exits, so the page saw 0% and then 100%. A one-line summary every
 # second is flushed as it goes, and _ARIA2C_RE reads its "[#id 3MiB/9MiB(30%) … DL:…]" line.
@@ -198,7 +200,7 @@ class Engine:
             job.cancelled = True
             proc = self._running.get(id(job))
         if proc is not None:
-            proc.terminate()
+            terminate_tree(proc)
 
     def shutdown(self, cancel: bool = False, wait: bool = True) -> None:
         """Stop taking jobs. With `cancel`, stop the running ones and drop the queued ones.
@@ -226,10 +228,13 @@ class Engine:
             # ever created, so a missing target fails the job instead.
             job.folder.parent.mkdir(exist_ok=True)
             job.folder.mkdir(exist_ok=True)
+            # Detached (its own session on POSIX) so a cancel can stop aria2c too: yt-dlp
+            # runs it as a child writing into this same pipe, and outlives a kill of yt-dlp.
             proc = subprocess.Popen(
                 build_command(job.url, job.folder, job.name),
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",  # also splits aria2c's \r
+                **detached_kwargs(),
             )
         except OSError as exc:
             job.returncode = -1
@@ -239,7 +244,7 @@ class Engine:
         with self._lock:
             self._running[id(job)] = proc
             if job.cancelled:        # cancelled between the check above and Popen
-                proc.terminate()
+                terminate_tree(proc)
         self.on_start(job)
         try:
             assert proc.stdout is not None

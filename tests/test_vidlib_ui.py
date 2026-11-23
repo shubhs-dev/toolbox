@@ -9,6 +9,7 @@ CHROMIUM_PATH points it at a Chromium binary other than the one Playwright downl
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -234,5 +235,49 @@ def test_merging_from_the_parts_view_and_by_hand(parts_url):
         page.click("#select-merge")
         sync_api.expect(page.locator(".merge-part")).to_have_count(2)
         sync_api.expect(page.locator(".merge-part").first).to_contain_text("Another clip.mp4")
+        assert errors == []
+        browser.close()
+
+
+# Progress every 50 ms, like a fast download: the page gets a new state every quarter second.
+BUSY_YTDLP = """\
+#!{python}
+import time
+for i in range(600):
+    print(f"[download]  {{i / 6:.1f}}% of 1.00MiB at 3.00MiB/s ETA 00:10", flush=True)
+    time.sleep(0.05)
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fake yt-dlp is a POSIX script")
+def test_cancel_works_while_progress_streams_in(page_url, tmp_path, monkeypatch):
+    # Every state update used to rebuild the rows, so the Cancel button was replaced
+    # between mousedown and mouseup and the click never landed.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "yt-dlp"
+    script.write_text(BUSY_YTDLP.format(python=sys.executable))
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    with sync_api.sync_playwright() as p:
+        try:
+            browser = p.chromium.launch(executable_path=os.environ.get("CHROMIUM_PATH"))
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"no Chromium for Playwright: {exc}")
+        page = browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.goto(page_url)
+        page.evaluate("""() => fetch("/api/downloads", {method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({url: "https://example.com/busy", name: "A - B - C"})})""")
+        row = page.locator("#rows-active .row")
+        sync_api.expect(row.locator(".pill")).to_have_text("downloading")
+        page.wait_for_timeout(500)
+        row.get_by_role("button", name="Cancel").hover()
+        page.mouse.down()
+        page.wait_for_timeout(400)      # at least one state update between down and up
+        page.mouse.up()
+        sync_api.expect(page.locator("#rows-done .row .pill")).to_have_text("cancelled")
         assert errors == []
         browser.close()
