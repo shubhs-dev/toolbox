@@ -56,8 +56,11 @@ def test_finished_files_skip_partials(tmp_path):
 
 FAKE_YTDLP = """\
 #!{python}
-import pathlib, sys, time
+import pathlib, subprocess, sys, time
 url = sys.argv[-1]
+if "child" in url:   # like yt-dlp handing off to aria2c, which inherits its stdout
+    subprocess.run([sys.executable, "-c",
+                    "import time\\nfor _ in range(60): print('[#1 1KiB/1MiB(1%) CN:1 DL:1KiB]', flush=True); time.sleep(0.5)"])
 if "fail" in url:
     print("ERROR: simulated failure", flush=True)
     sys.exit(2)
@@ -127,6 +130,20 @@ def test_cancel_stops_a_running_download(fake_ytdlp):
         future.result(timeout=10)
     assert job.cancelled and job.returncode not in (0, None)
     assert not (fake_ytdlp / "1" / "Slow.mp4").exists()
+
+
+@posix_only
+def test_cancel_also_stops_the_downloader_yt_dlp_started(fake_ytdlp):
+    # yt-dlp runs aria2c as a child that writes to the same pipe: killing yt-dlp alone
+    # left aria2c downloading, and the job "running" until aria2c finished.
+    running = threading.Event()
+    with engine.Engine(1, on_line=lambda *_a: running.set()) as eng:
+        job = engine.Job(1, "https://x/child", fake_ytdlp / "1", "Child")
+        future = eng.submit(job)
+        assert running.wait(5)
+        eng.cancel(job)
+        future.result(timeout=5)
+    assert job.cancelled and job.returncode not in (0, None)
 
 
 @posix_only

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 
 from toolboxcli._common.console import die
@@ -36,3 +37,22 @@ def detached_kwargs() -> dict:
     if os.name == "nt":
         return {"stdin": subprocess.DEVNULL, "creationflags": subprocess.CREATE_NO_WINDOW}
     return {"stdin": subprocess.DEVNULL, "start_new_session": True}
+
+
+def terminate_tree(proc: subprocess.Popen[str]) -> None:
+    """Terminate a child started with `detached_kwargs()` *and* everything it started.
+
+    `proc.terminate()` stops only the child itself. A tool that hands its work to another
+    program — yt-dlp running aria2c — leaves that program running, still writing into the
+    pipe the caller reads, so the caller sees the job carry on as if nothing happened.
+    POSIX: the child leads its own session (`start_new_session`), so signal its process
+    group. Windows: `taskkill /T` walks the tree from the child's pid.
+    """
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True, check=False, **detached_kwargs())
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        proc.terminate()   # the group is already gone (or never was): the child alone

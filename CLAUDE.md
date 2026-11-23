@@ -498,7 +498,10 @@ Progress *factories* themselves) were extracted from it.
   `--summary-interval=1 --show-console-readout=false` (after yt-dlp's own options, so they
   win): its live readout is buffered until exit when writing into a pipe, which showed 0%
   then 100%; the per-second summary line is flushed and parsed, its banner lines dropped
-  from the tail (`_SUMMARY_NOISE`). A job cancelled
+  from the tail (`_SUMMARY_NOISE`). yt-dlp is started with `detached_kwargs()` and cancelled
+  with `tooling.terminate_tree()` (its process group on POSIX, `taskkill /T` on Windows):
+  aria2c is yt-dlp's child and inherits the pipe, so terminating yt-dlp alone left aria2c
+  downloading and the job "running" until it finished. A job cancelled
   before it starts still calls `on_done`. Leaving the `Engine` context on an exception cancels
   everything, so no yt-dlp outlives a Ctrl+C.
 - `vidlib/downloads.py`'s `DownloadManager` owns the queue: rows in the `downloads` table
@@ -557,7 +560,10 @@ Progress *factories* themselves) were extracted from it.
   server's (DNS rebinding), a request with a foreign Origin is refused, and every write takes a
   JSON body (a cross-site JSON POST needs a CORS preflight nothing answers). The page's script
   holds no naming logic: it posts the title and roles (or the hand-edited fields) to
-  `/api/name` and renders the answer. The web page runs only in watch mode (`wants_web`): not
+  `/api/name` and renders the answer. The download rows are updated in place (`renderRow`
+  keyed by id, buttons rebuilt only on a status change), never rebuilt per event: state
+  arrives every `EVENT_INTERVAL` while something downloads, and a button replaced between
+  mousedown and mouseup gets no click. The web page runs only in watch mode (`wants_web`): not
   with `-W`, `-n`, `-O`, reports or queries. `tests/test_vidlib_web.py` drives the API with a
   fake `yt-dlp` (POSIX only); `tests/test_vidlib_ui.py` is a Playwright smoke test that skips
   unless run with `uv run --with playwright` (CI doesn't install it; `CHROMIUM_PATH` picks the
