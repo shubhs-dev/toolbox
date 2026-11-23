@@ -16,6 +16,7 @@ faster than anyone reads them), with a comment every few seconds to keep the lin
 
 from __future__ import annotations
 
+import errno
 import json
 import re
 import sys
@@ -34,6 +35,9 @@ from toolboxcli.vidlib.library import Library, LibraryError
 from toolboxcli.vidlib.status import PipelineStatus
 
 DEFAULT_PORT = 8642
+# How many ports from the requested one bind_server tries before giving up: enough for every
+# library on the Mac to have a vidlib running at once.
+PORT_TRIES = 20
 EVENT_INTERVAL = 0.25
 KEEPALIVE = 10.0
 MAX_BODY = 1_000_000
@@ -402,6 +406,9 @@ class Handler(BaseHTTPRequestHandler):
 
 class VidlibServer(ThreadingHTTPServer):
     daemon_threads = True   # an open event stream never holds up quitting
+    # SO_REUSEADDR only skips TIME_WAIT on POSIX, but on Windows it lets a second server bind
+    # a port that's already listening — the busy port would never be noticed.
+    allow_reuse_address = sys.platform != "win32"
 
     def __init__(self, manager: DownloadManager, port: int = DEFAULT_PORT,
                  pipeline: PipelineStatus | None = None) -> None:
@@ -439,3 +446,27 @@ class VidlibServer(ThreadingHTTPServer):
         self.stopping.set()
         self.shutdown()
         self.server_close()
+
+
+# What a busy port raises: EADDRINUSE on POSIX; on Windows the socket's own WSAEADDRINUSE.
+_PORT_BUSY = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", errno.EADDRINUSE)}
+
+
+def port_busy(exc: OSError) -> bool:
+    return exc.errno in _PORT_BUSY
+
+
+def bind_server(manager: DownloadManager, port: int = DEFAULT_PORT,
+                pipeline: PipelineStatus | None = None,
+                tries: int = PORT_TRIES) -> VidlibServer:
+    """A server on *port*, or on the next free one after it when it's taken (another
+    library's vidlib, or anything else). Any error but a busy port is raised as it is, and
+    so is the last busy port's when none of the *tries* ports was free."""
+    last = min(port + tries, 65536) - 1
+    for candidate in range(port, last + 1):
+        try:
+            return VidlibServer(manager, candidate, pipeline=pipeline)
+        except OSError as exc:
+            if not port_busy(exc) or candidate == last:
+                raise
+    raise AssertionError("unreachable: the last try re-raises")
