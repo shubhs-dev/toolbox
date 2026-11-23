@@ -549,6 +549,11 @@ Progress *factories* themselves) were extracted from it.
 - `vidlib/library.py` is the Library tab's backend. Its person and collection filters match
   *exactly* (`db.search(exact=True)`): the page only sends values picked from its lists, and
   picking "Ali" mustn't show Alice. The search box (`q`) and the CLI's `-a`/`-c` stay partial.
+  Sorting (`SORTS`, `sort_videos`) happens server-side after filtering, before paging; each
+  order has its own starting direction (sizes, lengths, dates newest first; names A–Z),
+  reported back so the page's direction button shows the truth. "Recently added" is the
+  file's mtime — vidlib doesn't track watching. Videos with nothing to sort by go last
+  either way; the Duplicates view keeps its grouping and ignores the sort.
   Every action takes a root-relative path
   and first checks the *database* knows it (`_known`), so a crafted path (`../x`) can never
   reach a file outside the library. It shares the download manager's connection and lock.

@@ -315,8 +315,13 @@ class Handler(BaseHTTPRequestHandler):
                 offset = max(0, int(arg("offset") or 0))
             except ValueError as exc:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "offset is a number") from exc
+            order = arg("order")
+            if order not in ("", "asc", "desc"):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "order is asc or desc")
             self._json(lib.query(arg("view") or "all", arg("q"), arg("person"),
-                                 arg("collection"), arg("resolution"), arg("tag"), offset))
+                                 arg("collection"), arg("resolution"), arg("tag"), offset,
+                                 sort=arg("sort") or "name",
+                                 desc=None if not order else order == "desc"))
             return
         if method == "GET" and path == "/api/library/video":
             self._json(lib.video(arg("path")))

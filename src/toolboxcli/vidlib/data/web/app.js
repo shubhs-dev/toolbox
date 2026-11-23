@@ -619,6 +619,7 @@ function connect() {
 // ── the library ───────────────────────────────────────────────────────
 
 const lib = { view: "all", offset: 0, total: 0, loaded: false, seq: 0, lastGroup: null,
+  sort: "name", desc: null, shownDesc: false,
               selected: new Map() };   // id → video, picked to merge by hand
 
 function renderSelection() {
@@ -640,6 +641,7 @@ function libQuery(offset) {
   const params = new URLSearchParams({
     view: lib.view, q: $("lib-q").value, person: personFilter.value,
     collection: collectionFilter.value, resolution: $("lib-resolution").value,
+    sort: lib.sort, ...(lib.desc === null ? {} : { order: lib.desc ? "desc" : "asc" }),
     offset: String(offset),
   });
   return `/api/library?${params}`;
@@ -910,6 +912,10 @@ async function loadLibrary(append = false) {
   $("lib-grid").hidden = partsView;
   $("lib-parts").hidden = !partsView;
   for (const id of ["lib-q", "lib-person", "lib-collection", "lib-resolution"]) $(id).disabled = partsView;
+  // Duplicates stay grouped and Parts are sets: neither takes a sort order.
+  const unsorted = partsView || lib.view === "duplicates";
+  $("lib-sort").disabled = unsorted;
+  $("lib-order").disabled = unsorted;
   renderSelection();
   if (partsView) { $("lib-more").hidden = true; return loadParts(); }
   const seq = ++lib.seq;
@@ -919,6 +925,7 @@ async function loadLibrary(append = false) {
   lib.loaded = true;
   personFilter.setItems(data.people);
   collectionFilter.setItems(data.collections);
+  showOrder(data.desc);
   const grid = $("lib-grid");
   if (!append) { grid.replaceChildren(); lib.lastGroup = null; }
   for (const v of data.videos) {
@@ -1556,6 +1563,39 @@ attachSuggest($("collection"), $("collection-suggest"), "collections", fromField
 // Library page
 $("lib-q").addEventListener("input", reloadLibrary);
 $("lib-resolution").addEventListener("change", () => loadLibrary().catch(showLibError));
+
+// Sorting: each order starts in its natural direction (largest, longest, newest first;
+// names A–Z), which the server decides and reports back; the button flips it. Remembered in
+// this browser only.
+function showOrder(desc) {
+  lib.shownDesc = desc;
+  const b = $("lib-order");
+  b.textContent = desc ? "↓" : "↑";
+  b.title = desc ? "Descending — click for ascending" : "Ascending — click for descending";
+  b.setAttribute("aria-label", desc ? "Descending" : "Ascending");
+}
+function saveSort() {
+  try { localStorage.setItem("vidlib-sort", JSON.stringify({ sort: lib.sort, desc: lib.desc })); } catch { /* private mode */ }
+}
+try {
+  const saved = JSON.parse(localStorage.getItem("vidlib-sort") || "null");
+  if (saved && [...$("lib-sort").options].some((o) => o.value === saved.sort)) {
+    lib.sort = saved.sort;
+    lib.desc = typeof saved.desc === "boolean" ? saved.desc : null;
+  }
+} catch { /* nothing saved, or no storage */ }
+$("lib-sort").value = lib.sort;
+$("lib-sort").addEventListener("change", () => {
+  lib.sort = $("lib-sort").value;
+  lib.desc = null;   // the new order's own direction
+  saveSort();
+  loadLibrary().catch(showLibError);
+});
+$("lib-order").addEventListener("click", () => {
+  lib.desc = !lib.shownDesc;
+  saveSort();
+  loadLibrary().catch(showLibError);
+});
 for (const b of document.querySelectorAll(".seg button")) {
   b.addEventListener("click", () => {
     lib.view = b.dataset.view;

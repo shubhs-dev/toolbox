@@ -229,7 +229,13 @@ textarea { font-family: var(--font-mono); font-size: 12.5px; resize: vertical; }
 .lib-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .lib-bar input[type="search"] { flex: 1 1 220px; width: auto; }
 .pick-combo { flex: 0 1 240px; min-width: 160px; }
-@media (max-width: 600px) { .pick-combo, .lib-filters select { flex: 1 1 100%; } }
+.lib-sort { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.lib-sort button { min-width: 2.4em; }
+@media (max-width: 600px) {
+  .pick-combo, .lib-filters > select { flex: 1 1 100%; }
+  .lib-sort { margin-left: 0; flex: 1 1 100%; }
+  .lib-sort select { flex: 1; }
+}
 .pick-combo input { width: 100%; }
 .pick-combo .suggest { right: auto; min-width: 100%; max-width: min(360px, 90vw); max-height: 320px; }
 .suggest li.current { font-weight: 600; }

@@ -202,6 +202,19 @@
       <option>2160p</option><option>1440p</option><option>1080p</option>
       <option>720p</option><option>480p</option><option>360p</option>
     </select>
+    <span class="lib-sort">
+      <label for="lib-sort" class="dim">Sort</label>
+      <select id="lib-sort">
+        <option value="name">Name</option>
+        <option value="added">Recently added</option>
+        <option value="people">People</option>
+        <option value="collection">Collection</option>
+        <option value="size">Size</option>
+        <option value="duration">Length</option>
+        <option value="resolution">Resolution</option>
+      </select>
+      <button type="button" id="lib-order" class="small" aria-label="Order"></button>
+    </span>
   </div>
   <p class="lib-summary" id="lib-summary"></p>
   <ul class="grid" id="lib-grid"></ul>
