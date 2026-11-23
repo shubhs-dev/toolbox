@@ -99,6 +99,16 @@ def test_browsing_and_filtering(client):
         "Carol - Summit - Peaks [720p Restored].mp4"]
     assert _names(client("GET", "/api/library?view=unnamed")[1]) == ["Odd name.mp4"]
     assert _names(client("GET", "/api/library?view=review")[1]) == ["Alice - Parked - Lakes.mp4"]
+    # Sorting applies to the filtered result; each order has its own starting direction.
+    data = client("GET", "/api/library?sort=size")[1]
+    assert data["sort"] == "size" and data["desc"] is True
+    assert [v["size"] for v in data["videos"]] == [900, 500, 300, 100]
+    assert [v["size"] for v in client("GET", "/api/library?sort=size&order=asc")[1]["videos"]] == [
+        100, 300, 500, 900]
+    assert _names(client("GET", "/api/library?person=Alice&sort=size&order=asc")[1]) == [
+        "Bob and Alice - Day 1 - Lakes [720p].mp4", "Alice, Bob - Day 1 - Lakes [1080p].mp4"]
+    assert client("GET", "/api/library?sort=colour")[0] == 409   # as an unknown view is
+    assert client("GET", "/api/library?order=sideways")[0] == 400
     dupes = client("GET", "/api/library?view=duplicates")[1]["videos"]
     assert len(dupes) == 2 and {v["group"] for v in dupes} == {0}
     assert client("GET", "/api/library?view=bogus")[0] == 409
@@ -355,3 +365,23 @@ def test_rename_wont_file_into_an_ignored_folder(client, library):
         "path": "Odd name.mp4", "people": "Dee", "title": "Hike", "collection": "Peaks"})
     assert status == 409 and ".vidlib-ignore" in err["error"]
     assert (library / "Odd name.mp4").exists()
+
+
+def test_sort_orders_put_videos_with_nothing_to_sort_by_last():
+    from toolboxcli.vidlib.library import sort_videos
+    videos = [
+        Video(path="b.mp4", size=0, duration=30, mtime=200),
+        Video(path="Peaks/Carol - Hike - Peaks.mp4", size=50, duration=0, mtime=100),
+        Video(path="Lakes/Alice - Swim - Lakes.mp4", size=10, duration=90, mtime=300),
+        Video(path="a.mp4", size=10, duration=10, mtime=0),
+    ]
+    order = lambda *a: [v.filename for v in sort_videos(videos, *a)]   # noqa: E731
+    assert order("name") == ["a.mp4", "Alice - Swim - Lakes.mp4", "b.mp4", "Carol - Hike - Peaks.mp4"]
+    assert order("size") == ["Carol - Hike - Peaks.mp4", "a.mp4", "Alice - Swim - Lakes.mp4", "b.mp4"]
+    assert order("size", False) == ["a.mp4", "Alice - Swim - Lakes.mp4", "Carol - Hike - Peaks.mp4", "b.mp4"]
+    assert order("duration") == ["Alice - Swim - Lakes.mp4", "b.mp4", "a.mp4", "Carol - Hike - Peaks.mp4"]
+    assert order("added") == ["Alice - Swim - Lakes.mp4", "b.mp4", "Carol - Hike - Peaks.mp4", "a.mp4"]
+    # No collection (a badly named file) sorts after the named ones, either way round.
+    assert order("collection") == ["Alice - Swim - Lakes.mp4", "Carol - Hike - Peaks.mp4", "a.mp4", "b.mp4"]
+    assert order("collection", True) == ["Carol - Hike - Peaks.mp4", "Alice - Swim - Lakes.mp4", "a.mp4", "b.mp4"]
+    assert order("people") == ["Alice - Swim - Lakes.mp4", "Carol - Hike - Peaks.mp4", "a.mp4", "b.mp4"]

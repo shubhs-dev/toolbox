@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -34,6 +35,46 @@ STRIP_FRAMES = 12
 STRIP_WIDTH = 320
 PAGE_SIZE = 60
 VIEWS = ("all", "duplicates", "unnamed", "review")
+
+# The Library tab's sort orders, each with the direction it starts in (True = descending).
+# "added" is the file's mtime: when it was downloaded or last encoded into the library —
+# vidlib doesn't know when a video was watched. The duplicates view keeps its grouping.
+SORTS: dict[str, bool] = {
+    "name": False, "added": True, "people": False, "collection": False, "size": True,
+    "duration": True, "resolution": True,
+}
+
+
+def _sort_key(sort: str) -> Callable[[Video], Any]:
+    match sort:
+        case "added":
+            return lambda v: v.mtime
+        case "people":
+            return lambda v: ", ".join(v.name.people).casefold()
+        case "collection":
+            return lambda v: v.name.collection.casefold()
+        case "size":
+            return lambda v: v.size
+        case "duration":
+            return lambda v: v.duration
+        case "resolution":
+            return lambda v: v.height
+        case _:
+            return lambda v: v.filename.casefold()
+
+
+def sort_videos(videos: list[Video], sort: str = "name", desc: bool | None = None) -> list[Video]:
+    """`videos` in the order asked for, ties broken by file name. Videos with nothing to
+    sort by (no people, no collection, an unprobed size or length) go last either way."""
+    if sort not in SORTS:
+        raise LibraryError(f"sort is one of {', '.join(SORTS)}")
+    if desc is None:
+        desc = SORTS[sort]
+    key = _sort_key(sort)
+    by_name = sorted(videos, key=lambda v: v.filename.casefold())
+    known = [v for v in by_name if key(v) not in ("", 0, 0.0)]
+    unknown = [v for v in by_name if key(v) in ("", 0, 0.0)]
+    return sorted(known, key=key, reverse=desc) + unknown
 
 
 class LibraryError(Exception):
@@ -66,7 +107,8 @@ class Library:
 
     def query(self, view: str = "all", q: str = "", person: str = "", collection: str = "",
               resolution: str = "", tag: str = "", offset: int = 0,
-              limit: int = PAGE_SIZE) -> dict[str, Any]:
+              limit: int = PAGE_SIZE, sort: str = "name",
+              desc: bool | None = None) -> dict[str, Any]:
         if view not in VIEWS:
             raise LibraryError(f"view is one of {', '.join(VIEWS)}")
         with self.lock:
@@ -89,14 +131,19 @@ class Library:
         if q.strip():
             needle = naming.loose_key(q)
             videos = [v for v in videos if needle in naming.loose_key(v.filename)]
+        if sort not in SORTS:
+            raise LibraryError(f"sort is one of {', '.join(SORTS)}")
+        if desc is None:
+            desc = SORTS[sort]
         if view != "duplicates":
-            videos.sort(key=lambda v: v.filename.casefold())
+            videos = sort_videos(videos, sort, desc)
         page = videos[offset:offset + limit]
         with self.lock:
             ids = {path: i for i, path in self.db.conn.execute("SELECT id, path FROM videos")}
         rows = [_video_json(v) | {"id": ids.get(v.path)}
                 | ({"group": group_of[v.path]} if group_of else {}) for v in page]
-        return {"total": len(videos), "offset": offset, "videos": rows, **facets}
+        return {"total": len(videos), "offset": offset, "videos": rows, "sort": sort,
+                "desc": desc, **facets}
 
     def _facets(self) -> dict[str, Any]:
         """People and collections with how many videos each has, for the filters."""
