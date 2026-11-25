@@ -58,6 +58,11 @@ FAKE_YTDLP = """\
 #!{python}
 import pathlib, subprocess, sys, time
 url = sys.argv[-1]
+if "stubborn" in url:   # like aria2c's "graceful" shutdown: a terminate is ignored for ages
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: None)
+    print("[download]   1.0% of 1.00MiB at 1.00MiB/s ETA 00:09", flush=True)
+    time.sleep(60)
 if "child" in url:   # like yt-dlp handing off to aria2c, which inherits its stdout
     subprocess.run([sys.executable, "-c",
                     "import time\\nfor _ in range(60): print('[#1 1KiB/1MiB(1%) CN:1 DL:1KiB]', flush=True); time.sleep(0.5)"])
@@ -182,3 +187,19 @@ def test_aria2c_reports_progress_every_second_and_its_summary_noise_is_dropped()
         assert engine._SUMMARY_NOISE.match(noise.strip())
     assert parse_progress("[#54e45f 304KiB/1.9MiB(15%) CN:1 DL:157KiB ETA:10s]") == Progress(
         15.0, "157KiB/s", "10s")
+
+
+@posix_only
+def test_stop_kills_a_download_that_ignores_the_terminate(fake_ytdlp):
+    # Python waits for the pool's threads before it exits, so a download that shrugs off
+    # SIGTERM kept vidlib open after "Stopped." until it finished. stop() is bounded.
+    running = threading.Event()
+    eng = engine.Engine(2, on_line=lambda *_a: running.set())
+    job = engine.Job(1, "https://x/stubborn", fake_ytdlp / "1", "S")
+    future = eng.submit(job)
+    assert running.wait(5)
+    start = time.monotonic()
+    assert eng.stop(grace=0.5) == 1
+    future.result(timeout=5)
+    assert time.monotonic() - start < 5
+    assert job.cancelled and job.returncode not in (0, None) and eng.running == 0

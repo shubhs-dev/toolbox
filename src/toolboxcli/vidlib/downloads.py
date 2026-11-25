@@ -27,7 +27,6 @@ import re
 import shutil
 import threading
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -130,7 +129,9 @@ class DownloadManager:
         self.fetching: set[int] = set()
         self.engine = fetcher.Engine(self.workers, on_start=self._on_start,
                                      on_line=self._on_line, on_done=self._on_done)
-        self._titles = ThreadPoolExecutor(max_workers=2)
+        # Title fetches run on daemon threads, two at a time: there's nothing in one worth
+        # waiting for on the way out, and Python waits for every non-daemon thread.
+        self._titles = threading.Semaphore(2)
         self._closing = False
 
     @property
@@ -167,13 +168,18 @@ class DownloadManager:
             self._bump()
         return imported
 
-    def shutdown(self) -> None:
-        """Stop every running download. Their rows stay `downloading`, which start() turns
-        back into `queued` next time."""
+    def shutdown(self, grace: float = fetcher.STOP_GRACE) -> int:
+        """Stop every running download: asked to stop, then killed after *grace* seconds
+        (fetcher.Engine.stop). Their rows stay `downloading`, which start() turns back into
+        `queued` next time. Returns how many had to be killed."""
         with self.lock:
             self._closing = True
-        self.engine.shutdown(cancel=True, wait=False)
-        self._titles.shutdown(wait=False, cancel_futures=True)
+        return self.engine.stop(grace)
+
+    @property
+    def running(self) -> int:
+        """Downloads with a yt-dlp running right now."""
+        return self.engine.running
 
     def _import_legacy_queue(self) -> int:
         """Rows from video-download's `.video-download-queue.json` in the download folder,
@@ -451,11 +457,16 @@ class DownloadManager:
         self.fetching.add(download_id)
 
         def work() -> None:
-            try:
-                title, error = self.title_fetcher(url), ""
-            except RuntimeError as exc:
-                title, error = "", str(exc)
+            with self._titles:
+                if self._closing:
+                    return
+                try:
+                    title, error = self.title_fetcher(url), ""
+                except RuntimeError as exc:
+                    title, error = "", str(exc)
             with self.lock:
+                if self._closing:
+                    return   # the database may already be closed; start() fetches it again
                 self.fetching.discard(download_id)
                 item = self.items.get(download_id)
                 if item is not None and item.status == "naming":
@@ -463,7 +474,7 @@ class DownloadManager:
                     self.db.save_download(item)
                 self._bump()
 
-        self._titles.submit(work)
+        threading.Thread(target=work, name=f"vidlib-title-{download_id}", daemon=True).start()
 
     def _job_item(self, job: fetcher.Job) -> Download | None:
         download_id = job.id
@@ -475,7 +486,7 @@ class DownloadManager:
     def _on_start(self, job: fetcher.Job) -> None:
         with self.lock:
             dl = self._job_item(job)
-            if dl is not None:
+            if dl is not None and not self._closing:
                 dl.status = "downloading"
                 self.db.save_download(dl)
                 self._bump()

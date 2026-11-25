@@ -628,6 +628,7 @@ the library — the pipeline is `compressvid` and `sortmedia` welded into one un
 vidlib /Volumes/Media/Library         # watch, poll every 30s, serve the web page
 vidlib -W                             # just the pipeline, no web page
 vidlib -X ~/Downloads/tmp             # download only, into that folder
+vidlib . -A ~/Desktop/clip.mp4        # add a video as is: tagged and filed, never encoded
 vidlib -P 9000 -b                     # web page on port 9000, don't open a browser
 vidlib -O                             # process what's there, then exit
 vidlib -n                             # dry run: show what would happen
@@ -725,6 +726,7 @@ size and folder. It's a report only: nothing is moved or deleted.
 | `-T, --tag` | — | With `-l`: only videos carrying this `[tag]` (case-insensitive, partial) |
 | `-U, --unnamed` | off | With `-l`: only videos not named `People - Title - Collection` |
 | `-D, --duplicates` | off | List videos the library holds more than once, then exit (report only) |
+| `-A, --adopt` | — | Add these videos without encoding them: moved into the root, then tagged, deduplicated and filed (give `ROOT` first) |
 | `-F, --force` | off | Re-process files the library database already knows as done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `VIDLIB_GPU` |
 | `-Q, --quality` | preset's | Override the preset's quality value |
@@ -833,6 +835,14 @@ downloads go into `DIR` (default: the current folder) instead, still recorded in
 database. Once there's room, **Move into library** on the page moves them into the root
 (copying across disks safely, checking the size before removing the original), and the
 pipeline takes it from there.
+
+**Adopting** (`-A FILE...`) — for a video that's already in good shape: it joins the library
+without being encoded. Each file is moved into the root (from anywhere — another disk, one of
+the library's folders) and recorded as already compressed, so the pipeline only tags it,
+compares it against the library's copies and files it. If vidlib is running on the library
+that happens on its next poll — `-A` doesn't need the library's lock, so it runs alongside;
+otherwise `-A` files it right away. A name the root already has is refused, never
+overwritten. `-n` previews it.
 
 **Encoder** — the bundled presets specify AMD's `vce_h265`, but the encoder is chosen at
 runtime: if the preset's own encoder is available it's used untouched, otherwise HandBrake's
