@@ -91,3 +91,27 @@ def make_video():
         return path
 
     return make
+
+
+# Four test patterns that fingerprint unlike each other on every frame.
+SOURCES = {
+    "testsrc2": "testsrc2=s={size}:d={d}",
+    "mandelbrot": "mandelbrot=s={size},trim=duration={d}",
+    "life": "life=s={size}:ratio=0.3:seed=4,trim=duration={d}",
+    "cellauto": "cellauto=s={size}:rule=110:seed=5,trim=duration={d}",
+}
+
+
+@pytest.fixture
+def clip():
+    """clip(path, source, size="320x180", seconds=12): a short video of a test pattern."""
+
+    def make(path: Path, source: str, size: str = "320x180", seconds: int = 12) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+             "-i", SOURCES[source].format(size=size, d=seconds),
+             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+             "-t", str(seconds), str(path)], check=True)
+        return path
+    return make

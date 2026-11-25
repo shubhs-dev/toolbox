@@ -115,6 +115,26 @@ def test_browsing_and_filtering(client):
     assert client("GET", "/api/library?offset=x")[0] == 400
 
 
+def test_duplicates_say_why_and_a_picture_match_can_be_dismissed(client, library):
+    fp = ",".join(f"{0x0F0F0F0F0F0F0F0F + i:016x}" for i in range(12))
+    with LibraryDB.open(library) as db:
+        for path in ("Peaks/Carol - Summit - Peaks [720p Restored].mp4", "Odd name.mp4"):
+            row = db.get(path)
+            assert row is not None
+            row.duration, row.fingerprint = 300.0, fp
+            db.upsert(row)
+    dupes = client("GET", "/api/library?view=duplicates")[1]["videos"]
+    why = {v["filename"]: (v["why"], v["why_text"], len(v["group_ids"])) for v in dupes}
+    assert why["Odd name.mp4"] == ("picture", "same picture, different names", 2)
+    assert why["Bob and Alice - Day 1 - Lakes [720p].mp4"][0] == "name"
+    ids = next(v["group_ids"] for v in dupes if v["why"] == "picture")
+    assert client("POST", "/api/library/duplicates/dismiss", {"ids": ids})[0] == 200
+    left = client("GET", "/api/library?view=duplicates")[1]["videos"]
+    assert {v["why"] for v in left} == {"name"}
+    assert client("POST", "/api/library/duplicates/dismiss", {"ids": ["x"]})[0] == 400
+    assert client("POST", "/api/library/duplicates/dismiss", {"ids": [ids[0]]})[0] >= 400
+
+
 def test_a_review_item_shows_its_library_copy(client):
     _, v = client("GET", "/api/library/video?path=" + quote("_review/Alice - Parked - Lakes.mp4"))
     assert v["library_copy"]["filename"] == "Alice, Bob - Day 1 - Lakes [1080p].mp4"
@@ -195,8 +215,12 @@ def test_thumbnails_are_made_once_and_cached(client, library, make_video):
                         size=video.stat().st_size))
     status, image = client("GET", "/api/thumb?path=" + quote("Peaks/Dee - Real - Peaks.mp4"))
     assert status == 200 and image[:2] == b"\xff\xd8"          # a JPEG
-    cached = list((library / ".vidlib-cache" / "thumbs").glob("*.jpg"))
-    assert len(cached) == 1
+    # Just the one frame (the indexer makes the filmstrip and fingerprint), named after the
+    # file's size and mtime rather than its path, so renaming or filing it keeps it.
+    cached = [p.name for p in (library / ".vidlib-cache" / "thumbs").glob("*.jpg")]
+    assert len(cached) == 1 and "strip" not in cached[0]
+    status, strip = client("GET", "/api/strip?path=" + quote("Peaks/Dee - Real - Peaks.mp4"))
+    assert status == 200 and strip[:2] == b"\xff\xd8"
     assert client("GET", "/api/thumb?path=" + quote("Peaks/Dee - Real - Peaks.mp4"))[1] == image
     # A file ffmpeg can't read gets a 404, not a crash.
     assert client("GET", "/api/thumb?path=" + quote("Odd name.mp4"))[0] == 404

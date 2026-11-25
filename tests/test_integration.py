@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -196,6 +197,58 @@ def test_adopt_refuses_force_and_terminal_modes(tmp_path, run_cli):
     for extra in (["-F"], ["-l"], ["-r"]):
         result = run_cli("vidlib", [str(tmp_path), "-A", str(video), *extra])
         assert result.returncode != 0 and "-A/--adopt" in result.stderr, extra
+
+
+@needs("ffmpeg", "ffprobe")
+def test_index_prepares_every_video_once(tmp_path, clip, run_cli):
+    root = tmp_path / "lib"
+    clip(root / "Lakes" / "Alice - Day 1 - Lakes.mp4", "testsrc2")
+    clip(root / "Peaks" / "Bob - Hike - Peaks.mp4", "life")
+    result = run_cli("vidlib", [str(root), "-I"])
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "Prepared 2 of 2 videos" in result.stdout
+    assert len(list((root / ".vidlib-cache" / "thumbs").glob("*.jpg"))) == 4
+    with _db(root) as db:
+        assert all(v.fingerprint for v in db.all())
+    again = run_cli("vidlib", [str(root), "-I"])
+    assert "All 2 videos already have" in again.stdout
+
+
+@needs("ffmpeg", "ffprobe")
+def test_a_same_named_video_with_another_picture_is_parked_not_swapped_in(tmp_path, clip,
+                                                                         run_cli):
+    root = tmp_path / "lib"
+    clip(root / "Hills" / "Carol - Run - Hills.mp4", "testsrc2")
+    assert run_cli("vidlib", [str(root), "-I"]).returncode == 0
+    # Higher resolution and the same length: by name alone this would replace the copy
+    # (and trash it). The pictures differ, so it waits in _review/ instead.
+    new = clip(tmp_path / "Carol - Run - Hills.mp4", "mandelbrot", "640x360")
+    result = run_cli("vidlib", [str(root), "-A", str(new)])
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (root / "Hills" / "Carol - Run - Hills.mp4").is_file()
+    parked = list((root / "_review").iterdir())
+    assert len(parked) == 1
+    with _db(root) as db:
+        row = db.get(f"_review/{parked[0].name}")
+        assert row is not None and row.reason == "different_video" and row.fingerprint
+
+
+@needs("ffmpeg", "ffprobe")
+def test_the_same_picture_under_another_name_is_reported_not_moved(tmp_path, clip, run_cli):
+    root = tmp_path / "lib"
+    original = clip(root / "Lakes" / "Alice - Day 1 - Lakes.mp4", "cellauto")
+    assert run_cli("vidlib", [str(root), "-I"]).returncode == 0
+    # The same video, re-encoded bigger and downloaded again under another name.
+    new = tmp_path / "Al - Lake day - Trips.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(original), "-vf", "scale=640:360",
+                    "-c:v", "libx264", "-preset", "ultrafast", str(new)], check=True)
+    result = run_cli("vidlib", [str(root), "-A", str(new)])
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "looks like the same video as Lakes/Alice - Day 1 - Lakes.mp4" in result.stdout
+    assert (root / "Trips" / "Al - Lake day - Trips [360p].mp4").is_file()   # filed as usual
+    report = run_cli("vidlib", [str(root), "-D"])
+    assert "same picture, different names" in report.stdout
+    assert "Al - Lake day - Trips [360p].mp4" in report.stdout
 
 
 def test_sync_follows_moves_records_folders_and_marks_missing(tmp_path):

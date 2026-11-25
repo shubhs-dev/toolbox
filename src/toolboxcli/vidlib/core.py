@@ -442,6 +442,9 @@ UPGRADE = "upgrade"
 MORE_COMPLETE = "more_complete"
 DOWNGRADE = "downgrade"
 AMBIGUOUS = "ambiguous"
+# Same name, but the fingerprints show a different picture (same_content() is False): never
+# replaced automatically, whatever the resolution and length say.
+DIFFERENT = "different_video"
 
 SHORTER_TOLERANCE = 0.98   # a candidate may be this much shorter and still count as an upgrade
 LONGER_THRESHOLD = 1.02    # ...and must be this much longer to count as "more complete"
@@ -475,6 +478,122 @@ def duplicate_verdict(new_height: int, new_duration: float,
 
 def wins(verdict: str) -> bool:
     return verdict in (UPGRADE, MORE_COMPLETE)
+
+
+# ── Content fingerprints ──────────────────────────────────────────────
+#
+# A fingerprint is FP_FRAMES difference hashes ("dHash") of frames at fixed fractions of the
+# video's length — the hover filmstrip's frames, so one ffmpeg pass makes both. Each frame is
+# shrunk to 9x8 greyscale and every pixel compared with its right-hand neighbour: 64 bits
+# that survive re-encoding, a change of resolution, codec or bit depth, and a rename. Two
+# videos are the same when their lengths agree and most frames are a few bits apart.
+#
+# Frames are taken at *fractions* of the length, so a copy with an extra intro or a missing
+# ending lines up badly: same_content() only judges videos of nearly the same length and
+# answers None ("can't tell") otherwise. A flat frame (black, a title card in one colour)
+# hashes to nothing useful and is left out of the comparison.
+
+FP_FRAMES = 12
+FP_WIDTH, FP_HEIGHT = 9, 8               # dHash: 8 comparisons per row, 8 rows
+FP_FLAT = 12                             # a frame whose pixels span less than this is flat
+FP_FRAME_BITS = 10                       # frames this many bits apart (of 64) still match
+FP_MIN_FRAMES = 6                        # fewer comparable frames than this: can't tell
+FP_SAME = 0.8                            # this share of frames matching: the same video
+FP_DIFFERENT = 0.3                       # this share or less: a different video
+FP_LENGTH_SECONDS, FP_LENGTH_SHARE = 2.0, 0.02   # lengths this close can be compared
+
+
+def fp_positions(duration: float) -> list[float]:
+    """Where the fingerprint's frames are taken: the middle of each of FP_FRAMES equal
+    slices — the same seconds the hover filmstrip shows."""
+    return [duration * (i + 0.5) / FP_FRAMES for i in range(FP_FRAMES)]
+
+
+def dhash(pixels: bytes) -> int | None:
+    """The 64-bit difference hash of one FP_WIDTH x FP_HEIGHT greyscale frame (row-major,
+    one byte a pixel), or None for a flat frame that says nothing about the video."""
+    if len(pixels) != FP_WIDTH * FP_HEIGHT or max(pixels) - min(pixels) < FP_FLAT:
+        return None
+    bits = 0
+    for row in range(FP_HEIGHT):
+        for col in range(FP_WIDTH - 1):
+            i = row * FP_WIDTH + col
+            bits = (bits << 1) | (pixels[i] > pixels[i + 1])
+    return bits
+
+
+def format_fingerprint(hashes: list[int | None]) -> str:
+    """How a fingerprint is stored: 16 hex digits a frame, '-' for a flat one."""
+    return ",".join("-" if h is None else f"{h:016x}" for h in hashes)
+
+
+def parse_fingerprint(text: str) -> list[int | None]:
+    """The hashes of a stored fingerprint; [] for none (or one that doesn't parse)."""
+    if not text:
+        return []
+    try:
+        return [None if part == "-" else int(part, 16) for part in text.split(",")]
+    except ValueError:
+        return []
+
+
+def lengths_close(a: float, b: float) -> bool:
+    """Lengths near enough for their fingerprints' frames to line up."""
+    if a <= 0 or b <= 0:
+        return False
+    return abs(a - b) <= max(FP_LENGTH_SECONDS, FP_LENGTH_SHARE * max(a, b))
+
+
+def frame_matches(a: list[int | None], b: list[int | None]) -> tuple[int, int]:
+    """(frames that match, frames both fingerprints could compare)."""
+    if len(a) != len(b):
+        return 0, 0
+    pairs = [(x, y) for x, y in zip(a, b, strict=True) if x is not None and y is not None]
+    same = sum(1 for x, y in pairs if (x ^ y).bit_count() <= FP_FRAME_BITS)
+    return same, len(pairs)
+
+
+def same_content(fp_a: str, length_a: float, fp_b: str, length_b: float) -> bool | None:
+    """Whether two videos show the same picture: True, False, or None when the
+    fingerprints can't tell — one is missing, their lengths differ too much for the frames
+    to line up, or too many frames are flat."""
+    if not lengths_close(length_a, length_b):
+        return None
+    same, compared = frame_matches(parse_fingerprint(fp_a), parse_fingerprint(fp_b))
+    if compared < FP_MIN_FRAMES:
+        return None
+    if same >= FP_SAME * compared:
+        return True
+    if same <= FP_DIFFERENT * compared:
+        return False
+    return None
+
+
+def content_groups(items: list[tuple[int, str, float]]) -> list[list[int]]:
+    """Sets of two or more items (id, fingerprint, length) that are the same video by their
+    fingerprints, each set sorted, the sets in order of their first id. Only items of
+    nearly the same length are compared — sorted by length, each against the ones that
+    follow it until they're too long — so a large library isn't compared pair by pair."""
+    usable = sorted(((length, i, fp) for i, fp, length in items
+                     if length > 0 and parse_fingerprint(fp)), key=lambda t: t[0])
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent[x], parent[x])
+            x = parent[x]
+        return x
+
+    for n, (length, i, fp) in enumerate(usable):
+        for other_length, j, other_fp in usable[n + 1:]:
+            if not lengths_close(length, other_length):
+                break
+            if same_content(fp, length, other_fp, other_length):
+                parent[find(j)] = find(i)
+    groups: dict[int, list[int]] = {}
+    for _length, i, _fp in usable:
+        groups.setdefault(find(i), []).append(i)
+    return sorted((sorted(g) for g in groups.values() if len(g) > 1), key=lambda g: g[0])
 
 
 # ── Off-hours window ──────────────────────────────────────────────────

@@ -129,7 +129,7 @@ src/toolboxcli/
 ├── prunelib/{cli.py, core.py}
 ├── sortmedia/cli.py
 ├── toolbox/cli.py
-├── vidlib/{cli.py, core.py, db.py, naming.py, fetcher.py, downloads.py, server.py, data/web/*}
+├── vidlib/{cli.py, core.py, db.py, naming.py, fetcher.py, downloads.py, index.py, server.py, data/web/*}
 └── wallready/{cli.py, core.py}
 ```
 
@@ -577,11 +577,41 @@ Progress *factories* themselves) were extracted from it.
   the pipeline would find it (`cli.find_folder`, imported lazily — cli imports the server)
   and moves its row with `db.move`; it refuses to overwrite, except a case-only rename of the
   same file. Trash goes through `move_to_trash`. Both refuse the root file the pipeline is
-  working on. Thumbnails are one ffmpeg frame at 10% (falling back to the first frame),
-  cached in `.vidlib-cache/thumbs/` keyed by path + size + mtime, at most two ffmpeg runs at
-  once. The hover preview is a filmstrip (`filmstrip`): `STRIP_FRAMES` (12) fast-seek frames tiled
-  into one JPEG, cached alongside, stepped through by `background-position` — no video is
-  streamed, so any container or codec works and nothing autoplays.
+  working on. Thumbnails and the hover filmstrip come from `Library.prepare` (see the
+  `vidlib/index.py` note), at most two ffmpeg runs at once across page requests and the
+  background indexer. The filmstrip is `STRIP_FRAMES` (12) fast-seek frames in one JPEG,
+  stepped through by `background-position` — no video is streamed, so any container or codec
+  works and nothing autoplays.
+- `vidlib/index.py` makes a video's thumbnail, filmstrip and content fingerprint in **one**
+  ffmpeg run (`render`): 12 input seeks at `core.fp_positions` plus one at 10%, each seeked
+  frame `split` into the filmstrip (`hstack`) and a 9×8 greyscale `vstack` piped out raw for
+  `core.dhash`. A seek past a file's real end stops the whole graph, so a failed run falls
+  back to a frame at a time (`_render_slowly`). The cache in `.vidlib-cache/thumbs/` is keyed
+  by size + mtime, **not path**, so a rename or the pipeline filing a video keeps its images;
+  `prune_cache` deletes what no row has (including the old path-keyed files). The fingerprint
+  is stored with `db.set_fingerprint`, which only writes if the row's size + mtime still match
+  the file that was read. `Indexer` is the web page's background worker (a daemon thread with
+  a killable `Runner`, low priority via `nice` — `preexec_fn` isn't thread-safe; skips a pass
+  while the disk is unplugged; an unreadable file isn't retried this run); `vidlib -I` is the
+  same pass in the terminal. Not in download-only mode, and not for files in the root (pipeline
+  input, fingerprinted when processed — and on Windows a file held open can't be renamed to
+  `.processing`). A page request for a missing thumbnail makes only that one frame
+  (`make_thumbnail`), so a first browse isn't held up by whole renders.
+- Content fingerprints (`core.same_content`, schema 7's `videos.fingerprint`) are a *second*
+  identity beside the name key, deliberately weaker: frames are taken at fractions of the
+  length, so only videos within `lengths_close` (2 s or 2%) are compared, and the answer is
+  True/False/**None** ("can't tell") — an extra intro or a cut ending is None, not False.
+  They act in exactly one place: `resolve_duplicate` returns `core.DIFFERENT` when a name
+  match's picture is clearly different, which parks the file instead of letting an
+  "upgrade" trash an unrelated video. A picture match under another name (`lookalikes`) is
+  only reported — never parked, because "keep both" from Review would send it straight back
+  to be parked again — and listed by `db.duplicate_sets` (Duplicates view, `-D`) with why;
+  "Not the same video" stores the set in `duplicate_dismissals`, hidden until a new video
+  joins it, as `part_dismissals` does. The pipeline fingerprints each arrival before the
+  encode and records it on the result (the picture doesn't change); `sync_library` clears a
+  fingerprint when a known file's *size* changes (a disk copy only moves the mtime). The v2
+  migration step rewrites rows through today's columns, so it adds the fingerprint column
+  first (`_add_fingerprint_column`, idempotent).
 - `vidlib/server.py` is stdlib `ThreadingHTTPServer` on 127.0.0.1 only, with the page as
   package data in `vidlib/data/web/` (plain HTML/CSS/JS, no build step) and live state over
   Server-Sent Events (`/api/events`, throttled to `EVENT_INTERVAL`). Being on localhost isn't

@@ -11,6 +11,7 @@ from toolboxcli.vidlib.db import (
     DB_NAME,
     JSON_LOG_NAME,
     LEGACY_DB_NAME,
+    SCHEMA_VERSION,
     Download,
     LibraryDB,
     Video,
@@ -214,7 +215,7 @@ def test_upgrading_a_v1_database_re_derives_names_and_drops_junk_people(tmp_path
         db.conn.commit()
 
     with LibraryDB.open(tmp_path) as db:
-        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         row = db.conn.execute("SELECT people_key, title, title_key FROM videos "
                               "WHERE path LIKE 'Movie%'").fetchone()
         assert tuple(row) == ("", "Movie - Director's Cut", "")
@@ -234,7 +235,7 @@ def test_upgrading_adds_the_downloads_table(tmp_path):
     with LibraryDB.open(tmp_path) as db:
         saved = db.save_download(Download("https://x/a", "Alice - Day 1 - Lakes"))
         assert saved.id is not None and saved.added_at
-        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_upgrading_a_v5_database_adds_the_skipped_segments(tmp_path):
@@ -356,3 +357,74 @@ def test_import_json_log(tmp_path):
 def test_import_without_a_log_is_a_no_op(tmp_path):
     with LibraryDB.open(tmp_path) as db:
         assert import_json_log(tmp_path, db) == 0
+
+
+# ── fingerprints and duplicate sets ────────────────────────────────────
+
+SAME = ",".join(f"{0x0F0F0F0F0F0F0F0F + i:016x}" for i in range(12))
+OTHER = ",".join(f"{~(0x0F0F0F0F0F0F0F0F + i) & (2**64 - 1):016x}" for i in range(12))
+
+
+def test_upgrading_a_v6_database_adds_fingerprints(tmp_path):
+    with LibraryDB.open(tmp_path) as db:
+        db.upsert(Video(path="Lakes/A - B - Lakes.mp4"))
+        db.conn.execute("ALTER TABLE videos DROP COLUMN fingerprint")
+        db.conn.execute("DROP TABLE duplicate_dismissals")
+        db.conn.execute("PRAGMA user_version = 6")
+        db.conn.commit()
+    with LibraryDB.open(tmp_path) as db:
+        row = db.get("Lakes/A - B - Lakes.mp4")
+        assert row is not None and row.fingerprint == ""
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert db.duplicate_dismissals() == []
+
+
+def test_a_fingerprint_is_only_stored_for_the_file_it_was_made_from(tmp_path):
+    with LibraryDB.open(tmp_path) as db:
+        db.upsert(Video(path="A - B - C.mp4", size=100, mtime=5.0))
+        assert not db.set_fingerprint("A - B - C.mp4", 101, 5.0, SAME)    # changed since
+        assert db.set_fingerprint("A - B - C.mp4", 100, 5.0, SAME)
+        db.move("A - B - C.mp4", "C/A - B - C.mp4")                       # follows the file
+        row = db.get("C/A - B - C.mp4")
+        assert row is not None and row.fingerprint == SAME
+
+
+def test_duplicate_sets_by_name_by_picture_and_both(tmp_path):
+    with LibraryDB.open(tmp_path) as db:
+        def add(path, fp="", duration=600.0):
+            db.upsert(Video(path=path, duration=duration, fingerprint=fp))
+        # Same name, same picture, plus a third copy under another name with that picture.
+        add("Lakes/Alice - Day 1 - Lakes [1080p].mp4", SAME)
+        add("Old/Alice - Day 1 - Lakes [720p].mp4", SAME, 601.0)
+        add("Misc/Alice at the lake.mp4", SAME)
+        # Only the picture matches.
+        add("Peaks/Bob - Hike - Peaks.mp4", OTHER)
+        add("Downloads/bob hike.mp4", OTHER, 600.5)
+        # Same name, different pictures: two videos that need telling apart.
+        add("Hills/Carol - Run - Hills.mp4", SAME, 300.0)
+        add("Hills2/Carol - Run - Hills.mp4", OTHER, 300.0)
+        # Same name, no fingerprints yet.
+        add("Dunes/Dan - Ski - Dunes.mp4")
+        add("Dunes2/Dan - Ski - Dunes.mp4")
+        sets = {why: [v.path for v in g] for why, g in db.duplicate_sets()}
+    assert sets == {
+        "name+picture": ["Lakes/Alice - Day 1 - Lakes [1080p].mp4",
+                         "Misc/Alice at the lake.mp4",
+                         "Old/Alice - Day 1 - Lakes [720p].mp4"],
+        "picture": ["Downloads/bob hike.mp4", "Peaks/Bob - Hike - Peaks.mp4"],
+        "name, different picture": ["Hills/Carol - Run - Hills.mp4",
+                                    "Hills2/Carol - Run - Hills.mp4"],
+        "name": ["Dunes/Dan - Ski - Dunes.mp4", "Dunes2/Dan - Ski - Dunes.mp4"],
+    }
+
+
+def test_a_dismissed_picture_match_stays_hidden_until_another_video_joins(tmp_path):
+    with LibraryDB.open(tmp_path) as db:
+        db.upsert(Video(path="a.mp4", duration=600.0, fingerprint=SAME))
+        db.upsert(Video(path="b.mp4", duration=600.0, fingerprint=SAME))
+        ids = db.video_ids(["a.mp4", "b.mp4"])
+        db.dismiss_duplicates(list(ids.values()))
+        assert db.duplicate_sets() == []
+        db.upsert(Video(path="c.mp4", duration=600.0, fingerprint=SAME))
+        assert [[v.path for v in g] for _why, g in db.duplicate_sets()] == [
+            ["a.mp4", "b.mp4", "c.mp4"]]

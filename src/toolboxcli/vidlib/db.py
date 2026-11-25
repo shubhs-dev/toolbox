@@ -48,7 +48,9 @@ IGNORE_FILE = ".vidlib-ignore"
 # people that only those mis-split names had created. 3: the downloads table. 4: sets of
 # videos the user said aren't parts of one (part_dismissals). 5: downloads.cleared, so a
 # download cleared from the page stays on record ("you downloaded this link before").
-SCHEMA_VERSION = 6
+# 6: skipped_segments. 7: videos.fingerprint (core's content fingerprint, '' until the
+# indexer or the pipeline makes one) and duplicate_dismissals.
+SCHEMA_VERSION = 7
 
 # Statuses a row can have. "compressed" is a known, already-compressed file that hasn't been
 # sorted yet (the old log's "reconciled"); "missing" is a row whose file has disappeared.
@@ -148,6 +150,16 @@ CREATE TABLE skipped_segments (
 );
 """
 
+# Added in schema 7: sets of videos whose fingerprints match but which the user said aren't
+# the same video, so the Duplicates view stops listing them (until another video joins).
+_DUPLICATE_DISMISSALS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS duplicate_dismissals (
+    id        INTEGER PRIMARY KEY,
+    video_ids TEXT NOT NULL,             -- JSON list of videos.id, sorted
+    at        TEXT NOT NULL
+);
+"""
+
 # naming: waiting for a name (bulk paste); queued → downloading → downloaded, which in
 # download-only mode waits in its folder until it's moved into the library: imported.
 DOWNLOAD_STATUSES = ("naming", "queued", "downloading", "downloaded", "imported", "failed",
@@ -215,6 +227,8 @@ class Video:
     compared_with: str = ""
     replaced: str = ""
     updated_at: str = ""
+    # core.format_fingerprint of the file at (size, mtime); '' until one is made.
+    fingerprint: str = ""
 
     @property
     def name(self) -> core.VideoName:
@@ -230,6 +244,14 @@ class Video:
 
 
 _VIDEO_COLUMNS = [f.name for f in fields(Video)]
+
+# Why duplicate_sets() put files together, as the page and -D say it.
+DUPLICATE_WHY = {
+    "name": "same name",
+    "picture": "same picture, different names",
+    "name+picture": "same name and picture",
+    "name, different picture": "same name, but the pictures differ",
+}
 
 
 def _matching(exact: bool) -> str:
@@ -312,7 +334,9 @@ class LibraryDB:
             version = 2
         if version < 2:
             # Same tables; only the name-derived columns change meaning. Re-writing each
-            # row recomputes them from its path under the current rules.
+            # row recomputes them from its path under the current rules — which read and
+            # write today's columns, so a column added since has to exist first.
+            self._add_fingerprint_column()
             for video in self.all(include_missing=True):
                 self.upsert(video)
             self.prune_people()
@@ -335,11 +359,24 @@ class LibraryDB:
             with self.conn:
                 self.conn.executescript(_SKIPPED_SCHEMA)
                 self.conn.execute("PRAGMA user_version = 6")
+        if version < 7:
+            self._add_fingerprint_column()
+            with self.conn:
+                self.conn.executescript(_DUPLICATE_DISMISSALS_SCHEMA)
+                self.conn.execute("PRAGMA user_version = 7")
         if version > SCHEMA_VERSION:
             raise RuntimeError(
                 f"{self.path.name} was written by a newer vidlib (schema {version}); "
                 "update the toolbox before using it"
             )
+
+    def _add_fingerprint_column(self) -> None:
+        """Schema 7's column, once (the v2 step may have added it already)."""
+        columns = {r[1] for r in self.conn.execute("PRAGMA table_info(videos)")}
+        if "fingerprint" not in columns:
+            with self.conn:
+                self.conn.execute("ALTER TABLE videos ADD COLUMN fingerprint TEXT NOT NULL "
+                                  "DEFAULT ''")
 
     # ── Writing ──────────────────────────────────────────────────────
 
@@ -557,6 +594,75 @@ class LibraryDB:
         return [(r["id"], Video(**{**{c: r[c] for c in _VIDEO_COLUMNS},
                                    "has_sub": bool(r["has_sub"])}))
                 for r in rows]
+
+    def set_fingerprint(self, path: str, size: int, mtime: float, fingerprint: str) -> bool:
+        """Store a fingerprint made from the file at *path* when it had this size and mtime.
+        Only if the row still describes that file: a file re-encoded or replaced while it
+        was being read gets no stale fingerprint. True if it was stored."""
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE videos SET fingerprint = ? WHERE path = ? AND size = ? "
+                "AND abs(mtime - ?) < 0.001", (fingerprint, path, size, mtime))
+        return cur.rowcount > 0
+
+    def content_duplicate_groups(self) -> list[list[Video]]:
+        """Sets of files whose fingerprints say they're the same video (core.content_groups),
+        whatever their names, less the sets the user dismissed."""
+        rows = self.conn.execute(
+            f"SELECT id, {', '.join(_VIDEO_COLUMNS)} FROM videos "
+            "WHERE status NOT IN ('missing', 'failed') AND fingerprint != ''").fetchall()
+        by_id = {r["id"]: Video(**{**{c: r[c] for c in _VIDEO_COLUMNS},
+                                   "has_sub": bool(r["has_sub"])}) for r in rows}
+        dismissed = self.duplicate_dismissals()
+        groups = core.content_groups([(i, v.fingerprint, v.duration) for i, v in by_id.items()])
+        return [[by_id[i] for i in g] for g in groups
+                if not any(set(g) <= d for d in dismissed)]
+
+    def duplicate_sets(self) -> list[tuple[str, list[Video]]]:
+        """Every set of files that look like one video, each with why (DUPLICATE_WHY): the
+        same name (duplicate_groups), the same picture (content_duplicate_groups), or both
+        — sets that share a file are one set. A name set whose fingerprints show different
+        pictures says so: those are two videos that need telling apart, not a copy."""
+        sets: list[tuple[dict[str, Video], bool, bool]] = [
+            ({v.path: v for v in g}, True, False) for g in self.duplicate_groups()]
+        for group in self.content_duplicate_groups():
+            merged = {v.path: v for v in group}
+            by_name = False
+            for found in [x for x in sets if merged.keys() & x[0].keys()]:
+                merged.update(found[0])
+                by_name = by_name or found[1]
+                sets.remove(found)
+            sets.append((merged, by_name, True))
+        result: list[tuple[str, list[Video]]] = []
+        for members, by_name, by_picture in sets:
+            videos = sorted(members.values(), key=lambda v: v.path.casefold())
+            if by_name and by_picture:
+                why = "name+picture"
+            elif by_picture:
+                why = "picture"
+            elif any(core.same_content(a.fingerprint, a.duration, b.fingerprint, b.duration)
+                     is False for n, a in enumerate(videos) for b in videos[n + 1:]):
+                why = "name, different picture"
+            else:
+                why = "name"
+            result.append((why, videos))
+        return sorted(result, key=lambda r: (r[1][0].name.title.casefold(), r[1][0].path.casefold()))
+
+    def video_ids(self, paths: list[str]) -> dict[str, int]:
+        if not paths:
+            return {}
+        marks = ", ".join("?" for _ in paths)
+        return {r[1]: r[0] for r in self.conn.execute(
+            f"SELECT id, path FROM videos WHERE path IN ({marks})", paths)}
+
+    def dismiss_duplicates(self, video_ids: list[int]) -> None:
+        with self.conn:
+            self.conn.execute("INSERT INTO duplicate_dismissals (video_ids, at) VALUES (?, ?)",
+                              (json.dumps(sorted(set(video_ids))), _now()))
+
+    def duplicate_dismissals(self) -> list[frozenset[int]]:
+        return [frozenset(json.loads(r[0]))
+                for r in self.conn.execute("SELECT video_ids FROM duplicate_dismissals")]
 
     def dismiss_parts(self, video_ids: list[int]) -> None:
         with self.conn:

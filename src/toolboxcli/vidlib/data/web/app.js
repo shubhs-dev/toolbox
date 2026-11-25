@@ -448,6 +448,7 @@ function renderState(state) {
   const enc = renderEncodeOverall(state.pipeline);
   document.title = o.running ? `vidlib · ${Math.round(o.percent)}%`
     : enc !== null ? `vidlib · encoding ${Math.round(enc)}%` : "vidlib";
+  renderIndex(state.index);
   const count = $("review-count");
   count.hidden = !state.review_count;
   count.textContent = String(state.review_count || "");
@@ -457,6 +458,14 @@ function renderState(state) {
   }
 }
 let lastReviewCount = null;
+
+// The background indexer: thumbnails, hover previews and duplicate fingerprints made ahead.
+function renderIndex(ix) {
+  const el = $("lib-index");
+  el.hidden = !(ix && ix.total);
+  if (el.hidden) return;
+  el.textContent = `Preparing previews and duplicate fingerprints: ${ix.done.toLocaleString()} of ${ix.total.toLocaleString()} videos`;
+}
 
 // ── the pipeline ──────────────────────────────────────────────────────
 
@@ -942,10 +951,7 @@ async function loadLibrary(append = false) {
   if (!append) { grid.replaceChildren(); lib.lastGroup = null; }
   for (const v of data.videos) {
     if (v.group !== undefined && v.group !== lib.lastGroup) {
-      const sep = document.createElement("li");
-      sep.className = "group-break";
-      sep.textContent = v.complete ? `${v.people.join(", ")} — ${v.title}` : v.title;
-      grid.append(sep);
+      grid.append(groupBreak(v));
       lib.lastGroup = v.group;
     }
     grid.append(card(v));
@@ -958,6 +964,34 @@ async function loadLibrary(append = false) {
   const all = data.library;
   $("lib-summary").textContent =
     `${data.total} shown of ${all.videos} videos · ${humanSize(all.size)} in the library`;
+}
+
+// A duplicates group's heading: what it is, why the files are together, and — for a set
+// only the fingerprints matched — a way to say they aren't the same video after all.
+function groupBreak(v) {
+  const sep = document.createElement("li");
+  sep.className = `group-break why-${v.why.replace(/[^a-z]+/g, "-")}`;
+  const what = document.createElement("span");
+  what.textContent = v.complete ? `${v.people.join(", ")} — ${v.title}` : v.title;
+  const why = document.createElement("span");
+  why.className = "why";
+  why.textContent = v.why_text;
+  sep.append(what, why);
+  if (v.why === "picture" && v.group_ids.length > 1) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "link small";
+    b.textContent = "Not the same video";
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        await api("POST", "/api/library/duplicates/dismiss", { ids: v.group_ids });
+        await loadLibrary();
+      } catch (err) { b.disabled = false; showLibError(err); }
+    });
+    sep.append(b);
+  }
+  return sep;
 }
 
 const reloadLibrary = debounce(() => loadLibrary().catch(showLibError), 200);
