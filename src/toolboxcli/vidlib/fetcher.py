@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import subprocess
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -32,6 +33,8 @@ ARIA2C_ARGS = "aria2c:-x 16 -k 1M --summary-interval=1 --show-console-readout=fa
 # last line is shown as the reason a download failed.
 _SUMMARY_NOISE = re.compile(r"^(?:\*\*\* Download Progress Summary|[=-]{20,}$|FILE: )")
 TAIL_LINES = 15
+# How long a quitting Engine.stop() lets yt-dlp and aria2c wind down before killing them.
+STOP_GRACE = 3.0
 
 
 # What yt-dlp and aria2c leave behind mid-download; never mistaken for the finished file.
@@ -212,6 +215,33 @@ class Engine:
             for job in jobs:
                 self.cancel(job)
         self._pool.shutdown(wait=wait, cancel_futures=cancel)
+
+    @property
+    def running(self) -> int:
+        with self._lock:
+            return len(self._running)
+
+    def stop(self, grace: float = STOP_GRACE) -> int:
+        """Quit: drop the queued jobs, ask the running ones to stop, give them *grace*
+        seconds, then kill whatever is still going. Returns how many had to be killed.
+
+        Bounded on purpose. aria2c answers a terminate with a "graceful" shutdown that can
+        take its time, and Python waits for every worker thread before it exits, so an
+        unbounded wait left vidlib hanging after "Stopped." — and a second Ctrl+C then
+        landed in the interpreter's own shutdown as a traceback. A Ctrl+C during the grace
+        period skips straight to the kill."""
+        self.shutdown(cancel=True, wait=False)
+        end = time.monotonic() + grace
+        try:
+            while self.running and time.monotonic() < end:
+                time.sleep(0.05)
+        except KeyboardInterrupt:
+            pass
+        with self._lock:
+            left = list(self._running.values())
+        for proc in left:
+            terminate_tree(proc, force=True)
+        return len(left)
 
     def _run(self, job: Job) -> Job:
         if not job.cancelled and job.still_wanted is not None and not job.still_wanted():

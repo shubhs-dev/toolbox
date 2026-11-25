@@ -323,6 +323,15 @@ Progress *factories* themselves) were extracted from it.
   be matched. Duplicate lookup (`resolve_duplicate`) is library-wide by match key, ignoring
   `_review/` copies (a decision still waiting on the user). A dry run opens an in-memory copy
   (`LibraryDB.open(root, in_memory=True)`), so a JSON import or sync it does vanishes.
+- `vidlib -A/--adopt FILE...` (`cli.adopt`) adds videos without encoding them, built on
+  `already_done()` rather than a new status: the file moves into the root (`move_file`, never
+  overwriting) with a `compressed` row, so the pipeline's sort-only path tags, deduplicates and
+  files it. The row is written *before* the move, so a running vidlib's poll can't take the
+  file for new input (at worst it marks the row missing and finds it back as compressed); a
+  file the database already knows keeps its row via `db.move`. `-A` takes no lock — it only
+  drops files into the root, like a finished download — and files them itself (`process()`
+  with no encoder plan, `-F`/`-B` neutralised) only when the lock is free. It replaces the
+  removed `-R/--reconcile`, which recorded files in place and never moved them.
 - `vidlib`'s queries (`-l` with `-a/-c/-R/-T`, `-D`) read the database after a
   `sync_library()`, never the filesystem, so they see people/collection/tags as parsed and
   matched by the same rules duplicate detection uses. A filter alone implies `-l`. `-D` is a
@@ -464,7 +473,8 @@ Progress *factories* themselves) were extracted from it.
   sends the segment roles; `naming.skip_changes` compares them with a fresh guess: a
   segment skipped by hand is remembered, a remembered one given a role is forgotten. Site
   segments are never remembered — they're skipped by position, not by choice. Colons don't split: `Part 2: The Return` would come back as
-  `Part 2 - The Return`.
+  `Part 2 - The Return`. The page lists segments people → title → collection → skipped
+  (the name's order), each role's in title order; roles are still sent indexed by title position.
   `find_in_title` powers the forms' pills: whole-word runs of the title that are a known
   person or collection (exact or loose), longest first, the *first* mention of a person and
   the *last* of a collection, each with the title it leaves (`_without` tidies the gap: a
@@ -509,7 +519,12 @@ Progress *factories* themselves) were extracted from it.
   aria2c is yt-dlp's child and inherits the pipe, so terminating yt-dlp alone left aria2c
   downloading and the job "running" until it finished. A job cancelled
   before it starts still calls `on_done`. Leaving the `Engine` context on an exception cancels
-  everything, so no yt-dlp outlives a Ctrl+C.
+  everything, so no yt-dlp outlives a Ctrl+C. Quitting goes through `Engine.stop()`: terminate,
+  `STOP_GRACE` seconds, then SIGKILL. aria2c's "graceful" shutdown can take a long time, and
+  Python waits for every non-daemon thread (the pool's) before it exits, so an unbounded wait
+  left vidlib hanging after "Stopped." and a second Ctrl+C printed a traceback from the
+  interpreter's own shutdown. Title fetches run on daemon threads for the same reason, and
+  every manager callback checks `_closing` first: after shutdown the database is closed.
 - `vidlib/downloads.py`'s `DownloadManager` owns the queue: rows in the `downloads` table
   (schema 3), statuses `naming` (bulk paste, waiting for a name while its title is fetched) →
   `queued` → `downloading` → `downloaded` → `imported`, or `failed`/`cancelled`. Jobs run in

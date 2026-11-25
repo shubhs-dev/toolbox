@@ -130,6 +130,74 @@ def test_a_file_renamed_by_hand_is_sorted_not_re_encoded(tmp_path, make_video, r
         assert "renamed" in actions and actions[-1] == "sorted"
 
 
+@needs("ffmpeg", "ffprobe")
+def test_adopt_tags_and_files_without_encoding(tmp_path, make_video, run_cli):
+    root = tmp_path / "lib"
+    root.mkdir()
+    src = make_video(tmp_path / "elsewhere" / "Bob - Swim - Lakes.mkv", "1280x720")
+    size = src.stat().st_size
+    # No HandBrakeCLI needed (nor checked for): nothing is encoded.
+    result = run_cli("vidlib", [str(root), "-A", str(src)])
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not src.exists()
+    filed = root / "Lakes" / "Bob - Swim - Lakes [720p].mkv"
+    assert _files(root) == {"Lakes/Bob - Swim - Lakes [720p].mkv"}
+    assert filed.stat().st_size == size            # the same file, not an encode
+    with _db(root) as db:
+        row = db.get("Lakes/Bob - Swim - Lakes [720p].mkv")
+        assert row is not None and row.status == "sorted" and row.backend == ""
+        actions = [e["action"] for e in db.events()]
+        assert actions[:1] == ["adopted"] and actions[-1] == "sorted"
+
+
+@needs("ffmpeg", "ffprobe")
+def test_adopt_beside_a_running_vidlib_leaves_the_filing_to_it(tmp_path, make_video, run_cli):
+    from toolboxcli.vidlib.instance import LibraryLock
+    root = tmp_path / "lib"
+    make_video(root / "Lakes" / "Alice - Day 1 - Lakes.mp4", "1920x1080")
+    src = make_video(tmp_path / "Bob - Swim - Lakes.mp4", "1280x720")
+    with LibraryLock(root):                         # "another vidlib" holds the library
+        result = run_cli("vidlib", [str(root), "-A", str(src)])
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "next poll" in result.stdout
+    assert (root / "Bob - Swim - Lakes.mp4").is_file()
+    with _db(root) as db:
+        row = db.get("Bob - Swim - Lakes.mp4")
+        assert row is not None and row.status == "compressed"
+        assert row.size == (root / "Bob - Swim - Lakes.mp4").stat().st_size
+        # Which is what the pipeline reads as "sort only".
+        assert vidlib.already_done(row, 8, "auto")
+
+
+@needs("ffmpeg", "ffprobe")
+def test_adopt_keeps_a_known_files_row_and_never_overwrites(tmp_path, make_video, run_cli):
+    root = tmp_path / "lib"
+    known = make_video(root / "Stash" / "Bob - Swim - Lakes.mp4", "1280x720")
+    with _db(root) as db:
+        vidlib.sync_library(root, db)               # recorded from its folder, probed
+    clash = make_video(tmp_path / "Eve - Run - Hills.mp4", "640x480")
+    make_video(root / "Eve - Run - Hills.mp4", "640x480")
+    from toolboxcli.vidlib.instance import LibraryLock
+    with LibraryLock(root):
+        result = run_cli("vidlib", [str(root), "-A", str(known), str(clash)])
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "already has a Eve - Run - Hills.mp4" in result.stderr + result.stdout
+    assert clash.exists()                           # refused, left where it was
+    with _db(root) as db:
+        assert db.get("Stash/Bob - Swim - Lakes.mp4") is None
+        row = db.get("Bob - Swim - Lakes.mp4")
+        # The same row, moved: what the sync probed is still there.
+        assert row is not None and row.status == "compressed" and row.height == 720
+
+
+def test_adopt_refuses_force_and_terminal_modes(tmp_path, run_cli):
+    video = tmp_path / "x.mp4"
+    video.write_bytes(b"")
+    for extra in (["-F"], ["-l"], ["-r"]):
+        result = run_cli("vidlib", [str(tmp_path), "-A", str(video), *extra])
+        assert result.returncode != 0 and "-A/--adopt" in result.stderr, extra
+
+
 def test_sync_follows_moves_records_folders_and_marks_missing(tmp_path):
     root = tmp_path
     (root / "Lakes").mkdir()

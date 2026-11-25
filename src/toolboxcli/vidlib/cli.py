@@ -84,6 +84,12 @@ With -X DIR (download-only), nothing is encoded: downloads go into DIR (default:
 folder) and wait there, recorded in ROOT's database, until "Move into library" on the page
 moves them into ROOT. Useful while the library's disk is full.
 
+With -A FILE... (adopt), videos you already have in good shape join the library without
+being encoded: each is moved into the root (from anywhere — another disk, a library folder)
+and recorded as already compressed, then tagged, compared against the library's copies and
+filed like any other arrival. If vidlib is running on the library, that happens on its next
+poll; if not, right away. A name the root already has is refused, never overwritten.
+
 Requires:
     HandBrakeCLI, ffprobe
     yt-dlp, aria2c (for downloads)
@@ -93,6 +99,7 @@ Usage:
     vidlib /Volumes/Media/Library         # watch, poll every 30s, serve the web page
     vidlib -W                             # just the pipeline, no web page
     vidlib -X ~/Downloads/tmp             # download only, into that folder
+    vidlib /Volumes/Media/Library -A ~/Desktop/clip.mp4   # add as is: tag and file, no encode
     vidlib -P 9000 -b                     # web page on port 9000, don't open a browser
     vidlib -O                             # process what's there, then exit
     vidlib -n                             # dry run: show what would happen
@@ -121,7 +128,7 @@ import time
 import webbrowser
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from rich import box
@@ -165,7 +172,7 @@ from toolboxcli.vidlib.db import (
     import_json_log,
     legacy_db_conflict,
 )
-from toolboxcli.vidlib.downloads import DownloadManager
+from toolboxcli.vidlib.downloads import DownloadManager, move_file
 from toolboxcli.vidlib.instance import LibraryBusy, LibraryLock
 from toolboxcli.vidlib.server import (
     DEFAULT_PORT,
@@ -532,6 +539,17 @@ def recover_interrupted(root: Path) -> list[str]:
     return recovered
 
 
+def _restore(src_processing: Path, video: Path, tmp: Path) -> None:
+    """Undo an encode that won't finish: drop its partial output, give the source its name
+    back. Best effort — recover_interrupted() does the same on the next start."""
+    try:
+        if tmp.exists():
+            tmp.unlink()
+        src_processing.rename(video)
+    except OSError:
+        pass
+
+
 def unique_path(path: Path) -> Path:
     """A non-colliding variant of *path*, so parking a file never overwrites one."""
     if not path.exists():
@@ -807,16 +825,16 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
         )
         return {"file": name, "status": "dry-run"}
 
-    # Past here the run is real, and a real run requires HandBrake — main() only leaves
-    # plan unset for a dry run on a machine without it.
-    assert plan is not None
-
     if skip_encode:
         info(f"{name}  [dim]already optimised — sorting only[/]")
         size = video.stat().st_size
         return _finish(video, video, root, db, plan, args, row,
                        size, size, src_height, src_height, src_duration,
                        src_depth, src_has_sub, encoded=False)
+
+    # Past here the run encodes, and that requires HandBrake — plan is only unset for a dry
+    # run on a machine without it, or for adopted files (-A), which are never encoded.
+    assert plan is not None
 
     # ── Encode ────────────────────────────────────────────────────
     if not wait_stable(video):
@@ -860,6 +878,11 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
                 extra_args=plan.args_for(preset_stem, force_cpu=True, ten_bit=ten_bit),
                 low_priority=not args.no_nice, cancel=cancel,
             )
+    except KeyboardInterrupt:
+        # Ctrl+C: transcode() has stopped HandBrake. Put the source back under its own
+        # name now rather than leave it as .processing until the next start.
+        _restore(src_processing, video, tmp)
+        raise
     finally:
         display.end_encode(task)
 
@@ -920,7 +943,7 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
                    out_depth, out_has_sub, encoded=True)
 
 
-def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPlan, args,
+def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, args,
             row: Video | None, orig_size: int, comp_size: int, src_height: int,
             out_height: int, out_duration: float, out_depth: int = 8,
             has_sub: bool = False, encoded: bool = True) -> dict:
@@ -946,7 +969,7 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
         "duration": out_duration,
         "source_height": src_height,
         "original_size": orig_size,
-        "backend": plan.backend.name if encoded else "",
+        "backend": plan.backend.name if encoded and plan is not None else "",
     }
     if not encoded and row is not None:
         fields.update(source_height=row.source_height or src_height,
@@ -1127,6 +1150,117 @@ def run_merge(root: Path, db: LibraryDB, job: MergeJob, status: PipelineStatus) 
         pass
     warn(f"Merge failed: {last or f'concatvid exited {proc.returncode}'}")
     status.update_merge(job, "failed", last or f"concatvid exited {proc.returncode}")
+
+
+# ── Adopting files by hand ───────────────────────────────────────────
+
+def adopt(root: Path, db: LibraryDB, files: list[str], dry_run: bool = False) -> list[Path]:
+    """Add videos to the library as they are: each is moved into the root, and its row says
+    it's already compressed, so the pipeline tags, deduplicates and files it like any
+    other arrival — but never encodes it (already_done()). Returns the root paths adopted.
+
+    The row is written before the file moves: a vidlib already watching the library could
+    otherwise poll in between and take the file for new input. If that poll does land in
+    between, it marks the row missing, and the next one finds the file back, as compressed.
+    A file vidlib already knows (in a folder, or in _review/) keeps its row and history.
+    Nothing is overwritten: a name the root already has is refused.
+    """
+    adopted: list[Path] = []
+    for arg in files:
+        src = Path(arg).expanduser().resolve()
+        if not src.is_file():
+            warn(f"Not a file: {arg}")
+            continue
+        if src.suffix.lower() not in VIDEO_EXTS:
+            warn(f"Not a video vidlib handles ({', '.join(sorted(VIDEO_EXTS))}): {arg}")
+            continue
+        dest = root / src.name
+        in_root = src.parent == root
+        if not in_root and dest.exists():
+            warn(f"The library root already has a {src.name} — rename one of them first")
+            continue
+        if dry_run:
+            info(f"Would add {src.name}" + ("" if in_root else f" (from {src.parent})")
+                 + " — tagged and filed, not encoded")
+            adopted.append(dest)
+            continue
+
+        st = src.stat()
+        dest_rel = rel_path(root, dest)
+        src_rel = rel_path(root, src) if src.is_relative_to(root) else None
+        known = db.get(src_rel) if src_rel is not None else None
+        before = None if known is None else replace(known)
+        moved_row = known is not None and src_rel is not None and src_rel != dest_rel
+        if moved_row:
+            assert src_rel is not None
+            db.move(src_rel, dest_rel)
+        row = db.get(dest_rel) or Video(path=dest_rel)
+        row.status, row.reason, row.failures, row.compared_with = "compressed", "", 0, ""
+        row.size, row.mtime = st.st_size, st.st_mtime
+        db.upsert(row)
+        try:
+            if not in_root:
+                move_file(src, root)
+        except OSError as exc:
+            # Put the database back as it was.
+            if before is not None:
+                if moved_row:
+                    db.move(dest_rel, before.path)
+                db.upsert(before)
+            else:
+                db.remove(dest_rel)
+            warn(f"Couldn't move {src.name} into the library: {exc}")
+            continue
+        # A move across disks may round the mtime; keep the pair a hand rename is matched by.
+        st = dest.stat()
+        if (row.size, row.mtime) != (st.st_size, st.st_mtime):
+            row.size, row.mtime = st.st_size, st.st_mtime
+            db.upsert(row)
+        db.log_event(dest_rel, "adopted", "" if in_root else f"from {src}")
+        ok(f"Added {src.name}" + ("" if in_root else f" (from {src.parent})"))
+        adopted.append(dest)
+    return adopted
+
+
+def run_adopt(root: Path, args) -> None:
+    """-A: add the files, then file them now if no vidlib is running on the library, or
+    leave them for the running one's next poll."""
+    try:
+        db = LibraryDB.open(root, in_memory=args.dry_run)
+    except (RuntimeError, OSError) as exc:
+        die(f"Can't open the library database: {exc}")
+    with db:
+        adopted = adopt(root, db, args.adopt, args.dry_run)
+        if not adopted:
+            die("Nothing added")
+        if args.dry_run:
+            return
+        try:
+            lock = LibraryLock(root).acquire()
+        except LibraryBusy:
+            info("vidlib is running on this library — it tags and files "
+                 f"{'it' if len(adopted) == 1 else 'them'} on its next poll")
+            return
+        except OSError as exc:
+            warn(f"Can't lock the library ({exc}) — the next vidlib run files "
+                 f"{'it' if len(adopted) == 1 else 'them'}")
+            return
+        try:
+            require_tool("ffprobe", "part of ffmpeg")
+            # Sorting only: never forced into an encode (there's no encoder plan here).
+            sort_args = argparse.Namespace(**{**vars(args), "force": False,
+                                              "bit_depth": "auto"})
+            results = []
+            with BatchDisplay(len(adopted)) as display:
+                for video in adopted:
+                    if not video.is_file():
+                        continue
+                    result = process(video, root, db, None, sort_args, display)
+                    display.finish(result)
+                    results.append(result)
+            show_summary(results)
+        finally:
+            lock.release()
 
 
 # ── Subtitle merging ─────────────────────────────────────────────────
@@ -1416,6 +1550,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("-D", "--duplicates", action="store_true",
                     help="List videos the library holds more than once, then exit "
                          "(report only; nothing is moved)")
+    ap.add_argument("-A", "--adopt", nargs="+", metavar="FILE",
+                    help="Add these videos to the library without encoding them: moved "
+                         "into the root, then tagged, deduplicated and filed — now, or by "
+                         "the vidlib already running on the library. Give ROOT first")
     ap.add_argument("-F", "--force", action="store_true",
                     help="Re-process files the library database already knows as done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
@@ -1476,6 +1614,16 @@ def main() -> None:
             "-O, -r, -l (or its filters), -D or -s")
     if not 1 <= args.port <= 65535:
         die(f"Not a port: {args.port}")
+
+    if args.adopt:
+        if (args.force or args.download_only is not None or args.list_files is not None
+                or args.report or args.duplicates or args.subs_only):
+            die("-A/--adopt only adds files (-n previews it); it can't be combined with "
+                "-F, -X, -l (or its filters), -r, -D or -s")
+        # No lock: it only drops files into the root, as a finished download does, so it
+        # works beside a running vidlib. run_adopt() takes the lock only to file them itself.
+        run_adopt(root, args)
+        return
 
     # Anything that encodes, moves or downloads holds the library's lock, so a second vidlib
     # on the same library can't run its own pipeline over the same files. A dry run, reports
@@ -1604,6 +1752,10 @@ def web_ui(root: Path, args, dest: Path | None = None,
         yield WebUI(server, manager, status)
     finally:
         server.stop()
+        if manager.running:
+            n = manager.running
+            info(f"Stopping {n} download{'' if n == 1 else 's'} — "
+                 f"{'it resumes' if n == 1 else 'they resume'} next time…")
         manager.shutdown()
         keep_awake.close()
         db.close()

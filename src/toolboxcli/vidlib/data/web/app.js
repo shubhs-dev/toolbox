@@ -27,6 +27,7 @@ const form = {
   roles: null,          // null until the user picks a role: the server guesses
   draft: null,          // the server's last answer
   namingId: null,       // set while naming a bulk-pasted item
+  moved: null,          // index of the segment whose role was just clicked, to flash it
   seq: 0,               // drops answers to requests that have since been superseded
 };
 
@@ -75,16 +76,27 @@ function setRole(index, role) {
   if (role === "collection") roles = roles.map((r) => (r === "collection" ? "title" : r));
   roles[index] = role;
   form.roles = roles;
+  form.moved = index;
   nameFromTitle().catch(showError);
 }
+
+// Segments are listed people, title, collection, skipped — the order of the fields below and
+// of the saved name — not the order they come in the page title. Within a role they keep the
+// title's order, which is the order several title segments are joined in. `i` stays the
+// segment's index in the title: that's what the roles sent to the server are indexed by.
+const ROLE_ORDER = Object.fromEntries(ROLES.map(([role], n) => [role, n]));
 
 function renderSegments(segments) {
   const list = $("segments");
   list.replaceChildren();
   $("segments-wrap").hidden = segments.length === 0;
-  segments.forEach((seg, i) => {
+  const moved = form.moved;
+  form.moved = null;
+  const ordered = segments.map((seg, i) => [seg, i])
+    .sort(([a, i], [b, j]) => (ROLE_ORDER[a.role] - ROLE_ORDER[b.role]) || (i - j));
+  ordered.forEach(([seg, i]) => {
     const li = document.createElement("li");
-    li.className = `segment role-${seg.role}`;
+    li.className = `segment role-${seg.role}${i === moved ? " moved" : ""}`;
     const text = document.createElement("span");
     text.className = "segment-text";
     text.textContent = seg.text;

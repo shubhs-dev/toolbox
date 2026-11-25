@@ -51,6 +51,9 @@ def test_naming_a_title_on_the_page(page_url):
         sync_api.expect(stem).to_have_text(
             "DougDoug, Atri-oc - The Conspiracy Episode - Lemonade Stand.ext")
         sync_api.expect(page.locator(".segment")).to_have_count(4)
+        # Listed people, title, collection — the name's order, not the page title's.
+        sync_api.expect(page.locator(".segment-text")).to_have_text(
+            ["dougdoug", "Atri-oc", "The Conspiracy Episode", "Lemonade Stand"])
         sync_api.expect(page.locator("#add-btn")).to_be_enabled()
 
         # The loose match offers the library's spelling; accepting it rewrites the name.
@@ -62,6 +65,8 @@ def test_naming_a_title_on_the_page(page_url):
         page.get_by_role("button", name="The Conspiracy Episode: collection").click()
         sync_api.expect(stem).to_have_text(
             "DougDoug, Atri-oc - Lemonade Stand - The Conspiracy Episode.ext")
+        sync_api.expect(page.locator(".segment-text")).to_have_text(
+            ["dougdoug", "Atri-oc", "Lemonade Stand", "The Conspiracy Episode"])
 
         # Skipping the people leaves the name incomplete: Add gives way to "Download anyway".
         page.get_by_role("button", name="dougdoug: skip").click()

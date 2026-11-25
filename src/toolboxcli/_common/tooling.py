@@ -39,8 +39,10 @@ def detached_kwargs() -> dict:
     return {"stdin": subprocess.DEVNULL, "start_new_session": True}
 
 
-def terminate_tree(proc: subprocess.Popen[str]) -> None:
+def terminate_tree(proc: subprocess.Popen[str], force: bool = False) -> None:
     """Terminate a child started with `detached_kwargs()` *and* everything it started.
+    With *force*, kill them outright (SIGKILL) — for a child that's slow to act on the
+    polite request, as aria2c is: it shuts down "gracefully", which can take a while.
 
     `proc.terminate()` stops only the child itself. A tool that hands its work to another
     program — yt-dlp running aria2c — leaves that program running, still writing into the
@@ -53,6 +55,10 @@ def terminate_tree(proc: subprocess.Popen[str]) -> None:
                        capture_output=True, check=False, **detached_kwargs())
         return
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
-        proc.terminate()   # the group is already gone (or never was): the child alone
+        # the group is already gone (or never was): the child alone
+        if force:
+            proc.kill()
+        else:
+            proc.terminate()
