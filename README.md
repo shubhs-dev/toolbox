@@ -628,6 +628,7 @@ the library — the pipeline is `compressvid` and `sortmedia` welded into one un
 vidlib /Volumes/Media/Library         # watch, poll every 30s, serve the web page
 vidlib -W                             # just the pipeline, no web page
 vidlib -X ~/Downloads/tmp             # download only, into that folder
+vidlib -I                             # make every preview and fingerprint now
 vidlib . -A ~/Desktop/clip.mp4        # add a video as is: tagged and filed, never encoded
 vidlib -P 9000 -b                     # web page on port 9000, don't open a browser
 vidlib -O                             # process what's there, then exit
@@ -663,7 +664,10 @@ For every video that appears **directly in the library root**:
    duplicate, and `-U` lists those files so you can rename them. A higher-resolution or more complete copy
    replaces the one already in the library (the old one goes to the Recycle Bin). Anything
    ambiguous — higher res but shorter, longer but lower res — is parked in `_review/` rather
-   than decided unattended.
+   than decided unattended. So is a same-named file whose **picture** differs from the
+   library's copy (see *Fingerprints* below): two videos that only share a name never replace
+   each other. A file whose picture matches a video under *another* name is reported (and
+   listed under Duplicates), but filed as usual.
 4. **Sort** — moved into the folder named by the **Trip** field, the last `' - '`-separated part
    of the name. A name without all three fields is tagged, left in root and reported.
 
@@ -691,6 +695,24 @@ disabled rather than blocking the rest of the pipeline. Disable it with `-S/--no
 *only* this step with `-s/--subs-only` — one merging pass, then exit, encoding and sorting
 nothing. It needs just `addsub` and `ffprobe`, and is dispatched before the HandBrake check and
 the encoder probe, so it stays quick and works on a machine that can't encode at all.
+
+**Fingerprints** — every video gets a content fingerprint: twelve frames from across it, each
+shrunk to a 9×8 greyscale picture and turned into a 64-bit difference hash, which survives
+re-encoding, a change of resolution or codec, and renaming. One ffmpeg pass per video makes it
+together with the Library tab's thumbnail and hover preview. While the web page runs this
+happens in the background, one video at a time at low priority, for every video still missing
+something (the Library tab shows how far it's got, and new videos are done as they're filed);
+`-I/--index` does the whole library in one go and exits, printing how much space the cache
+takes. The images live in `.vidlib-cache/thumbs/` at the library root — roughly 0.1–0.3 MB a
+video, mostly the hover filmstrip — named after the file's size and modified time rather than
+its path, so renaming or filing a video keeps them; images of videos that have gone are
+deleted. Two videos count as the same picture when their lengths are within 2 seconds (or 2%)
+and at least 80% of the frames both can compare are within a few bits; flat frames (black, a
+single-colour title card) are left out. Copies of different lengths — an extra intro, a cut
+ending — can't be compared this way and are left to their names. Fingerprints are used to stop
+a same-named but different video replacing yours, and to list same-picture videos under
+Duplicates (`-D`, and the page, where **Not the same video** hides a wrong match). They never
+move or trash anything on their own.
 
 **Querying** — `-l/--list` prints the library's videos as a table (file, resolution, bit depth,
 folder), alphabetically, and exits. Unlike the pipeline this covers the *whole* library, trip
@@ -725,7 +747,8 @@ size and folder. It's a report only: nothing is moved or deleted.
 | `-R, --resolution` | — | With `-l`: only videos at this resolution, e.g. `720p` or `720` |
 | `-T, --tag` | — | With `-l`: only videos carrying this `[tag]` (case-insensitive, partial) |
 | `-U, --unnamed` | off | With `-l`: only videos not named `People - Title - Collection` |
-| `-D, --duplicates` | off | List videos the library holds more than once, then exit (report only) |
+| `-D, --duplicates` | off | List videos the library holds more than once — by name, or by picture where fingerprinted — then exit (report only) |
+| `-I, --index` | off | Make every video's thumbnail, hover preview and fingerprint now, then exit (the web page does it in the background) |
 | `-A, --adopt` | — | Add these videos without encoding them: moved into the root, then tagged, deduplicated and filed (give `ROOT` first) |
 | `-F, --force` | off | Re-process files the library database already knows as done |
 | `-g, --gpu` | `auto` | `auto`/`nvidia`/`amd`/`apple`/`intel`/`cpu`; env `VIDLIB_GPU` |
@@ -802,8 +825,8 @@ and are done by `concatvid`, which only sends the parts to the Trash once the jo
 confirmed to be as long as all of them. The result is filed like any new video, without
 being encoded again (the parts already were). To merge videos the Parts view didn't find, tick them
 in the grid (a checkbox appears on hover) and choose **Merge selected…**. Each video has a thumbnail (one frame,
-made with ffmpeg the first time it's shown and cached in `.vidlib-cache/` at the library
-root). Rest the pointer on one for a moment and it steps through twelve frames from across the
+made ahead in the background — see *Fingerprints* — or the first time it's shown, and cached
+in `.vidlib-cache/` at the library root). Rest the pointer on one for a moment and it steps through twelve frames from across the
 video (moving across the picture scrubs them). Click one to **Play** it, **Show in Finder**,
 **Rename** it — the same People / Title /
 Collection fields and suggestions as a download, keeping its `[tags]`, and moved into the new

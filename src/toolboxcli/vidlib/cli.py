@@ -20,7 +20,9 @@ For every video that appears directly in the library root it will:
   3. Compare it against any copy already in the library — the same people, title and
      collection, in any order or case and whatever its tags, in any folder. A
      higher-resolution or more complete version replaces the old one (which goes to the
-     Recycle Bin); anything ambiguous is parked in _review/ for you to decide.
+     Recycle Bin); anything ambiguous is parked in _review/ for you to decide. So is a file
+     whose picture differs from the same-named copy's (see FINGERPRINTS), and a file whose
+     picture matches a video under another name is reported.
   4. Move it into the folder named by its Trip field — the last " - " separated part of
      the name.
 
@@ -63,7 +65,8 @@ recorded in the library database, so the queue survives a restart.
 
 The page's Library tab browses what the database knows — search, people, collection and
 resolution filters, the duplicates, badly named files and the review queue — with a
-thumbnail for each video (a few frames from across it on hover), and lets you play it, show it in Finder, rename it (moving it into
+thumbnail for each video (a few frames from across it on hover), made ahead in the background
+(see FINGERPRINTS), and lets you play it, show it in Finder, rename it (moving it into
 its new collection's folder; its history follows) or move it to the Trash. The Review tab
 shows each file parked in _review/ next to the library copy it was compared with: keep the
 new one (the library's goes to the Trash), keep the library's, or rename the new one to keep
@@ -83,6 +86,23 @@ free one, with a warning.
 With -X DIR (download-only), nothing is encoded: downloads go into DIR (default: the current
 folder) and wait there, recorded in ROOT's database, until "Move into library" on the page
 moves them into ROOT. Useful while the library's disk is full.
+
+FINGERPRINTS
+
+Every video also gets a content fingerprint: twelve frames from across it, each shrunk to a
+tiny greyscale picture, which stays the same through re-encoding, resizing and renaming. One
+ffmpeg pass per video makes it together with the thumbnail and the hover preview. While the
+page is open this happens in the background, at low priority, for every video still missing
+one (the Library tab shows how far it's got); -I does the whole library in one go and exits.
+The images are cached in .vidlib-cache/ (roughly 0.1–0.3 MB a video) under the file's size
+and modified time, so renaming or filing a video keeps them; images of videos that have gone
+are deleted.
+
+Fingerprints only compare videos of nearly the same length (within 2 seconds or 2%), and are
+used two ways. A file with the same name as a library video but a different picture is never
+swapped in for it: it's parked in _review/. And videos with the same picture but different
+names are listed under Duplicates on the page and by -D — reported only, never moved; on the
+page, "Not the same video" hides a wrong match.
 
 With -A FILE... (adopt), videos you already have in good shape join the library without
 being encoded: each is moved into the root (from anywhere — another disk, a library folder)
@@ -111,6 +131,7 @@ Usage:
     vidlib -T Restored                    # by [tag]
     vidlib -U                             # files not named People - Title - Collection
     vidlib -D                             # videos the library holds more than once
+    vidlib -I                             # make every preview and fingerprint now
     vidlib -H 01:00-07:00 -L 4            # only encode off-hours, and back off under load
     vidlib -S                             # don't scan for or merge subtitle files
     vidlib -s                             # merge waiting subtitles only, then exit
@@ -127,7 +148,7 @@ import threading
 import time
 import webbrowser
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -161,8 +182,9 @@ from toolboxcli._common.humanize import human_size as fmt_size
 from toolboxcli._common.progress import bar as progress_bar
 from toolboxcli._common.tooling import detached_kwargs, require_tool
 from toolboxcli._common.trash import move_to_trash
-from toolboxcli.vidlib import core
+from toolboxcli.vidlib import core, index
 from toolboxcli.vidlib.db import (
+    DUPLICATE_WHY,
     IGNORE_FILE,
     INCOMING_DIR,
     LEGACY_DB_NAME,
@@ -174,6 +196,7 @@ from toolboxcli.vidlib.db import (
 )
 from toolboxcli.vidlib.downloads import DownloadManager, move_file
 from toolboxcli.vidlib.instance import LibraryBusy, LibraryLock
+from toolboxcli.vidlib.library import Library
 from toolboxcli.vidlib.server import (
     DEFAULT_PORT,
     PORT_TRIES,
@@ -309,6 +332,8 @@ def sync_library(root: Path, db: LibraryDB) -> None:
         # seconds, exFAT 10 ms), and nothing else re-reads a file vidlib doesn't touch.
         changed = row.size != st.st_size or abs(row.mtime - st.st_mtime) >= 0.001
         if changed:
+            if row.size != st.st_size:
+                row.fingerprint = ""     # a different file now; a copy only moves the mtime
             row.size, row.mtime = st.st_size, st.st_mtime
         if row.status == "missing":
             row.status = "sorted" if "/" in path else "compressed"
@@ -694,13 +719,17 @@ def plan_destination(root: Path, stem: str) -> tuple[str, Path | None]:
 
 
 def resolve_duplicate(root: Path, db: LibraryDB, video: Path, height: int, duration: float,
-                      policy: str) -> tuple[str | None, Video | None]:
+                      policy: str, fingerprint: str = "") -> tuple[str | None, Video | None]:
     """Compare *video* with the library's copy of the same video, wherever it's filed.
 
     "The same video" is the same set of people, title and collection, whatever their order,
     case or tags (core.parse_name). Copies parked in _review/ are a decision still waiting on
     you, so they're never compared against. Returns (verdict, existing) — both None when
     there's no copy.
+
+    When both files have a content fingerprint and it says the pictures differ, the verdict
+    is core.DIFFERENT whatever the resolution and length say: two videos that only share a
+    name are never left to replace each other.
     """
     copies = [
         c for c in db.same_video(video.stem, exclude_path=rel_path(root, video))
@@ -721,10 +750,24 @@ def resolve_duplicate(root: Path, db: LibraryDB, video: Path, height: int, durat
         old_height = old_height or probed[0]
         old_duration = old_duration or probed[1]
 
+    if core.same_content(fingerprint, duration, existing.fingerprint, old_duration) is False:
+        return core.DIFFERENT, existing
     verdict = core.duplicate_verdict(height, duration, old_height, old_duration)
     if policy == "review" and verdict != core.DOWNGRADE:
         return core.AMBIGUOUS, existing
     return verdict, existing
+
+
+def lookalikes(db: LibraryDB, fingerprint: str, duration: float,
+               exclude: str) -> list[Video]:
+    """Library videos whose fingerprints say they're the same as this one — whatever
+    they're called. Reported, never acted on: a name says who and what a video is, and a
+    picture match can't, so these are left for you to settle in the Duplicates view."""
+    if not fingerprint:
+        return []
+    return [v for v in db.all() if v.path != exclude and v.fingerprint
+            and v.status not in ("failed", "missing")
+            and core.same_content(fingerprint, duration, v.fingerprint, v.duration)]
 
 
 def park_for_review(root: Path, video: Path, reason: str) -> Path:
@@ -748,6 +791,10 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
     src_height, src_duration, src_depth, src_has_sub = probed
 
     row = db.get(rel_path(root, video))
+    # What the picture looks like, for telling same-named videos apart and spotting the same
+    # video under another name. One ffmpeg pass; the encode doesn't change it.
+    fingerprint = (row.fingerprint if row is not None and row.fingerprint
+                   else index.render(video, src_duration))
     # A file the database knows as compressed is only tagged, deduplicated and sorted. -F
     # forces an encode anyway.
     skip_encode = not args.force and already_done(row, src_depth, args.bit_depth)
@@ -777,7 +824,7 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
 
     # Pre-flight: reject a clear downgrade before spending an hour encoding it.
     verdict, existing = resolve_duplicate(
-        root, db, video, src_height, src_duration, args.on_duplicate,
+        root, db, video, src_height, src_duration, args.on_duplicate, fingerprint,
     )
     if verdict == core.DOWNGRADE and existing is not None and args.on_duplicate != "ignore":
         if args.dry_run:
@@ -788,7 +835,8 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
             # it back out of _review/ later doesn't re-encode it.
             record(db, root, parked, "review", reason="downgrade",
                    compared_with=existing.path, height=src_height, bit_depth=src_depth,
-                   has_sub=src_has_sub, duration=src_duration, source_height=src_height)
+                   has_sub=src_has_sub, duration=src_duration, source_height=src_height,
+                   fingerprint=fingerprint)
             forget(db, root, video)
             db.log_event(rel_path(root, parked), "parked", f"downgrade of {existing.path}")
             return {"file": name, "status": "review", "reason": "downgrade",
@@ -830,7 +878,7 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
         size = video.stat().st_size
         return _finish(video, video, root, db, plan, args, row,
                        size, size, src_height, src_height, src_duration,
-                       src_depth, src_has_sub, encoded=False)
+                       src_depth, src_has_sub, encoded=False, fingerprint=fingerprint)
 
     # Past here the run encodes, and that requires HandBrake — plan is only unset for a dry
     # run on a machine without it, or for adopted files (-A), which are never encoded.
@@ -940,13 +988,13 @@ def process(video: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, ar
 
     return _finish(video, final, root, db, plan, args, row,
                    orig_size, comp_size, src_height, out_height, out_duration,
-                   out_depth, out_has_sub, encoded=True)
+                   out_depth, out_has_sub, encoded=True, fingerprint=fingerprint)
 
 
 def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPlan | None, args,
             row: Video | None, orig_size: int, comp_size: int, src_height: int,
             out_height: int, out_duration: float, out_depth: int = 8,
-            has_sub: bool = False, encoded: bool = True) -> dict:
+            has_sub: bool = False, encoded: bool = True, fingerprint: str = "") -> dict:
     """Retag to the measured resolution, resolve duplicates, sort, and record the result.
 
     Shared by the encode path and the already-done path so a file that comes back to the
@@ -970,6 +1018,8 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
         "source_height": src_height,
         "original_size": orig_size,
         "backend": plan.backend.name if encoded and plan is not None else "",
+        # The source's: re-encoding doesn't change what the picture looks like.
+        "fingerprint": fingerprint,
     }
     if not encoded and row is not None:
         fields.update(source_height=row.source_height or src_height,
@@ -978,8 +1028,14 @@ def _finish(video: Path, final: Path, root: Path, db: LibraryDB, plan: EncoderPl
     # ── Duplicate resolution, re-decided on the finished file ─────
     trip, dest_folder = plan_destination(root, final.stem)
     verdict, existing = resolve_duplicate(
-        root, db, final, out_height, out_duration, args.on_duplicate,
+        root, db, final, out_height, out_duration, args.on_duplicate, fingerprint,
     )
+    if existing is None and args.on_duplicate != "ignore":
+        # No copy by name; say so if one exists under another name.
+        for other in lookalikes(db, fingerprint, out_duration, rel_path(root, video)):
+            warn(f"{final.name} looks like the same video as {other.path} — "
+                 "see Duplicates on the page, or -D")
+            db.log_event(rel_path(root, final), "lookalike", other.path)
 
     if verdict and existing and not core.wins(verdict) and args.on_duplicate != "ignore":
         parked = park_for_review(root, final, f"{verdict} vs {existing.path}")
@@ -1150,6 +1206,45 @@ def run_merge(root: Path, db: LibraryDB, job: MergeJob, status: PipelineStatus) 
         pass
     warn(f"Merge failed: {last or f'concatvid exited {proc.returncode}'}")
     status.update_merge(job, "failed", last or f"concatvid exited {proc.returncode}")
+
+
+# ── Indexing ─────────────────────────────────────────────────────────
+
+def run_index(root: Path, db: LibraryDB) -> None:
+    """-I: make every video's thumbnail, filmstrip and fingerprint in one go — what the web
+    page's background indexer does bit by bit — then drop the images of videos that are
+    gone. Ctrl+C keeps what's done; the next run (or the page) carries on from there."""
+
+    require_tool("ffmpeg")
+    library = Library(root, db, threading.RLock())
+    todo = [v for v in db.all() if index.needs(v, index.cached_names(root))]
+    known = len(db.all())
+    failed: list[str] = []
+    runner = index.Runner()
+    if not todo:
+        ok(f"All {known} videos already have their previews and fingerprints")
+    try:
+        with progress_bar() if todo else nullcontext() as progress:
+            task = progress.add_task("Preparing previews and fingerprints",
+                                     total=len(todo)) if progress else None
+            for video in todo:
+                if not library.prepare(video, runner) and (root / video.path).is_file():
+                    failed.append(video.path)
+                if progress is not None and task is not None:
+                    progress.advance(task)
+    except KeyboardInterrupt:
+        runner.stop()
+        warn("Stopped — what's done is kept; run -I again (or open the page) to finish")
+        return
+    for path in failed:
+        warn(f"ffmpeg couldn't read: {escape(path)}")
+    removed, freed = index.prune_cache(root, db.all())
+    if todo:
+        ok(f"Prepared {len(todo) - len(failed)} of {len(todo)} videos")
+    if removed:
+        info(f"Removed {removed} cached image(s) of videos that are gone ({fmt_size(freed)})")
+    info(f"Previews take {fmt_size(index.cache_size(root))} in {index.CACHE_DIR}/ "
+         f"for {known} videos")
 
 
 # ── Adopting files by hand ───────────────────────────────────────────
@@ -1464,17 +1559,20 @@ def list_library(root: Path, db: LibraryDB, args) -> None:
 
 
 def show_duplicates(db: LibraryDB) -> None:
-    """Every group of files the library holds more than once — the same people, title and
-    collection, whatever the order, case or tags. A report only: nothing is moved."""
-    groups = db.duplicate_groups()
-    if not groups:
+    """Every set of files the library holds more than once: the same people, title and
+    collection (whatever the order, case or tags), or the same picture by their content
+    fingerprints (made by -I or the page), whatever they're called. A report only."""
+    sets = db.duplicate_sets()
+    if not sets:
         ok("No duplicates in the library.")
         return
-    for group in groups:
+    for why, group in sets:
         name = group[0].name
         people = ", ".join(name.people) or "—"
+        heading = (f"{people} · {name.title} · {name.collection or '(no collection)'}"
+                   if name.complete else name.title)
         tbl = Table(
-            title=escape(f"{people} · {name.title} · {name.collection or '(no collection)'}"),
+            title=escape(f"{heading}  ({DUPLICATE_WHY[why]})"),
             title_justify="left", title_style="bold yellow", box=box.SIMPLE_HEAD,
             show_edge=False,
         )
@@ -1490,8 +1588,12 @@ def show_duplicates(db: LibraryDB) -> None:
                         fmt_size(v.size) if v.size else "?", escape(_location(v)))
         console.print(tbl)
         console.print()
-    files = sum(len(g) for g in groups)
-    warn(f"{len(groups)} video(s) held more than once ({files} files) — nothing was changed")
+    files = sum(len(g) for _why, g in sets)
+    warn(f"{len(sets)} video(s) held more than once ({files} files) — nothing was changed")
+    unprinted = sum(1 for v in db.all() if not v.fingerprint and v.duration > 0)
+    if unprinted:
+        info(f"{unprinted} video(s) have no fingerprint yet, so only their names were "
+             "compared — run -I (or leave the page open) to fingerprint them")
 
 
 def show_summary(results: list[dict]) -> None:
@@ -1548,12 +1650,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="With -l: only videos whose names don't follow "
                          "People - Title - Collection (so can't be matched as duplicates)")
     ap.add_argument("-D", "--duplicates", action="store_true",
-                    help="List videos the library holds more than once, then exit "
-                         "(report only; nothing is moved)")
+                    help="List videos the library holds more than once — by name, or by "
+                         "picture where fingerprinted — then exit (report only)")
     ap.add_argument("-A", "--adopt", nargs="+", metavar="FILE",
                     help="Add these videos to the library without encoding them: moved "
                          "into the root, then tagged, deduplicated and filed — now, or by "
                          "the vidlib already running on the library. Give ROOT first")
+    ap.add_argument("-I", "--index", action="store_true",
+                    help="Make every video's thumbnail, hover preview and duplicate "
+                         "fingerprint now, then exit (the web page does it in the background)")
     ap.add_argument("-F", "--force", action="store_true",
                     help="Re-process files the library database already knows as done")
     ap.add_argument("-g", "--gpu", default=None, choices=core.GPU_CHOICES,
@@ -1611,7 +1716,7 @@ def main() -> None:
         die("--subs-only and --no-subs contradict each other")
     if args.download_only is not None and not wants_web(args):
         die("-X/--download-only serves the web page, so it can't be combined with -W, -n, "
-            "-O, -r, -l (or its filters), -D or -s")
+            "-O, -r, -l (or its filters), -D, -s or -I")
     if not 1 <= args.port <= 65535:
         die(f"Not a port: {args.port}")
 
@@ -1672,7 +1777,7 @@ def _run_library(root: Path, args, lock: LibraryLock | None) -> None:
             return
         if wants_web(args):
             with web_ui(root, args, lock=lock) as web:
-                run(root, db, args, web.status, web.manager.video_settled)
+                run(root, db, args, web.status, web.settled)
         else:
             keep_awake = KeepAwake()
             status = PipelineStatus()
@@ -1685,9 +1790,9 @@ def _run_library(root: Path, args, lock: LibraryLock | None) -> None:
 
 def wants_web(args) -> bool:
     """The web page runs alongside the continuous watch only; reports, queries, one-shot
-    runs, dry runs and subtitle-only merges are terminal commands that exit."""
+    runs, dry runs, subtitle-only merges and indexing are terminal commands that exit."""
     return not (args.no_web or args.dry_run or args.once or args.report or args.duplicates
-                or args.subs_only or args.list_files is not None)
+                or args.subs_only or args.index or args.list_files is not None)
 
 
 @dataclass
@@ -1695,6 +1800,22 @@ class WebUI:
     server: VidlibServer
     manager: DownloadManager
     status: PipelineStatus | None
+    indexer: index.Indexer | None = None
+
+    def settled(self, name: str, path: str) -> None:
+        """A file from the root ended up at *path*: a download follows it, and the indexer
+        makes its previews and fingerprint."""
+        self.manager.video_settled(name, path)
+        if self.indexer is not None:
+            self.indexer.wake()
+
+
+def _indexable(manager: DownloadManager) -> list[Video]:
+    """Every video the indexer should prepare: what the database knows is there, less the
+    root's files — pipeline input, fingerprinted as they're processed, and not to be held
+    open while the pipeline renames them (which fails on Windows)."""
+    with manager.lock:
+        return [v for v in manager.db.all() if "/" in v.path]
 
 
 @contextmanager
@@ -1741,16 +1862,27 @@ def web_ui(root: Path, args, dest: Path | None = None,
              f"using {server.server_address[1]} instead")
     if lock is not None:
         lock.note(f"pid {os.getpid()}, page at {server.url}")
+    indexer: index.Indexer | None = None
     try:
         imported = manager.start()
         if imported:
             info(f"Imported {imported} entries from the old video-download queue")
+        # Thumbnails, previews and fingerprints, made ahead in the background — not in
+        # download-only mode, where the library's disk may be the one that's full.
+        indexer = None
+        if dest is None:
+            indexer = index.Indexer(root, lambda: _indexable(manager), server.library.prepare,
+                                    on_change=manager.notify)
+            server.indexer = indexer
+            indexer.start()
         server.start()
         ok(f"Web page at {server.url}")
         if not args.no_browser:
             webbrowser.open(server.url)
-        yield WebUI(server, manager, status)
+        yield WebUI(server, manager, status, indexer)
     finally:
+        if indexer is not None:
+            indexer.stop()
         server.stop()
         if manager.running:
             n = manager.running
@@ -1817,6 +1949,11 @@ def run(root: Path, db: LibraryDB, args, status: PipelineStatus | None = None,
     if args.subs_only:
         sync_library(root, db)
         merge_only(root, db, args)
+        return
+
+    if args.index:
+        sync_library(root, db)
+        run_index(root, db)
         return
 
     require_tool("ffprobe", "part of ffmpeg")

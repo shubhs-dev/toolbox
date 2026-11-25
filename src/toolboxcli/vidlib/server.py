@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlsplit
 from toolboxcli._common.console import warn
 from toolboxcli.vidlib import naming
 from toolboxcli.vidlib.downloads import DownloadManager
+from toolboxcli.vidlib.index import Indexer
 from toolboxcli.vidlib.library import Library, LibraryError
 from toolboxcli.vidlib.status import PipelineStatus
 
@@ -336,6 +337,13 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/library/parts":
             self._json({"groups": lib.part_groups()})
             return
+        if method == "POST" and path == "/api/library/duplicates/dismiss":
+            ids: Any = self._body().get("ids")
+            if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "ids must be a list of video ids")
+            lib.dismiss_duplicates(ids)  # pyright: ignore[reportUnknownArgumentType]
+            self._json({"ok": True})
+            return
         if method == "POST" and path == "/api/library/parts/dismiss":
             ids: Any = self._body().get("ids")
             if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):  # pyright: ignore[reportUnknownVariableType]
@@ -431,6 +439,7 @@ class VidlibServer(ThreadingHTTPServer):
         self.pipeline = pipeline   # None in download-only mode
         self.library = Library(manager.library, manager.db, manager.lock, pipeline)
         self.stopping = threading.Event()
+        self.indexer: Indexer | None = None   # set by whoever runs one
         super().__init__(("127.0.0.1", port), Handler)
 
     def state(self) -> dict[str, Any]:
@@ -438,6 +447,7 @@ class VidlibServer(ThreadingHTTPServer):
         state = self.manager.snapshot()
         state["pipeline"] = self.pipeline.snapshot() if self.pipeline is not None else None
         state["review_count"] = self.library.review_count()
+        state["index"] = self.indexer.snapshot() if self.indexer is not None else None
         return state
 
     def handle_error(self, request: Any, client_address: Any) -> None:

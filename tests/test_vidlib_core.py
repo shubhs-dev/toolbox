@@ -205,3 +205,79 @@ def test_seconds_until_window_opens():
     window = core.parse_hours("01:00-07:00")
     assert core.seconds_until(window, datetime(2026, 1, 1, 0, 30)) == 1800
     assert core.seconds_until(window, datetime(2026, 1, 1, 2, 0)) == 23 * 3600
+
+
+# ── content fingerprints ───────────────────────────────────────────────
+
+def _frame(pattern: str) -> bytes:
+    """A 9x8 greyscale frame: 'ramp' brightens left to right, 'flip' darkens, 'flat' is
+    one shade, 'noisy' is the ramp with a few pixels off."""
+    if pattern == "flat":
+        return bytes([90] * 72)
+    row = [i * 25 for i in range(9)]
+    if pattern == "flip":
+        row = row[::-1]
+    pixels = bytearray(row * 8)
+    if pattern == "noisy":
+        for i in (3, 20, 41):
+            pixels[i] = 255
+    return bytes(pixels)
+
+
+def test_dhash_compares_neighbours_and_ignores_flat_frames():
+    assert core.dhash(_frame("ramp")) == 0                 # every pixel darker than the next
+    assert core.dhash(_frame("flip")) == (1 << 64) - 1
+    assert core.dhash(_frame("flat")) is None              # black, or a title card
+    assert core.dhash(b"short") is None
+    noisy = core.dhash(_frame("noisy"))
+    assert noisy is not None and 0 < noisy.bit_count() <= core.FP_FRAME_BITS
+
+
+def test_fingerprints_round_trip():
+    hashes = [0, None, (1 << 64) - 1, 0x0123456789ABCDEF]
+    text = core.format_fingerprint(hashes)
+    assert text == "0000000000000000,-,ffffffffffffffff,0123456789abcdef"
+    assert core.parse_fingerprint(text) == hashes
+    assert core.parse_fingerprint("") == [] and core.parse_fingerprint("zz,1") == []
+
+
+def _fp(*frames: int | None) -> str:
+    return core.format_fingerprint(list(frames))
+
+
+A = [0x0F0F0F0F0F0F0F0F + i for i in range(12)]          # twelve distinct frames
+NOT_A = [~h & ((1 << 64) - 1) for h in A]                # every bit different
+
+
+@pytest.mark.parametrize("b, length_b, expected", [
+    (A, 600.0, True),                                     # the same video
+    ([h ^ 0b111 for h in A], 601.5, True),               # re-encoded: a few bits, a second off
+    (NOT_A, 600.0, False),                                # a different video
+    (A[:9] + NOT_A[9:], 600.0, None),                     # 9 of 12: not sure either way
+    (A[:10] + NOT_A[10:], 600.0, True),                   # 10 of 12 (83%)
+    (A[:3] + NOT_A[3:], 600.0, False),                    # 3 of 12 (25%)
+    (A, 640.0, None),                                     # lengths too far apart to line up
+    ([None] * 7 + A[7:], 600.0, None),                    # only 5 frames to compare
+])
+def test_same_content(b, length_b, expected):
+    assert core.same_content(_fp(*A), 600.0, _fp(*b), length_b) is expected
+
+
+def test_same_content_needs_both_fingerprints():
+    assert core.same_content("", 600, _fp(*A), 600) is None
+    assert core.same_content(_fp(*A), 0, _fp(*A), 0) is None
+
+
+def test_lengths_close_allows_two_seconds_or_two_percent():
+    assert core.lengths_close(60, 62) and not core.lengths_close(60, 62.5)
+    assert core.lengths_close(3600, 3670) and not core.lengths_close(3600, 3680)
+
+
+def test_content_groups_join_matches_of_similar_length_only():
+    same = _fp(*A)
+    other = _fp(*NOT_A)
+    items = [(1, same, 600.0), (2, other, 600.0), (3, same, 601.0), (4, same, 900.0),
+             (5, same, 600.5), (6, "", 600.0), (7, other, 0.0), (8, _fp(*NOT_A), 299.0),
+             (9, other, 300.0)]
+    # 4 is the same picture at another length (frames don't line up): not grouped.
+    assert core.content_groups(items) == [[1, 3, 5], [8, 9]]

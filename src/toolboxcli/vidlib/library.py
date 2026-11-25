@@ -11,12 +11,9 @@ history follows it, just as the pipeline's own sync would match a hand rename.
 
 from __future__ import annotations
 
-import hashlib
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -25,14 +22,11 @@ from typing import Any
 
 from toolboxcli._common.tooling import detached_kwargs
 from toolboxcli._common.trash import move_to_trash
-from toolboxcli.vidlib import core, naming, parts
-from toolboxcli.vidlib.db import IGNORE_FILE, LibraryDB, Video
+from toolboxcli.vidlib import core, index, naming, parts
+from toolboxcli.vidlib.db import DUPLICATE_WHY, IGNORE_FILE, LibraryDB, Video
 from toolboxcli.vidlib.status import PipelineStatus
 
-CACHE_DIR = ".vidlib-cache"
-THUMB_WIDTH = 480
-STRIP_FRAMES = 12
-STRIP_WIDTH = 320
+STRIP_FRAMES = index.STRIP_FRAMES
 PAGE_SIZE = 60
 VIEWS = ("all", "duplicates", "unnamed", "review")
 
@@ -113,16 +107,18 @@ class Library:
             raise LibraryError(f"view is one of {', '.join(VIEWS)}")
         with self.lock:
             if view == "duplicates":
-                groups = self.db.duplicate_groups()
-                videos = [v for g in groups for v in g]
-                group_of = {v.path: i for i, g in enumerate(groups) for v in g}
+                sets = self.db.duplicate_sets()
+                videos = [v for _why, g in sets for v in g]
+                group_of = {v.path: i for i, (_why, g) in enumerate(sets) for v in g}
+                why_of = {v.path: why for why, g in sets for v in g}
+                members_of = {v.path: [m.path for m in g] for _why, g in sets for v in g}
             else:
                 # The page's person and collection come from its lists: exactly that one,
                 # not every name containing it. The search box (`q`) is the partial match.
                 videos = self.db.search(person=person or None, collection=collection or None,
                                         resolution=resolution or None, tag=tag or None,
                                         unnamed=view == "unnamed", exact=True)
-                group_of = {}
+                group_of, why_of, members_of = {}, {}, {}
             facets = self._facets()
         if view == "review":
             videos = [v for v in videos if v.status == "review"]
@@ -141,7 +137,12 @@ class Library:
         with self.lock:
             ids = {path: i for i, path in self.db.conn.execute("SELECT id, path FROM videos")}
         rows = [_video_json(v) | {"id": ids.get(v.path)}
-                | ({"group": group_of[v.path]} if group_of else {}) for v in page]
+                | ({"group": group_of[v.path], "why": why_of[v.path],
+                    "why_text": DUPLICATE_WHY[why_of[v.path]],
+                    # the whole set's ids, though a page may show only some of it
+                    "group_ids": [ids[m] for m in members_of[v.path] if m in ids]}
+                   if group_of else {})
+                for v in page]
         return {"total": len(videos), "offset": offset, "videos": rows, "sort": sort,
                 "desc": desc, **facets}
 
@@ -182,80 +183,56 @@ class Library:
         if current and current["file"] == row.filename and "/" not in row.path:
             raise LibraryError("the pipeline is working on that file right now")
 
-    def _cached(self, path: str, kind: str) -> tuple[Video, Path, Path]:
-        """(row, file, cache file) for one cached image of a known video, keyed by path, size
-        and modified time — so a re-encoded file gets a fresh one."""
+    def prepare(self, video: Video, runner: index.Runner | None = None) -> bool:
+        """Make whatever a video is missing — thumbnail, filmstrip, fingerprint — in one
+        ffmpeg run (index.render), at most two runs at once across the page's requests and
+        the background indexer. The fingerprint is stored only if the row still describes
+        the file that was read. False if nothing could be read from it."""
+        file = self.root / video.path
+        try:
+            st = file.stat()
+        except OSError:
+            return False
+        thumb, strip = index.cache_paths(self.root, st.st_size, st.st_mtime)
+        with self._thumbs:
+            want_strip = video.duration > 0 and not strip.is_file()
+            want_fp = video.duration > 0 and not video.fingerprint
+            if thumb.is_file() and not want_strip and not want_fp:
+                return True
+            fingerprint = index.render(file, video.duration,
+                                       None if thumb.is_file() else thumb,
+                                       strip if want_strip else None, runner)
+        if fingerprint and want_fp:
+            with self.lock:
+                self.db.set_fingerprint(video.path, st.st_size, st.st_mtime, fingerprint)
+        return thumb.is_file()
+
+    def _image(self, path: str, strip: bool) -> bytes:
         row, file = self._known(path)
         st = file.stat()
-        key = hashlib.sha1(f"{row.path}\0{st.st_size}\0{st.st_mtime}".encode()).hexdigest()
-        return row, file, self.root / CACHE_DIR / "thumbs" / f"{key}{kind}.jpg"
-
-    @staticmethod
-    def _frame(file: Path, at: float, width: int, out: Path) -> bool:
-        subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.2f}", "-i", str(file),
-             "-frames:v", "1", "-vf", f"scale={width}:-2", "-q:v", "5", str(out)],
-            capture_output=True, timeout=60, check=False, **detached_kwargs(),
-        )
-        return out.is_file() and out.stat().st_size > 0
+        thumb_file, strip_file = index.cache_paths(self.root, st.st_size, st.st_mtime)
+        wanted = strip_file if strip else thumb_file
+        if strip and row.duration <= 0:
+            raise LibraryError("no length known, so no preview")
+        if not wanted.is_file():
+            if strip:
+                self.prepare(row)
+            else:
+                with self._thumbs:     # one quick frame; the indexer makes the rest
+                    if not wanted.is_file():
+                        index.make_thumbnail(file, row.duration, wanted)
+        if not wanted.is_file():
+            raise LibraryError("ffmpeg couldn't read a frame from it")
+        return wanted.read_bytes()
 
     def thumbnail(self, path: str) -> bytes:
         """A JPEG frame from a tenth of the way in, made once and cached."""
-        row, file, thumb = self._cached(path, "")
-        if thumb.is_file():
-            return thumb.read_bytes()
-        with self._thumbs:
-            if not thumb.is_file():
-                thumb.parent.mkdir(parents=True, exist_ok=True)
-                tmp = thumb.with_name(f".{thumb.stem}.tmp.jpg")
-                # A tenth of the way in skips black intros; the first frame is the fallback
-                # for a file shorter than its recorded duration.
-                for at in dict.fromkeys((max(row.duration * 0.1, 0.0), 0.0)):
-                    if self._frame(file, at, THUMB_WIDTH, tmp):
-                        break
-                else:
-                    tmp.unlink(missing_ok=True)
-                    raise LibraryError("ffmpeg couldn't read a frame from it")
-                os.replace(tmp, thumb)
-        return thumb.read_bytes()
+        return self._image(path, strip=False)
 
     def filmstrip(self, path: str) -> bytes:
         """STRIP_FRAMES frames spread across the video, side by side in one JPEG, for the
-        hover preview. Each is a fast seek, so a long video costs no more than a short one;
-        a frame that can't be read repeats the one before."""
-        row, file, strip = self._cached(path, f"-strip{STRIP_FRAMES}")
-        if strip.is_file():
-            return strip.read_bytes()
-        if row.duration <= 0:
-            raise LibraryError("no length known, so no preview")
-        with self._thumbs:
-            if not strip.is_file():
-                strip.parent.mkdir(parents=True, exist_ok=True)
-                with tempfile.TemporaryDirectory(dir=strip.parent) as work:
-                    frames = [Path(work) / f"f{i}.jpg" for i in range(STRIP_FRAMES)]
-                    have: Path | None = None
-                    for i, out in enumerate(frames):
-                        at = row.duration * (i + 0.5) / STRIP_FRAMES
-                        if self._frame(file, at, STRIP_WIDTH, out):
-                            have = out
-                        elif have is not None:
-                            shutil.copyfile(have, out)
-                    if have is None:
-                        raise LibraryError("ffmpeg couldn't read a frame from it")
-                    for out in frames:              # leading failures borrow the first good one
-                        if not out.is_file():
-                            shutil.copyfile(have, out)
-                    tmp = Path(work) / "strip.jpg"
-                    subprocess.run(
-                        ["ffmpeg", "-v", "error", "-y", "-start_number", "0",
-                         "-i", str(Path(work) / "f%d.jpg"), "-vf", f"tile={STRIP_FRAMES}x1",
-                         "-frames:v", "1", "-q:v", "6", str(tmp)],
-                        capture_output=True, timeout=60, check=False, **detached_kwargs(),
-                    )
-                    if not tmp.is_file():
-                        raise LibraryError("ffmpeg couldn't build the preview")
-                    os.replace(tmp, strip)
-        return strip.read_bytes()
+        hover preview — the frames the fingerprint is made from."""
+        return self._image(path, strip=True)
 
     def open(self, path: str, reveal: bool = False) -> None:
         """Play the file in its default app, or show it in Finder / Explorer."""
@@ -353,6 +330,14 @@ class Library:
                 } for m in g.members],
             })
         return groups
+
+    def dismiss_duplicates(self, video_ids: list[int]) -> None:
+        """"Not the same video" for a set the fingerprints matched: it stays out of the
+        Duplicates view until another video joins it."""
+        if len(set(video_ids)) < 2:
+            raise LibraryError("pick at least two videos")
+        with self.lock:
+            self.db.dismiss_duplicates(video_ids)
 
     def dismiss_parts(self, video_ids: list[int]) -> None:
         """Remember that these videos aren't parts of one, so the set isn't offered again."""
